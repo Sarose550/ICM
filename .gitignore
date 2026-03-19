@@ -6,8 +6,8 @@ calibrate_B
 
 # Generated data
 calibration.csv
-cpu_*.csv
-*.png
+**/cpu_*.csv
+**/*.png
 
 # OS
 .DS_Store
