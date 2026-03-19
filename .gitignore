@@ -1,0 +1,16 @@
+# Build artifacts
+bench_avx2
+bench_avx512
+bench_topk
+calibrate_B
+
+# Generated data
+calibration.csv
+cpu_*.csv
+*.png
+
+# OS
+.DS_Store
+
+# Zip archives
+*.zip
