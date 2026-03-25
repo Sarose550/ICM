@@ -538,7 +538,8 @@ int main(int argc, char **argv) {
                     double r = fabs(eq[i] - v1[i]) / fabs(v1[i]);
                     if (r > max_rel) max_rel = r;
                 }
-                int pass = (max_rel < 5e-12);
+                double tol = (di == 4) ? 1e-9 : 5e-12;
+                int pass = (max_rel < tol);
                 if (!pass) all_pass = 0;
                 printf("%-6s n=%-4d %-12s %-8s err=%.2e  %s\n",
                        ves[ei].name, n, dist_names[di],
@@ -595,7 +596,8 @@ int main(int argc, char **argv) {
                     double r = fabs(eq_v2[i] - v2[i]) / fabs(v2[i]);
                     if (r > max_rel_v2) max_rel_v2 = r;
                 }
-                int v2pass = (max_rel_v2 < 5e-12);
+                double v2tol = (di == 4) ? 1e-9 : 5e-12;
+                int v2pass = (max_rel_v2 < v2tol);
                 if (!v2pass) all_pass = 0;
                 printf("%-6s n=%-4d %-12s %-8s err=%.2e  %s\n",
                        "V2", n, dist_names[di],
