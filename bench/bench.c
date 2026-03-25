@@ -54,6 +54,10 @@ static void make_stacks(int n, int dist, double *S) {
     case 3:
         for (int i = 0; i < n; i++) S[i] = 100.0;
         break;
+    case 4:
+        S[0] = 1e9;
+        for (int i = 1; i < n; i++) S[i] = 1.0;
+        break;
     }
 }
 
@@ -482,7 +486,7 @@ int main(int argc, char **argv) {
     }
 
     int Q = 256;
-    const char *dist_names[] = {"uniform", "adversarial", "geometric", "equal"};
+    const char *dist_names[] = {"uniform", "adversarial", "geometric", "equal", "adv_1e9"};
 
     /* ── Correctness verification ─────────────────────────── */
     printf("=== CORRECTNESS VERIFICATION ===\n\n");
@@ -496,9 +500,11 @@ int main(int argc, char **argv) {
 
     for (int ni = 0; ni < n_vn; ni++) {
         int n = verify_ns[ni];
-        /* Fewer distributions at large n (uniform + adversarial suffice) */
-        int n_dists = (n <= 256) ? 4 : 2;
-        for (int di = 0; di < n_dists; di++) {
+        int n_dists = (n <= 256) ? 5 : 3;
+        /* At large n, test: uniform, adversarial(1e4), adv_1e9 */
+        int large_n_dists[] = {0, 1, 4};
+        for (int dii = 0; dii < n_dists; dii++) {
+            int di = (n <= 256) ? dii : large_n_dists[dii];
             double *S = (double *)malloc(n * sizeof(double));
             make_stacks(n, di, S);
 
