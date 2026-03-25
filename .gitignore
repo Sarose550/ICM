@@ -1,13 +1,18 @@
 # Build artifacts
+bench_grid
 bench_avx2
 bench_avx512
 bench_topk
+calibrate
 calibrate_B
 
-# Generated data
+# Generated data (from calibration/benchmarking)
 calibration.csv
+fft_config.h
+fftw_wisdom.dat
 **/cpu_*.csv
 **/*.png
+zen4_*.txt
 
 # OS
 .DS_Store
