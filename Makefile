@@ -1,70 +1,49 @@
-# ICM Calculator — Makefile
+# ICM Equity Computation — Makefile
 #
-# Targets:
-#   make               AVX2 full-n benchmark → bench_avx2
-#   make avx512        AVX2 + AVX-512 → bench_avx512
-#   make topk          Top-k benchmark → bench_topk
-#   make calibrate     B-parameter profiler → calibrate_B
-#   make all           Build everything available
-#   make test          Quick correctness check
-#   make clean         Remove build artifacts
+# Usage:
+#   make                    # serial build for current device
+#   make parallel           # OpenMP build
+#   make DEVICE=zen4        # build for a different device
+#   make test               # quick verify
+#   make bench              # full benchmark grid
 
-CC       = gcc
-CFLAGS   = -O3 -march=native -mavx2 -mfma -Wall -Wextra
-LDFLAGS  = -lm
-AVX512   = -mavx512f -mavx512dq
+DEVICE ?= m3_max
 
-COMMON   = icm_common.c icm_detect.c
-AVX2     = icm_avx2.c
-AVX512_F = icm_avx512.c
-TOPK     = icm_topk.c
+CC = gcc
+CFLAGS = -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function
+INCLUDES = -Isrc -Idevices/$(DEVICE) -I/opt/homebrew/include
+LDFLAGS = -L/opt/homebrew/lib -lfftw3 -lm
 
-# ── CPU targets ──────────────────────────────────────────────
-.PHONY: default avx512 topk calibrate all test plot clean
+# macOS Accelerate framework (vvexp)
+UNAME := $(shell uname)
+ifeq ($(UNAME),Darwin)
+  LDFLAGS += -framework Accelerate
+endif
 
-default: bench_avx2
+# OpenMP (macOS with brew install libomp)
+OMP_CFLAGS = -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include
+OMP_LDFLAGS = -L/opt/homebrew/opt/libomp/lib -lomp -lfftw3_threads
 
-bench_avx2: bench.c $(COMMON) $(AVX2) icm.h
-	$(CC) $(CFLAGS) -o $@ bench.c $(COMMON) $(AVX2) $(LDFLAGS)
+SRC = bench/bench.c
+OUT = bench_grid
 
-avx512: bench_avx512
+.PHONY: all parallel test bench calibrate clean
 
-bench_avx512: bench.c $(COMMON) $(AVX2) $(AVX512_F) icm.h
-	$(CC) $(CFLAGS) $(AVX512) -o $@ bench.c $(COMMON) $(AVX2) $(AVX512_F) $(LDFLAGS)
+all:
+	$(CC) $(CFLAGS) $(INCLUDES) -o $(OUT) $(SRC) $(LDFLAGS)
 
-topk: bench_topk
+parallel:
+	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -o $(OUT) $(SRC) $(LDFLAGS) $(OMP_LDFLAGS)
 
-bench_topk: bench_topk.c $(COMMON) $(AVX2) $(TOPK) icm.h
-	$(CC) $(CFLAGS) -o $@ bench_topk.c $(COMMON) $(AVX2) $(TOPK) $(LDFLAGS)
+test: all
+	./$(OUT) quick
 
-calibrate: calibrate_B
+bench: all
+	caffeinate -i nice -20 ./$(OUT) quick
 
-calibrate_B: calibrate_B.c
-	$(CC) $(CFLAGS) -o $@ calibrate_B.c $(LDFLAGS)
-
-# ── Convenience ──────────────────────────────────────────────
-
-all: default topk calibrate
-	-$(MAKE) avx512 2>/dev/null || true
-
-test: bench_avx2 bench_topk
-	@echo "=== Full-n quick test ==="
-	./bench_avx2 --quick 2>&1 | tail -10
-	@echo ""
-	@echo "=== Top-k quick test ==="
-	./bench_topk 512 256 2>&1 | head -20
-
-# Run B-parameter calibration and analysis on this CPU
-calibrate-analyze: calibrate_B
-	@echo "Running calibration (M1 + M4)..."
-	./calibrate_B 1 > calibration.csv
-	./calibrate_B 4 >> calibration.csv
-	@echo "Analyzing..."
-	python3 analyze_calibration.py calibration.csv
-
-plot:
-	python3 plot_results.py
+calibrate:
+	$(CC) $(CFLAGS) $(INCLUDES) -o calibrate tools/calibrate.c $(LDFLAGS)
+	@echo "Run: ./calibrate (then copy fft_config.h + fftw_wisdom.dat to devices/$(DEVICE)/)"
 
 clean:
-	rm -f bench_avx2 bench_avx512 bench_topk calibrate_B
-	rm -f cpu_*.csv calibration.csv *.png
+	rm -f $(OUT) calibrate
