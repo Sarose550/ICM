@@ -85,12 +85,17 @@ echo "--- Step 7: Crossover sweep (linear vs hybrid) ---"
 taskset -c 0 nice -20 ./bench_grid crossover 2>&1 | tee zen4_crossover.txt
 echo ""
 
-# ── Step 8: Full serial benchmark grid ──
-echo "--- Step 8: Full serial benchmark ---"
-taskset -c 0 nice -20 ./bench_grid 2>&1 | tee zen4_serial.txt
+# ── Step 8: Full serial benchmark grid (5 runs, take median) ──
+echo "--- Step 8: Full serial benchmark (5 runs) ---"
+for run in 1 2 3 4 5; do
+    echo "  Run $run/5..."
+    taskset -c 0 nice -20 ./bench_grid 2>&1 | tee zen4_serial_run${run}.txt
+    echo ""
+done
+echo "  All 5 serial runs complete. Files: zen4_serial_run{1..5}.txt"
 echo ""
 
-# ── Step 9: Build parallel and benchmark ──
+# ── Step 9: Build parallel and benchmark (5 runs) ──
 echo "--- Step 9: Building bench_grid (parallel, 16 threads) ---"
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
     -fopenmp -Isrc -Idevices/zen4 -I/usr/local/include \
@@ -99,8 +104,13 @@ gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
 echo "  Build OK"
 echo ""
 
-echo "--- Step 9b: Parallel benchmark (16 threads) ---"
-OMP_NUM_THREADS=16 nice -20 ./bench_grid 2>&1 | tee zen4_parallel_16t.txt
+echo "--- Step 9b: Parallel benchmark (16 threads, 5 runs) ---"
+for run in 1 2 3 4 5; do
+    echo "  Run $run/5..."
+    OMP_NUM_THREADS=16 nice -20 ./bench_grid 2>&1 | tee zen4_parallel_16t_run${run}.txt
+    echo ""
+done
+echo "  All 5 parallel runs complete. Files: zen4_parallel_16t_run{1..5}.txt"
 echo ""
 
 # ── Step 10: Rebuild serial for remaining tests ──
