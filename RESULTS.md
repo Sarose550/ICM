@@ -67,33 +67,42 @@ n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
 64       0      1      1      0      0      1
 128      1      1      2      1      1      2
 256      1      2      4      3      4      4
-512      3      5      8      8      9     10
-1024     5      9     15     19     21     22
-2048     6     13     26     44     49     52
-4096     7     14     28    102    114    121
-8192    14     29     52    239    270    283
-16384   49    108    231    577    658    714
-32768   95    243    524   1380   1533   1622
-65536  191    668   1059   3296   3636   3955
+512      3      5      7      8      9     10
+1024     5      9     15     19     22     24
+2048     3      7     15     47     51     55
+4096     7     14     28    109    119    130
+8192    15     29     56    251    287    296
+16384   29     65    114    604    640    690
+32768   71    132    219   1360   1517   1597
+65536  142    259    510   3198   3473   3861
 ```
 
 ### 16-thread parallel (ms, Q=256, uniform stacks, median of 5)
 
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
+64       0      0      0      0      0      0
+128      0      0      0      0      0      0
 256      0      0      0      0      0      0
+512      0      0      1      1      1      1
 1024     0      1      1      1      2      2
-4096     2      4      4      7      9      9
-8192     4      8      8     17     20     22
+2048     0      2      2      3      4      4
+4096     2      4      4      8      9      9
+8192     4      8      8     18     21     24
+16384    8     15     17     46     59     67
+32768   16     32     58    159    179    212
+65536   36    122    197    384    423    551
 ```
 
 ### Parallel speedup (n=8192 k=n)
 
 ```
 Threads  Serial  Parallel  Speedup
-1        283     —         —
-16       —       22        12.9x
+1        296     —         —
+16       —       24        12.3x
 ```
+
+### 1-second threshold: n ≈ 19,904 (k=n, single-threaded)
 
 ### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32)
 
@@ -109,22 +118,22 @@ FFTW+MKL per-size best-of-both via `dlopen`. MKL wins 181/749 smooth sizes
 
 | k | M3 Max | Zen 4 |
 |---|---|---|
-| k=10 | L:14 | L:14 |
+| k=10 | L:14 | L:15 |
 | k=50 | L:50 | L:29 |
-| k=100 | L:115 | L:52 |
-| k=n/4 | H:287 | H:239 |
-| k=n/2 | H:318 | H:270 |
-| k=n | H:350 | H:283 |
+| k=100 | L:115 | L:56 |
+| k=n/4 | H:287 | H:251 |
+| k=n/2 | H:318 | H:287 |
+| k=n | H:350 | H:296 |
 
-Zen 4 wins at all k values: 2x faster at small k (AVX-512 linear engine),
-17-19% faster at large k (calibrated FFT tree + FFTW PATIENT wisdom).
+Zen 4 wins at all k values: ~2x faster at small k (AVX-512 linear engine),
+12-16% faster at large k (calibrated FFT tree + FFTW PATIENT wisdom).
 
 ## Head-to-head (16-thread, n=8192 k=n)
 
 | Machine | Time | Speedup vs M3 Max |
 |---|---|---|
 | M3 Max (12P+4E) | 37ms | 1.0x |
-| Zen 4 7950X (16P) | 22ms | 1.68x |
+| Zen 4 7950X (16P) | 24ms | 1.54x |
 
 ## Key optimizations by device
 
