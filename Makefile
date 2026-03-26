@@ -23,7 +23,8 @@ ifeq ($(UNAME),Darwin)
   OMP_CFLAGS  = -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include
   OMP_LDFLAGS = -L/opt/homebrew/opt/libomp/lib -lomp -lfftw3_threads
 else
-  # Linux: native OpenMP, system FFTW
+  # Linux: native OpenMP, system FFTW, dlopen for MKL dual dispatch
+  LDFLAGS += -ldl
   OMP_CFLAGS  = -fopenmp
   OMP_LDFLAGS = -lfftw3_threads -lpthread
 endif

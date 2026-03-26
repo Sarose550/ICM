@@ -21,6 +21,10 @@ make DEVICE=zen4
 # Calibrate a new device (generates fft_config.h + fftw_wisdom.dat)
 gcc -O3 -march=native -o calibrate tools/calibrate.c -lfftw3 -lm
 ./calibrate
+
+# Dual-library calibration (FFTW vs MKL, Linux only — run after calibrate)
+gcc -O3 -march=native -o calibrate_dual tools/calibrate_dual.c -ldl -lm
+MKL_THREADING_LAYER=SEQUENTIAL ./calibrate_dual
 ```
 
 ## Test
@@ -88,17 +92,17 @@ All tuning constants live in `devices/<DEVICE>/fft_config.h` as `#define`s:
 
 | Constant | M3 Max | Zen 4 | What | How to measure |
 |---|---|---|---|---|
-| `FMA_NS` | 0.25 | 0.08 | ns per scalar FMA | `./bench_grid profile` (schoolbook row) |
-| `FFT_OVERHEAD_NS` | 40.0 | 48.0 | Per-call FFT overhead | `./bench_grid profile` (overhead table) |
+| `FMA_NS` | 0.25 | 0.13 | ns per scalar FMA | `./bench_grid profile` (schoolbook row) |
+| `POLYMUL_FMA_NS` | 0.13 | 0.135 | Memory-bound FMA (batched linear) | `./bench_grid bench` + calculation |
+| `FFT_OVERHEAD_NS` | 40.0 | 50.0 | Per-call FFT overhead | `./bench_grid profile` (overhead table) |
 | `PAIRED_CACHED_CORR_RATIO` | 1.03 | 1.08 | Paired correlate / full pipeline | `./bench_grid profile` (phase split) |
-| `INDEP_PAIR_RATIO` | 1.25 | 1.30 | correlate_fft_pair / full pipeline | `./bench_grid profile` (phase split) |
-| `K_CROSS_BATCHED` | 120 | 275 | Linear→hybrid crossover (bench_grid sweep only) | `./bench_grid crossover` |
-| `K_CROSS_PLAIN` | 70 | 90 | Linear→hybrid crossover (bench_grid sweep only) | `./bench_grid crossover` |
+| `INDEP_PAIR_RATIO` | 1.25 | 1.35 | correlate_fft_pair / full pipeline | `./bench_grid profile` (phase split) |
 | `L2_CACHE_SIZE` | 32MB | 1MB | Per-core L2 for checkpointing | Hardware spec |
 | `AMX_TILE_NS` | 2.0 | n/a | AMX outer product cost (Apple only) | `tools/bench_amx` |
 | `AMX_PERCOL_NS` | 69.0 | n/a | AMX per-column extraction cost | `tools/bench_amx` |
 | `AMX_SCHOOL_MIN_DEG` | 160 | n/a | AMX schoolbook crossover | `tools/bench_amx` |
 | `calib_sizes[]` / `calib_times_ns[]` | 749 entries | 749 entries | Per-size FFT costs | `tools/calibrate` |
+| `calib_lib[]` | n/a | 749 entries | FFTW(0) vs MKL(1) per size | `tools/calibrate_dual` |
 
 Auto-tuned at runtime (no manual tuning needed):
 | Feature | What |
@@ -108,7 +112,8 @@ Auto-tuned at runtime (no manual tuning needed):
 | `ckpt_interval_batched()` | Checkpoint interval sized to fit L2 cache |
 | BQ=8 (all platforms) | Batched linear width, interleaved layout for cache efficiency |
 | vDSP dispatch | FFT backend: vDSP at supported sizes on Apple Silicon, FFTW elsewhere |
-| `calib_times_ns[]` | M3 Max calibration includes vDSP dispatch times where applicable |
+| MKL dispatch | FFT backend: MKL via dlopen at calibrated sizes on Linux, FFTW elsewhere |
+| `calib_times_ns[]` | M3 Max: includes vDSP dispatch times. Zen 4: min(FFTW, MKL) |
 
 ## Directory Structure
 
@@ -121,7 +126,8 @@ src/
 bench/
   bench.c              — benchmark harness, verification, tuning tools
 tools/
-  calibrate.c          — FFT calibration (generates fft_config.h + wisdom)
+  calibrate.c          — FFTW calibration (generates fft_config.h + wisdom)
+  calibrate_dual.c     — FFTW vs MKL dual calibration (generates calib_lib[])
 devices/
   m3_max/              — Apple M3 Max calibration
     fft_config.h       — calibrated FFT times + cost model constants
@@ -145,9 +151,11 @@ After ANY change, run `./bench_grid quick` and confirm ALL TESTS PASSED.
 1. Run `tools/calibrate` on the target machine → produces `fft_config.h` + `fftw_wisdom.dat`
 2. Copy to `devices/<DEVICE>/`
 3. `make DEVICE=<DEVICE>` and `./bench_grid profile` to measure platform constants
-4. Update `#define`s in `fft_config.h` (FMA_NS, FFT_OVERHEAD_NS, L2_CACHE_SIZE, etc.)
+4. Update `#define`s in `fft_config.h` (FMA_NS, POLYMUL_FMA_NS, FFT_OVERHEAD_NS, etc.)
 5. On Apple Silicon: vDSP dispatch is automatic. Recalibrate `calib_times_ns[]`
    to reflect actual dispatch cost (run `tools/bench_amx` for AMX constants).
-6. `./bench_grid verify` then `./bench_grid` for final numbers
-7. Engine dispatch is cost-based (`select_engine`), no K_CROSS tuning needed.
+6. On Linux with MKL: run `tools/calibrate_dual` → adds `calib_lib[]` + updates
+   `calib_times_ns[]` with min(FFTW, MKL). MKL dispatch via dlopen is automatic.
+7. `./bench_grid verify` then `./bench_grid` for final numbers
+8. Engine dispatch is cost-based (`select_engine`), no K_CROSS tuning needed.
    `./bench_grid crossover` can verify the dispatch decisions are correct.

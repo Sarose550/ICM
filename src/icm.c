@@ -20,6 +20,52 @@
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 #endif
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
+#include "amx.h"
+
+/* ══════════════════════════════════════════════════════════════
+   MKL DUAL DISPATCH — runtime dlopen on Linux
+   MKL's FFTW wrapper has identical output format to FFTW (no repacking).
+   Plans created by MKL must be executed by MKL's fftw_execute.
+   ══════════════════════════════════════════════════════════════ */
+
+#ifdef __linux__
+typedef fftw_plan (*mkl_plan_r2c_fn)(int, double*, fftw_complex*, unsigned);
+typedef fftw_plan (*mkl_plan_c2r_fn)(int, fftw_complex*, double*, unsigned);
+typedef void (*mkl_execute_fn)(const fftw_plan);
+typedef void (*mkl_execute_r2c_fn)(const fftw_plan, double*, fftw_complex*);
+typedef void (*mkl_destroy_fn)(fftw_plan);
+
+static struct {
+    void *handle;
+    mkl_plan_r2c_fn plan_r2c;
+    mkl_plan_c2r_fn plan_c2r;
+    mkl_execute_fn execute;
+    mkl_execute_r2c_fn execute_r2c;
+    mkl_destroy_fn destroy_plan;
+} mkl = {0};
+
+static int mkl_available = 0;
+
+static void mkl_init(void) {
+    if (mkl.handle) return;
+    setenv("MKL_THREADING_LAYER", "SEQUENTIAL", 0);
+    mkl.handle = dlopen("libmkl_rt.so", RTLD_NOW | RTLD_LOCAL);
+    if (!mkl.handle)
+        mkl.handle = dlopen("/opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_rt.so",
+                            RTLD_NOW | RTLD_LOCAL);
+    if (!mkl.handle) return;
+    mkl.plan_r2c    = (mkl_plan_r2c_fn)dlsym(mkl.handle, "fftw_plan_dft_r2c_1d");
+    mkl.plan_c2r    = (mkl_plan_c2r_fn)dlsym(mkl.handle, "fftw_plan_dft_c2r_1d");
+    mkl.execute     = (mkl_execute_fn)dlsym(mkl.handle, "fftw_execute");
+    mkl.execute_r2c = (mkl_execute_r2c_fn)dlsym(mkl.handle, "fftw_execute_dft_r2c");
+    mkl.destroy_plan = (mkl_destroy_fn)dlsym(mkl.handle, "fftw_destroy_plan");
+    if (mkl.plan_r2c && mkl.plan_c2r && mkl.execute && mkl.execute_r2c && mkl.destroy_plan)
+        mkl_available = 1;
+}
+#endif /* __linux__ */
 
 /* Number of OpenMP threads for quadrature parallelism */
 #ifndef OMP_NUM_THREADS_DEFAULT
@@ -119,24 +165,136 @@ static int next_pow2(int n);
    FFTW PLAN CACHE — create once, reuse across all quad points
    ══════════════════════════════════════════════════════════════ */
 
+/* ══════════════════════════════════════════════════════════════
+   FFT PLAN CACHE — FFTW + vDSP interleaved dual-dispatch.
+
+   On Apple Silicon, vDSP's interleaved-complex DFT API is 5-23% faster
+   than FFTW at supported sizes (f × 2^g where f ∈ {1,3,5,15}, g ≥ 4).
+   It uses the SAME memory format as FFTW (interleaved double pairs),
+   so dispatch is nearly zero-overhead: just call a different execute
+   function and fix up DC/Nyquist packing in bin 0.
+
+   vDSP r2c packing: out[0] = DC + j*Nyquist (both purely real, packed).
+   FFTW r2c packing: cbuf[0] = DC+0i, cbuf[N/2] = Nyquist+0i (separate).
+   Fixup: 2 scalar copies per forward, 2 per inverse. Negligible.
+   ══════════════════════════════════════════════════════════════ */
+
 typedef struct {
-    int fft_n;            /* padded size (FFTW-friendly composite) */
-    fftw_plan fwd_plan;   /* r2c forward */
-    fftw_plan inv_plan;   /* c2r inverse */
+    int fft_n;            /* padded size */
+    fftw_plan fwd_plan;   /* r2c forward (FFTW) */
+    fftw_plan inv_plan;   /* c2r inverse (FFTW) */
     double *rbuf;         /* real buffer [fft_n] */
-    fftw_complex *cbuf;   /* complex buffer [fft_n/2+1] */
+    fftw_complex *cbuf;   /* complex buffer [fft_n/2+1] — used by BOTH backends */
+#ifdef __APPLE__
+    int use_vdsp;                          /* 1 if vDSP handles this size */
+    vDSP_DFT_Interleaved_SetupD vdsp_fwd; /* interleaved r2c forward */
+    vDSP_DFT_Interleaved_SetupD vdsp_inv; /* interleaved c2r inverse */
+#endif
+#ifdef __linux__
+    int use_mkl;              /* 1 if MKL handles this size (from calib_lib[]) */
+    fftw_plan mkl_fwd_plan;   /* MKL r2c plan (opaque, incompatible with FFTW) */
+    fftw_plan mkl_inv_plan;   /* MKL c2r plan */
+#endif
 } FFTPlan;
 
 typedef struct {
-    FFTPlan *plans;       /* dynamically allocated array of FFTW-friendly sizes */
-    int n_plans;
-    int plans_cap;        /* allocated capacity */
-    /* Scratch buffers for polymul/correlate (second operand) */
+    FFTPlan *plans;
+    int n_plans, plans_cap;
     double *rbuf2;
     fftw_complex *cbuf2;
-    fftw_complex *cbuf3;  /* extra buffer for correlate_fft_pair (saves FFT(g)) */
+    fftw_complex *cbuf3;  /* saved FFT(g) for correlate_fft_pair */
     int max_fft_n;
 } FFTCache;
+
+/* ── vDSP interleaved dispatch ──────────────────────────────
+ * vDSP r2c with DFT length N/2 operates on DSPDoubleComplex arrays,
+ * which are layout-compatible with fftw_complex (both are double[2]).
+ * The only difference: bin 0 packing. vDSP: {DC, Nyquist}. FFTW: {DC, 0}.
+ * After forward: unpack bin 0. Before inverse: repack bin 0.
+ * Scaling: vDSP forward output = DFT × 2. Apply ×0.5 to match FFTW.
+ * vDSP inverse: apply ×2 to input, inverse gives IDFT (unnormalized = ×N).
+ * Measured: output is 2× FFTW, so apply final ×0.5. */
+
+/* vDSP scaling strategy (eliminates 2 of 3 vDSP_vsmulD per round-trip):
+ *
+ *   Forward:  output = DFT × 2 (no scaling — leave the ×2 factor in cbuf)
+ *   Forward2: same (cbuf2 also has ×2)
+ *   Pointwise: A × B = (2×DFT_a) × (2×DFT_b) = 4 × DFT_a × DFT_b
+ *   Inverse:  vDSP inverse of (4×product) = IDFT(4×product)/2 = 2 × N × conv
+ *             Scale output by 0.5 → N × conv = FFTW convention. ✓
+ *
+ * Only ONE vDSP_vsmulD per round-trip (on the real output, after inverse).
+ * The ×2 factor in cbuf is transparent to pointwise multiply and caching
+ * because both operands carry the same factor at any given tree level. */
+
+static inline void fft_exec_fwd(FFTPlan *p) {
+#ifdef __APPLE__
+    if (p->use_vdsp) {
+        int hn = p->fft_n / 2;
+        vDSP_DFT_Interleaved_ExecuteD(p->vdsp_fwd,
+            (const DSPDoubleComplex *)p->rbuf, (DSPDoubleComplex *)p->cbuf);
+        /* Unpack bin 0 only: vDSP {DC, Nyquist} → FFTW {DC, 0} + {Nyq, 0} */
+        double nyq = p->cbuf[0][1];
+        p->cbuf[0][1] = 0.0;
+        p->cbuf[hn][0] = nyq;
+        p->cbuf[hn][1] = 0.0;
+        return;
+    }
+#endif
+#ifdef __linux__
+    if (p->use_mkl) { mkl.execute(p->mkl_fwd_plan); return; }
+#endif
+    fftw_execute(p->fwd_plan);
+}
+
+static inline void fft_exec_fwd2(FFTPlan *p, FFTCache *fc) {
+#ifdef __APPLE__
+    if (p->use_vdsp) {
+        int hn = p->fft_n / 2;
+        vDSP_DFT_Interleaved_ExecuteD(p->vdsp_fwd,
+            (const DSPDoubleComplex *)fc->rbuf2, (DSPDoubleComplex *)fc->cbuf2);
+        double nyq = fc->cbuf2[0][1];
+        fc->cbuf2[0][1] = 0.0;
+        fc->cbuf2[hn][0] = nyq;
+        fc->cbuf2[hn][1] = 0.0;
+        return;
+    }
+#endif
+#ifdef __linux__
+    if (p->use_mkl) { mkl.execute_r2c(p->mkl_fwd_plan, fc->rbuf2, fc->cbuf2); return; }
+#endif
+    fftw_execute_dft_r2c(p->fwd_plan, fc->rbuf2, fc->cbuf2);
+}
+
+static inline void fft_exec_inv(FFTPlan *p) {
+#ifdef __APPLE__
+    if (p->use_vdsp) {
+        int n = p->fft_n, hn = n / 2;
+        /* Repack bin 0: cbuf[hn] → cbuf[0].imag for vDSP convention */
+        p->cbuf[0][1] = p->cbuf[hn][0];
+        /* Execute inverse (cbuf carries ×2 or ×4 from forward+pointwise —
+         * vDSP inverse divides by 2, giving the correct IDFT × {1 or 2}) */
+        vDSP_DFT_Interleaved_ExecuteD(p->vdsp_inv,
+            (const DSPDoubleComplex *)p->cbuf, (DSPDoubleComplex *)p->rbuf);
+        /* Scale output: vDSP_inv(X) = X×N. The full pipeline has:
+         * fwd(a)=2A, fwd2(b)=2B, pw=4AB, inv(4AB)=4NAB.
+         * FFTW gives NAB. So scale by 0.25.
+         * For paths with only one forward (e.g., cached correlate where
+         * one operand is pre-transformed): pw=2A×cached(2B)=4AB → same factor.
+         * For paths with no pointwise (bare fwd+inv round-trip): NOT used
+         * in the codebase (all inv calls follow a pointwise multiply). */
+        double quarter = 0.25;
+        vDSP_vsmulD(p->rbuf, 1, &quarter, p->rbuf, 1, n);
+        /* Restore cbuf bin 0 (in case cbuf is reused for caching) */
+        p->cbuf[0][1] = 0.0;
+        return;
+    }
+#endif
+#ifdef __linux__
+    if (p->use_mkl) { mkl.execute(p->mkl_inv_plan); return; }
+#endif
+    fftw_execute(p->inv_plan);
+}
 
 /* Create FFT plan cache for a specific set of FFT sizes.
  * sizes[]: array of FFTW-friendly sizes to create plans for (must be sorted ascending).
@@ -169,6 +327,51 @@ static FFTCache *fft_cache_create_sizes(const int *sizes, int n_sizes) {
             p->fwd_plan = fftw_plan_dft_r2c_1d(sz, p->rbuf, p->cbuf, FFTW_ESTIMATE);
             p->inv_plan = fftw_plan_dft_c2r_1d(sz, p->cbuf, p->rbuf, FFTW_ESTIMATE);
         }
+#ifdef __APPLE__
+        /* vDSP interleaved DFT: 5-51% faster than FFTW at supported sizes.
+         * Overhead per call: ~2ns (bin-0 unpack, 2 scalar copies) — negligible.
+         * The ×2 scaling from vDSP forward is absorbed into pointwise multiply
+         * and corrected once in the inverse (single vDSP_vsmulD on real output).
+         * Supported: f × 2^g where f ∈ {1,3,5,15}, g ≥ 4 (min DFT length 16). */
+        p->vdsp_fwd = NULL;
+        if (sz >= 32 && (sz % 2 == 0)) {
+            p->vdsp_fwd = vDSP_DFT_Interleaved_CreateSetupD(NULL, sz / 2,
+                vDSP_DFT_FORWARD, vDSP_DFT_Interleaved_RealtoComplex);
+        }
+        if (p->vdsp_fwd) {
+            p->vdsp_inv = vDSP_DFT_Interleaved_CreateSetupD(p->vdsp_fwd, sz / 2,
+                vDSP_DFT_INVERSE, vDSP_DFT_Interleaved_RealtoComplex);
+            p->use_vdsp = (p->vdsp_inv != NULL);
+            if (!p->use_vdsp) {
+                vDSP_DFT_Interleaved_DestroySetupD(p->vdsp_fwd);
+                p->vdsp_fwd = NULL;
+            }
+        } else {
+            p->use_vdsp = 0;
+            p->vdsp_inv = NULL;
+        }
+#endif
+#ifdef __linux__
+        p->use_mkl = 0;
+#ifdef HAS_CALIB_LIB
+        if (mkl_available) {
+            int lo = 0, hi = N_CALIBRATED_SIZES - 1;
+            while (lo < hi) { int mid = (lo+hi)>>1; if (calib_sizes[mid] < sz) lo = mid+1; else hi = mid; }
+            if (lo < N_CALIBRATED_SIZES && calib_sizes[lo] == sz && calib_lib[lo] == 1) {
+                p->mkl_fwd_plan = mkl.plan_r2c(sz, p->rbuf, p->cbuf, FFTW_ESTIMATE);
+                p->mkl_inv_plan = mkl.plan_c2r(sz, p->cbuf, p->rbuf, FFTW_ESTIMATE);
+                if (p->mkl_fwd_plan && p->mkl_inv_plan) {
+                    p->use_mkl = 1;
+                } else {
+                    if (p->mkl_fwd_plan) mkl.destroy_plan(p->mkl_fwd_plan);
+                    if (p->mkl_inv_plan) mkl.destroy_plan(p->mkl_inv_plan);
+                    p->mkl_fwd_plan = NULL;
+                    p->mkl_inv_plan = NULL;
+                }
+            }
+        }
+#endif /* HAS_CALIB_LIB */
+#endif /* __linux__ */
         fc->n_plans++;
     }
 
@@ -189,6 +392,16 @@ static void fft_cache_destroy(FFTCache *fc) {
         fftw_destroy_plan(fc->plans[i].inv_plan);
         fftw_free(fc->plans[i].rbuf);
         fftw_free(fc->plans[i].cbuf);
+#ifdef __APPLE__
+        if (fc->plans[i].vdsp_fwd) vDSP_DFT_Interleaved_DestroySetupD(fc->plans[i].vdsp_fwd);
+        if (fc->plans[i].vdsp_inv) vDSP_DFT_Interleaved_DestroySetupD(fc->plans[i].vdsp_inv);
+#endif
+#ifdef __linux__
+        if (fc->plans[i].use_mkl) {
+            mkl.destroy_plan(fc->plans[i].mkl_fwd_plan);
+            mkl.destroy_plan(fc->plans[i].mkl_inv_plan);
+        }
+#endif
     }
     free(fc->plans);
     fftw_free(fc->rbuf2);
@@ -270,6 +483,174 @@ static void correlate_school(const double *restrict g, int len_g,
         out[m] = sum;
     }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   AMX SCHOOLBOOK KERNELS — FP64 outer-product tiled multiplication
+   Uses lazy block-column accumulation (IACR CiC 2024, Section 4.3).
+   ══════════════════════════════════════════════════════════════ */
+
+/* Set USE_AMX=0 to disable AMX codepaths for A/B testing */
+#ifndef USE_AMX
+#define USE_AMX 1
+#endif
+
+#if HAS_AMX && USE_AMX && USE_AMX
+
+/* Minimum degree for AMX schoolbook to beat scalar.
+ * Below this, scalar polymul_modk / correlate_school is used.
+ * Tuned empirically: AMX setup + load overhead dominates at small sizes. */
+/* AMX polymul crossover: measured at d≈170 (AMX wins above this).
+ * Below this, scalar polymul_modk with NEON auto-vectorization is faster.
+ * With mmap page isolation this could drop to ~90. */
+#ifndef AMX_SCHOOL_MIN_DEG
+#define AMX_SCHOOL_MIN_DEG 160
+#endif
+
+/* Aligned workspace for AMX kernels (thread-local via engine context).
+ * amx_ws must be 128-byte aligned and hold at least:
+ *   - pad_a: ceil(na/8)*8 doubles (padded input a)
+ *   - pad_b: ceil(nb/8)*8 doubles (padded input b)
+ *   - c_lo:  8 doubles  (VECFP low anti-diag output)
+ *   - c_hi:  8 doubles  (VECFP high anti-diag output)
+ *   - ones:  8 doubles  (all 1.0 for VECFP multiply-by-1)
+ *   - zeros: 8 doubles  (zero buffer for LDZ/LDY)
+ */
+
+static void polymul_modk_amx(const double *restrict a, int na,
+                              const double *restrict b, int nb,
+                              double *restrict c, int k,
+                              double *amx_ws) {
+    memset(c, 0, k * sizeof(double));
+    int na8 = (na + 7) & ~7, nb8 = (nb + 7) & ~7;
+    int nxa = na8 >> 3, nyb = nb8 >> 3;
+
+    /* Partition workspace: pad_a | pad_b | c_lo | c_hi | ones | zeros */
+    double *pad_a = amx_ws;
+    double *pad_b = pad_a + na8;
+    double *c_lo  = pad_b + nb8;
+    double *c_hi  = c_lo + 8;
+    double *ones  = c_hi + 8;
+    double *zeros = ones + 8;
+
+    memset(pad_a, 0, na8 * sizeof(double));
+    memset(pad_b, 0, nb8 * sizeof(double));
+    memcpy(pad_a, a, na * sizeof(double));
+    memcpy(pad_b, b, nb * sizeof(double));
+    for (int i = 0; i < 8; i++) ones[i] = 1.0;
+    memset(zeros, 0, 64);
+
+    int max_col = nxa + nyb - 2;
+
+    for (int col = 0; col <= max_col; col++) {
+        int base = col << 3;
+        if (base >= k) break;
+
+        /* Accumulate all outer products a_p ⊗ b_q where p+q = col */
+        int first = 1;
+        for (int p = (col < nxa ? col : nxa - 1); p >= 0; p--) {
+            int q = col - p;
+            if (q >= nyb) continue;
+            AMX_LDX(amx_ldx_op(pad_a + (p << 3), 0));
+            AMX_LDY(amx_ldy_op(pad_b + (q << 3), 0));
+            AMX_FMA64(amx_fma64_outer(0, 0, 0, first));
+            first = 0;
+        }
+        if (first) continue;
+
+        /* VECFP in-register extraction: anti-diagonal sums → c_lo, c_hi */
+        amx_extract_setup(ones, zeros);
+        amx_extract_antidiag_vecfp(c_lo, c_hi, 0, zeros);
+
+        /* Accumulate into output (with bounds checking) */
+        int remain = k - base;
+        int nlo = remain < 8 ? remain : 8;
+        for (int i = 0; i < nlo; i++) c[base + i] += c_lo[i];
+        if (remain > 8) {
+            int nhi = remain - 8;
+            if (nhi > 7) nhi = 7;
+            for (int i = 0; i < nhi; i++) c[base + 8 + i] += c_hi[i];
+        }
+    }
+}
+
+static void correlate_school_amx(const double *restrict g, int len_g,
+                                  const double *restrict P, int len_P,
+                                  double *restrict out, int len_out,
+                                  double *amx_ws) {
+    /*
+     * out[m] = Σ_j P[j] * g[m+j]  for m = 0..len_out-1
+     *
+     * Implemented as conv(P_rev, g) with anti-diagonal extraction:
+     *   P_rev[i] = P[len_P - 1 - i]
+     *   out[m] = conv(P_rev, g)[m + len_P - 1]
+     *
+     * This maps directly to the polymul anti-diagonal tiling because
+     * i+j anti-diagonals of the outer product P_rev ⊗ g naturally
+     * accumulate across block columns (unlike i-j diagonals which don't).
+     */
+    int conv_len = len_P + len_g - 1;
+    int nP8 = (len_P + 7) & ~7, ng8 = (len_g + 7) & ~7;
+    int nxa = nP8 >> 3, nyb = ng8 >> 3;
+
+    /* Partition workspace: pad_Prev | pad_g | c_lo | c_hi | ones | zeros */
+    double *pad_Prev = amx_ws;
+    double *pad_g    = pad_Prev + nP8;
+    double *c_lo     = pad_g + ng8;
+    double *c_hi     = c_lo + 8;
+    double *ones     = c_hi + 8;
+    double *zeros    = ones + 8;
+
+    /* Reverse P into padded buffer */
+    memset(pad_Prev, 0, nP8 * sizeof(double));
+    for (int i = 0; i < len_P; i++) pad_Prev[i] = P[len_P - 1 - i];
+
+    memset(pad_g, 0, ng8 * sizeof(double));
+    memcpy(pad_g, g, len_g * sizeof(double));
+    for (int i = 0; i < 8; i++) ones[i] = 1.0;
+    memset(zeros, 0, 64);
+
+    /* Compute conv(P_rev, g) using polymul block-column tiling.
+     * Only extract the range [len_P-1 .. len_P-1+len_out-1] into out[]. */
+    memset(out, 0, len_out * sizeof(double));
+    int max_col = nxa + nyb - 2;
+    int out_start = len_P - 1;  /* conv index where out[0] lives */
+
+    for (int col = 0; col <= max_col; col++) {
+        int base = col << 3;
+        if (base + 14 < out_start) continue;         /* before needed range */
+        if (base > out_start + len_out - 1) break;   /* past needed range */
+
+        /* Accumulate outer products P_rev_p ⊗ g_q where p+q = col */
+        int first = 1;
+        for (int p = (col < nxa ? col : nxa - 1); p >= 0; p--) {
+            int q = col - p;
+            if (q >= nyb) continue;
+            AMX_LDX(amx_ldx_op(pad_Prev + (p << 3), 0));
+            AMX_LDY(amx_ldy_op(pad_g + (q << 3), 0));
+            AMX_FMA64(amx_fma64_outer(0, 0, 0, first));
+            first = 0;
+        }
+        if (first) continue;
+
+        /* VECFP anti-diagonal extraction → c_lo[0..7], c_hi[0..6] */
+        amx_extract_setup(ones, zeros);
+        amx_extract_antidiag_vecfp(c_lo, c_hi, 0, zeros);
+
+        /* Map conv indices to out indices: out[m] = conv[m + out_start] */
+        for (int d = 0; d < 8; d++) {
+            int conv_idx = base + d;
+            int m = conv_idx - out_start;
+            if (m >= 0 && m < len_out) out[m] += c_lo[d];
+        }
+        for (int d = 0; d < 7; d++) {
+            int conv_idx = base + 8 + d;
+            int m = conv_idx - out_start;
+            if (m >= 0 && m < len_out) out[m] += c_hi[d];
+        }
+    }
+}
+
+#endif /* HAS_AMX */
 
 /* ══════════════════════════════════════════════════════════════
    FFT KERNELS — polynomial multiply and correlate via FFTW
@@ -411,12 +792,12 @@ static void polymul_fft_cyclic(const double *a, int na,
     /* FFT(a): copy d+1 terms, zero-pad rest */
     memcpy(plan->rbuf, a, (d + 1) * sizeof(double));
     if (d + 1 < fft_n) memset(plan->rbuf + d + 1, 0, (fft_n - d - 1) * sizeof(double));
-    fftw_execute(plan->fwd_plan);
+    fft_exec_fwd(plan);
 
     /* FFT(b) */
     memcpy(fc->rbuf2, b, (d + 1) * sizeof(double));
     if (d + 1 < fft_n) memset(fc->rbuf2 + d + 1, 0, (fft_n - d - 1) * sizeof(double));
-    fftw_execute_dft_r2c(plan->fwd_plan, fc->rbuf2, fc->cbuf2);
+    fft_exec_fwd2(plan, fc);
 
     /* Pointwise multiply */
     for (int i = 0; i < cn; i++) {
@@ -427,7 +808,7 @@ static void polymul_fft_cyclic(const double *a, int na,
         plan->cbuf[i][0] = re;
         plan->cbuf[i][1] = im;
     }
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
 
     /* Extract: positions 0..fft_n-1 come from the IFFT (cyclic values).
      * Positions fft_n..2d come entirely from the correction below. */
@@ -475,14 +856,14 @@ static void polymul_fft_wrap(const double *a, int na,
     int copy_a = (na < fft_n) ? na : fft_n;
     memcpy(plan->rbuf, a, copy_a * sizeof(double));
     if (copy_a < fft_n) memset(plan->rbuf + copy_a, 0, (fft_n - copy_a) * sizeof(double));
-    fftw_execute(plan->fwd_plan);
+    fft_exec_fwd(plan);
     if (fft_a_out) memcpy(fft_a_out, plan->cbuf, cn * sizeof(fftw_complex));
 
     /* FFT(b) */
     int copy_b = (nb < fft_n) ? nb : fft_n;
     memcpy(fc->rbuf2, b, copy_b * sizeof(double));
     if (copy_b < fft_n) memset(fc->rbuf2 + copy_b, 0, (fft_n - copy_b) * sizeof(double));
-    fftw_execute_dft_r2c(plan->fwd_plan, fc->rbuf2, fc->cbuf2);
+    fft_exec_fwd2(plan, fc);
     if (fft_b_out) memcpy(fft_b_out, fc->cbuf2, cn * sizeof(fftw_complex));
 
     /* Pointwise multiply */
@@ -494,7 +875,7 @@ static void polymul_fft_wrap(const double *a, int na,
         plan->cbuf[i][0] = re;
         plan->cbuf[i][1] = im;
     }
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
 
     /* Extract cyclic result */
     int fft_out = (fft_n < k) ? fft_n : k;
@@ -534,14 +915,14 @@ static void polymul_fft_modk(const double *a, int na,
     /* FFT(a): copy data then zero-pad remainder only */
     memcpy(plan->rbuf, a, na * sizeof(double));
     if (na < fft_n) memset(plan->rbuf + na, 0, (fft_n - na) * sizeof(double));
-    fftw_execute(plan->fwd_plan);
+    fft_exec_fwd(plan);
     if (fft_a_out)
         memcpy(fft_a_out, plan->cbuf, cn * sizeof(fftw_complex));
 
     /* FFT(b): copy then zero-pad */
     memcpy(fc->rbuf2, b, nb * sizeof(double));
     if (nb < fft_n) memset(fc->rbuf2 + nb, 0, (fft_n - nb) * sizeof(double));
-    fftw_execute_dft_r2c(plan->fwd_plan, fc->rbuf2, fc->cbuf2);
+    fft_exec_fwd2(plan, fc);
     /* Cache FFT(b) if requested */
     if (fft_b_out)
         memcpy(fft_b_out, fc->cbuf2, cn * sizeof(fftw_complex));
@@ -556,7 +937,7 @@ static void polymul_fft_modk(const double *a, int na,
         plan->cbuf[i][1] = im;
     }
 
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
 
     int conv_len = na + nb - 1;
     int out_len = (conv_len < k) ? conv_len : k;
@@ -579,12 +960,12 @@ static void correlate_fft(const double *g, int len_g,
 
     memcpy(plan->rbuf, g, len_g * sizeof(double));
     if (len_g < fft_n) memset(plan->rbuf + len_g, 0, (fft_n - len_g) * sizeof(double));
-    fftw_execute(plan->fwd_plan);
+    fft_exec_fwd(plan);
 
     for (int j = 0; j < len_P; j++)
         fc->rbuf2[j] = P[len_P - 1 - j];
     if (len_P < fft_n) memset(fc->rbuf2 + len_P, 0, (fft_n - len_P) * sizeof(double));
-    fftw_execute_dft_r2c(plan->fwd_plan, fc->rbuf2, fc->cbuf2);
+    fft_exec_fwd2(plan, fc);
 
     for (int i = 0; i < cn; i++) {
         double re = plan->cbuf[i][0] * fc->cbuf2[i][0]
@@ -595,7 +976,7 @@ static void correlate_fft(const double *g, int len_g,
         plan->cbuf[i][1] = im;
     }
 
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
 
     int offset = len_P - 1;
     for (int m = 0; m < len_out; m++) {
@@ -619,7 +1000,7 @@ static void correlate_fft_pair(const double *g, int len_g,
     /* FFT(g) — done ONCE */
     memcpy(plan->rbuf, g, len_g * sizeof(double));
     if (len_g < fft_n) memset(plan->rbuf + len_g, 0, (fft_n - len_g) * sizeof(double));
-    fftw_execute(plan->fwd_plan);
+    fft_exec_fwd(plan);
 
     /* Save FFT(g) into cbuf3 — cbuf2 is used for FFT(P) below */
     fftw_complex *g_hat = fc->cbuf3;
@@ -628,12 +1009,12 @@ static void correlate_fft_pair(const double *g, int len_g,
     /* First correlate: g × PR → outL */
     for (int j = 0; j < len_P; j++) fc->rbuf2[j] = PR[len_P - 1 - j];
     if (len_P < fft_n) memset(fc->rbuf2 + len_P, 0, (fft_n - len_P) * sizeof(double));
-    fftw_execute_dft_r2c(plan->fwd_plan, fc->rbuf2, fc->cbuf2);
+    fft_exec_fwd2(plan, fc);
     for (int i = 0; i < cn; i++) {
         plan->cbuf[i][0] = g_hat[i][0]*fc->cbuf2[i][0] - g_hat[i][1]*fc->cbuf2[i][1];
         plan->cbuf[i][1] = g_hat[i][0]*fc->cbuf2[i][1] + g_hat[i][1]*fc->cbuf2[i][0];
     }
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
     int offset = len_P - 1;
     for (int m = 0; m < len_out; m++)
         outL[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
@@ -641,12 +1022,12 @@ static void correlate_fft_pair(const double *g, int len_g,
     /* Second correlate: g × PL → outR (reuse g_hat) */
     for (int j = 0; j < len_P; j++) fc->rbuf2[j] = PL[len_P - 1 - j];
     if (len_P < fft_n) memset(fc->rbuf2 + len_P, 0, (fft_n - len_P) * sizeof(double));
-    fftw_execute_dft_r2c(plan->fwd_plan, fc->rbuf2, fc->cbuf2);
+    fft_exec_fwd2(plan, fc);
     for (int i = 0; i < cn; i++) {
         plan->cbuf[i][0] = g_hat[i][0]*fc->cbuf2[i][0] - g_hat[i][1]*fc->cbuf2[i][1];
         plan->cbuf[i][1] = g_hat[i][0]*fc->cbuf2[i][1] + g_hat[i][1]*fc->cbuf2[i][0];
     }
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
     for (int m = 0; m < len_out; m++)
         outR[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
 }
@@ -673,7 +1054,7 @@ static void correlate_fft_cached(const double *g, int len_g,
     /* FFT(g) */
     memcpy(plan->rbuf, g, len_g * sizeof(double));
     if (len_g < fft_n) memset(plan->rbuf + len_g, 0, (fft_n - len_g) * sizeof(double));
-    fftw_execute(plan->fwd_plan);
+    fft_exec_fwd(plan);
 
     /* Pointwise: FFT(g) * conj(FFT(P)) — cross-correlation in freq domain */
     for (int i = 0; i < cn; i++) {
@@ -683,7 +1064,7 @@ static void correlate_fft_cached(const double *g, int len_g,
         plan->cbuf[i][1] = gi * pr - gr * pi;
     }
 
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
 
     /* Cross-correlation result is directly at index m (no offset) */
     for (int m = 0; m < len_out; m++)
@@ -694,6 +1075,30 @@ static void correlate_fft_cached(const double *g, int len_g,
  * Shares FFT(g) across two correlations (one per sibling), AND uses
  * cached FFT(P) from the build phase. Saves one forward FFT per parent node
  * vs calling correlate_fft_cached_wrap twice. */
+/* Correct input-side cyclic aliasing in cross-correlation.
+ * When FFT size N < len_g + len_P - 1, positions m near the end of the
+ * output pick up spurious contributions from g wrapping around mod N.
+ * Specifically: at position m, for j where m+j >= N, the cyclic FFT
+ * reads g[(m+j)-N] instead of 0. This adds P[j]*g[(m+j)-N] to corr[m].
+ * We compute and subtract these spurious terms via schoolbook. */
+static inline void correlate_wrap_input_correction(double *out, int len_out,
+                                             const double *P, int len_P,
+                                             const double *g, int len_g,
+                                             int fft_n) {
+    int m_start = fft_n - len_P + 1;
+    if (m_start < 0) m_start = 0;
+    for (int m = m_start; m < len_out && m < fft_n; m++) {
+        double alias = 0;
+        int j_lo = fft_n - m;
+        for (int j = j_lo; j < len_P; j++) {
+            int g_idx = (m + j) - fft_n;
+            if (g_idx >= 0 && g_idx < len_g)
+                alias += P[j] * g[g_idx];
+        }
+        out[m] -= alias;
+    }
+}
+
 static void correlate_fft_cached_pair_wrap(
         const double *g, int len_g,
         const double *PL, const double *PR, int len_P,
@@ -712,7 +1117,7 @@ static void correlate_fft_cached_pair_wrap(
     int copy_g = (len_g < fft_n) ? len_g : fft_n;
     memcpy(plan->rbuf, g, copy_g * sizeof(double));
     if (copy_g < fft_n) memset(plan->rbuf + copy_g, 0, (fft_n - copy_g) * sizeof(double));
-    fftw_execute(plan->fwd_plan);
+    fft_exec_fwd(plan);
     fftw_complex *g_hat = fc->cbuf3;
     memcpy(g_hat, plan->cbuf, cn * sizeof(fftw_complex));
 
@@ -723,7 +1128,7 @@ static void correlate_fft_cached_pair_wrap(
         plan->cbuf[i][0] = gr * pr + gi * pi;
         plan->cbuf[i][1] = gi * pr - gr * pi;
     }
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
     for (int m = 0; m < len_out; m++)
         outL[m] = (m < fft_n) ? plan->rbuf[m] * inv : 0;
     if (wrap_m > 0) {
@@ -738,6 +1143,7 @@ static void correlate_fft_cached_pair_wrap(
             if (i < len_out) outL[i] -= high;
             if (pos < len_out) outL[pos] = high;
         }
+        correlate_wrap_input_correction(outL, len_out, PR, len_P, g, len_g, fft_n);
     }
 
     /* Second correlate: g × PL → outR (reuse g_hat, using cached FFT(PL)) */
@@ -747,7 +1153,7 @@ static void correlate_fft_cached_pair_wrap(
         plan->cbuf[i][0] = gr * pr + gi * pi;
         plan->cbuf[i][1] = gi * pr - gr * pi;
     }
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
     for (int m = 0; m < len_out; m++)
         outR[m] = (m < fft_n) ? plan->rbuf[m] * inv : 0;
     if (wrap_m > 0) {
@@ -762,6 +1168,7 @@ static void correlate_fft_cached_pair_wrap(
             if (i < len_out) outR[i] -= high;
             if (pos < len_out) outR[pos] = high;
         }
+        correlate_wrap_input_correction(outR, len_out, PL, len_P, g, len_g, fft_n);
     }
 }
 
@@ -791,7 +1198,7 @@ static void correlate_fft_cached_wrap(const double *g, int len_g,
     int copy_g = (len_g < fft_n) ? len_g : fft_n;
     memcpy(plan->rbuf, g, copy_g * sizeof(double));
     if (copy_g < fft_n) memset(plan->rbuf + copy_g, 0, (fft_n - copy_g) * sizeof(double));
-    fftw_execute(plan->fwd_plan);
+    fft_exec_fwd(plan);
 
     /* Pointwise: FFT(g) * conj(FFT(P)) */
     for (int i = 0; i < cn; i++) {
@@ -800,16 +1207,15 @@ static void correlate_fft_cached_wrap(const double *g, int len_g,
         plan->cbuf[i][0] = gr * pr + gi * pi;
         plan->cbuf[i][1] = gi * pr - gr * pi;
     }
-    fftw_execute(plan->inv_plan);
+    fft_exec_inv(plan);
 
     /* Extract cyclic cross-correlation result */
     for (int m = 0; m < len_out; m++)
         out[m] = (m < fft_n) ? plan->rbuf[m] * inv : 0;
 
-    /* Correction: the cyclic cross-correlation aliases position i with i+fft_n.
-     * Cross-correlation: (g ⋆ P)[m] = Σ_j P[j] * g[m+j].
-     * True value at position pos = fft_n + i:
-     *   corr_true[pos] = Σ_{j: 0≤j<len_P, 0≤pos+j<len_g} P[j] * g[pos + j] */
+    /* Correction 1: OUTPUT aliasing — high positions (fft_n..fft_n+wrap_m) wrap to 0..wrap_m.
+     * Compute true cross-correlation at those high positions, subtract from wrapped low
+     * positions, and place at the correct high positions. */
     for (int i = 0; i <= wrap_m; i++) {
         int pos = fft_n + i;
         if (pos >= conv_len) break;
@@ -818,9 +1224,13 @@ static void correlate_fft_cached_wrap(const double *g, int len_g,
         if (j_max > len_P) j_max = len_P;
         for (int j = 0; j < j_max; j++)
             high += P[j] * g[pos + j];
-        if (i < len_out) out[i] -= high;      /* undo alias at wrapped position */
-        if (pos < len_out) out[pos] = high;    /* place at true position */
+        if (i < len_out) out[i] -= high;
+        if (pos < len_out) out[pos] = high;
     }
+
+    /* Correction 2: INPUT aliasing (g wraps within cyclic FFT period) */
+    if (wrap_m > 0)
+        correlate_wrap_input_correction(out, len_out, P, len_P, g, len_g, fft_n);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -857,6 +1267,11 @@ typedef struct {
     int corr_fft_n[MAX_TREE_LEVELS];         /* FFT size for correlate */
     int corr_wrap_m[MAX_TREE_LEVELS];        /* wrap coefficient count for cyclic correlate */
     int use_fft[MAX_TREE_LEVELS];            /* 1 = use FFT, 0 = schoolbook (per-level decision) */
+#if HAS_AMX && USE_AMX
+    double *amx_ws;                          /* 128-byte aligned AMX scratch (pad_a + pad_b + tile + zeros) */
+    size_t amx_ws_size;
+    int any_amx_school;                      /* 1 if any level dispatches to AMX schoolbook */
+#endif
 } TreeCtx;
 
 /* Create tree context. leaf_degree=1 for standard tree, B for hybrid.
@@ -897,6 +1312,17 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
     tc->plev_total = off;
     tc->ws_size = tc->plev_total + 2 * tc->max_g;
     tc->ws = (double *)malloc(tc->ws_size * sizeof(double));
+
+#if HAS_AMX && USE_AMX
+    /* AMX workspace: enough for largest schoolbook at any level.
+     * Layout: pad_a[max_psz_8] + pad_b[max_psz_8] + c_lo[8] + c_hi[8] + ones[8] + zeros[8]
+     * where max_psz_8 = ceil(max_psz / 8) * 8. */
+    {
+        int max_psz_8 = (max_psz + 7) & ~7;
+        tc->amx_ws_size = 2 * max_psz_8 + 32;
+        posix_memalign((void **)&tc->amx_ws, 128, tc->amx_ws_size * sizeof(double));
+    }
+#endif
 
     /* Detect below-saturation levels where polys have actual degree = cps/2.
      * At these levels, the folded multiply halves the FFT size. */
@@ -942,36 +1368,41 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
             int is_below = tc->below_sat[ell];
             int is_root = (ell == tc->L - 1);
 
-            /* Per-level FFT decision: compare schoolbook cost vs calibrated FFT cost.
-             * Below-sat polys have actual degree cps/2 (upper half is zero), so
-             * schoolbook cost is (d+1)² not cps². Using cps² overestimates by 4x. */
+            /* Per-level FFT vs schoolbook decision.
+             * Compare TOTAL cost (build + correlate) for both paths, since
+             * choosing schoolbook for build also means schoolbook for correlate.
+             * Below-sat polys have actual degree cps/2 (upper half is zero). */
             int d_eff = is_below ? cps / 2 : cps - 1;
             long long school_cost_flops = (long long)(d_eff + 1) * (d_eff + 1);
             int build_conv_len = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
             int bfn, bwm;
-            best_fft_config(build_conv_len, &bfn, &bwm);
-            /* Use FFT if calibrated FFT time + per-call overhead < schoolbook time.
-             * Overhead (plan lookup, buffer copy, extraction) measured at ~40ns for
-             * m=0 cases via `./bench_grid profile` microbenchmark. */
+            best_fft_config(build_conv_len, &bfn, &bwm, 0);  /* polymul: no input-wrap */
             int fft_idx;
             { int lo=0,hi=N_CALIBRATED_SIZES-1;
               while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
               fft_idx = lo; }
-            double fft_time = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
-                              ? calib_times_ns[fft_idx] : 1e18;
+            double fft_build = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
+                               ? calib_times_ns[fft_idx] : 1e18;
             double fft_overhead = FFT_OVERHEAD_NS;
-            double correction_ns = (double)(bwm + 1) * (bwm + 1) * FMA_NS;
-            double school_time = school_cost_flops * FMA_NS;
-            tc->use_fft[ell] = (fft_time + fft_overhead + correction_ns < school_time);
+            double build_correction = (double)(bwm + 1) * (bwm + 1) * FMA_NS;
+
+            /* Build cost comparison: schoolbook vs FFT.
+             * Uses build-phase cost only (not correlate), as this was empirically
+             * validated to give correct B and FFT crossover decisions.
+             * The correlate cost is implicitly handled: when schoolbook wins the
+             * build comparison, correlate also uses schoolbook, and the cost model
+             * in select_best_B accounts for both via the tree cost sum. */
+            double school_build = school_cost_flops * FMA_NS;
+            int p_eff = is_below ? cps/2 + 1 : cps;
+            int out_needed = tc->g_needed[ell-1];
+            tc->use_fft[ell] = (fft_build + fft_overhead + build_correction < school_build);
 
             if (tc->use_fft[ell]) {
                 tc->build_fft_n[ell] = bfn;
                 tc->build_wrap_m[ell] = bwm;
                 needed[n_needed++] = bfn;
 
-                /* Correlate FFT size */
-                int p_eff = is_below ? cps/2 + 1 : cps;
-                int out_needed = tc->g_needed[ell-1];
+                /* Correlate FFT size (p_eff, out_needed already computed above) */
                 int g_eff_needed = out_needed + p_eff - 1;
                 int g_eff_max = is_below ? (cps + cps/2) : pgsz;
                 int g_eff = (g_eff_needed < g_eff_max) ? g_eff_needed : g_eff_max;
@@ -982,11 +1413,11 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
                      * Joint: one FFT size, cache FFT(P) from build, reuse in correlates.
                      * Independent: build and correlate each pick optimal sizes, no caching. */
                     int jfn, jbm, jcm;
-                    double jcost = best_fft_config_joint(build_conv_len, corr_conv,
+                    double jcost = best_fft_config_joint(build_conv_len, corr_conv, p_eff,
                                                           &jfn, &jbm, &jcm);
 
                     int cfn, cwm;
-                    best_fft_config(corr_conv, &cfn, &cwm);
+                    best_fft_config(corr_conv, &cfn, &cwm, p_eff);  /* correlate: input-wrap cost */
                     /* Independent: build(bfn) + correlate_fft_pair(cfn).
                      * Pair shares g FFT: 1 fwd(g) + 2 fwd(P_rev) + 2 pw + 2 ifft
                      * ≈ 1.25× full pipeline. */
@@ -994,9 +1425,11 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
                     { int lo2=0, hi2=N_CALIBRATED_SIZES-1;
                       while(lo2<hi2){int m2=(lo2+hi2)>>1;if(calib_sizes[m2]<cfn)lo2=m2+1;else hi2=m2;}
                       cfn_idx = lo2; }
-                    double icost = fft_time + correction_ns
+                    /* Independent correlate cost: output-wrap + input-wrap (for correlate) */
+                    double corr_correction = 2.0 * ((double)(cwm+1)*(cwm+1) + (double)cwm * p_eff) * FMA_NS;
+                    double icost = fft_build + build_correction
                         + INDEP_PAIR_RATIO * calib_times_ns[cfn_idx]
-                        + 2.0 * (double)(cwm+1)*(cwm+1)*FMA_NS;
+                        + corr_correction;
 
                     if (jcost < icost) {
                         tc->build_fft_n[ell] = jfn;
@@ -1012,7 +1445,7 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
                 } else {
                     /* Root: no caching (build skipped), optimize correlate independently */
                     int cfn, cwm;
-                    best_fft_config(corr_conv, &cfn, &cwm);
+                    best_fft_config(corr_conv, &cfn, &cwm, p_eff);  /* correlate: input-wrap cost */
                     tc->corr_fft_n[ell] = cfn;
                     tc->corr_wrap_m[ell] = cwm;
                     needed[n_needed++] = cfn;
@@ -1058,6 +1491,22 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
         tc->fft_cache_ok[ell] = 1;
     }
 
+#if HAS_AMX && USE_AMX
+    /* Determine if any level will dispatch to AMX schoolbook.
+     * If not, skip AMX_SET/CLR to avoid overhead. */
+    tc->any_amx_school = 0;
+    for (int ell = 1; ell < tc->L; ell++) {
+        if (!tc->use_fft[ell]) {
+            int cps = tc->psz[ell-1];
+            int d_eff_b = tc->below_sat[ell] ? cps/2 : cps-1;
+            if (d_eff_b + 1 >= AMX_SCHOOL_MIN_DEG) {
+                tc->any_amx_school = 1;
+                break;
+            }
+        }
+    }
+#endif
+
     return tc;
 }
 
@@ -1072,6 +1521,9 @@ static TreeCtx *tree_ctx_create(int n, int k) {
 
 static void tree_ctx_destroy(TreeCtx *tc) {
     free(tc->ws);
+#if HAS_AMX && USE_AMX
+    free(tc->amx_ws);
+#endif
     if (tc->fft) fft_cache_destroy(tc->fft);
     for (int ell = 0; ell < tc->L; ell++)
         if (tc->fft_coeff[ell]) fftw_free(tc->fft_coeff[ell]);
@@ -1106,6 +1558,29 @@ static FFTCache *fft_cache_clone(const FFTCache *src) {
             dp->fwd_plan = fftw_plan_dft_r2c_1d(dp->fft_n, dp->rbuf, dp->cbuf, FFTW_ESTIMATE);
             dp->inv_plan = fftw_plan_dft_c2r_1d(dp->fft_n, dp->cbuf, dp->rbuf, FFTW_ESTIMATE);
         }
+#ifdef __APPLE__
+        dp->use_vdsp = sp->use_vdsp;
+        if (sp->use_vdsp) {
+            dp->vdsp_fwd = vDSP_DFT_Interleaved_CreateSetupD(NULL, dp->fft_n / 2,
+                vDSP_DFT_FORWARD, vDSP_DFT_Interleaved_RealtoComplex);
+            dp->vdsp_inv = vDSP_DFT_Interleaved_CreateSetupD(dp->vdsp_fwd, dp->fft_n / 2,
+                vDSP_DFT_INVERSE, vDSP_DFT_Interleaved_RealtoComplex);
+        } else {
+            dp->vdsp_fwd = NULL;
+            dp->vdsp_inv = NULL;
+        }
+#endif
+#ifdef __linux__
+        dp->use_mkl = sp->use_mkl;
+        if (sp->use_mkl && mkl_available) {
+            dp->mkl_fwd_plan = mkl.plan_r2c(dp->fft_n, dp->rbuf, dp->cbuf, FFTW_ESTIMATE);
+            dp->mkl_inv_plan = mkl.plan_c2r(dp->fft_n, dp->cbuf, dp->rbuf, FFTW_ESTIMATE);
+        } else {
+            dp->mkl_fwd_plan = NULL;
+            dp->mkl_inv_plan = NULL;
+            dp->use_mkl = 0;
+        }
+#endif
     }
     fc->rbuf2 = fftw_malloc(fc->max_fft_n * sizeof(double));
     fc->cbuf2 = fftw_malloc((fc->max_fft_n/2 + 1) * sizeof(fftw_complex));
@@ -1118,6 +1593,9 @@ static TreeCtx *tree_ctx_clone(const TreeCtx *src) {
     memcpy(tc, src, sizeof(TreeCtx));
     /* Allocate fresh workspace */
     tc->ws = (double *)malloc(tc->ws_size * sizeof(double));
+#if HAS_AMX && USE_AMX
+    posix_memalign((void **)&tc->amx_ws, 128, tc->amx_ws_size * sizeof(double));
+#endif
     /* Clone FFT cache (independent buffers + plans) */
     tc->fft = fft_cache_clone(src->fft);
     /* Clone FFT coefficient caches */
@@ -1166,7 +1644,7 @@ static void tree_build_levels(TreeCtx *tc) {
                     int fft_n = plan->fft_n;
                     memcpy(plan->rbuf, Lc, cps * sizeof(double));
                     if (cps < fft_n) memset(plan->rbuf + cps, 0, (fft_n - cps) * sizeof(double));
-                    fftw_execute(plan->fwd_plan);
+                    fft_exec_fwd(plan);
                     memcpy(fft_L, plan->cbuf, (fft_n/2+1) * sizeof(fftw_complex));
                 }
             } else {
@@ -1180,6 +1658,15 @@ static void tree_build_levels(TreeCtx *tc) {
                                      tc->fft, fft_L, fft_R,
                                      tc->build_fft_n[ell], tc->build_wrap_m[ell]);
                 } else {
+#if HAS_AMX && USE_AMX
+                    /* Dispatch on effective degree, not cps: below-sat polys
+                     * have actual degree cps/2 (upper half zero), where scalar
+                     * polymul_modk skips zeros but AMX doesn't. */
+                    int d_eff_b = tc->below_sat[ell] ? cps/2 : cps-1;
+                    if (d_eff_b + 1 >= AMX_SCHOOL_MIN_DEG)
+                        polymul_modk_amx(Lc, cps, Rc, cps, out, pps, tc->amx_ws);
+                    else
+#endif
                     polymul_modk(Lc, cps, Rc, cps, out, pps);
                 }
             }
@@ -1247,8 +1734,17 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
                                        gL, gR, out_needed, tc->fft,
                                        tc->corr_fft_n[ell]);
                 } else {
+#if HAS_AMX && USE_AMX
+                    if (p_eff >= AMX_SCHOOL_MIN_DEG) {
+                        correlate_school_amx(gp, g_eff, PR, p_eff, gL, out_needed, tc->amx_ws);
+                        correlate_school_amx(gp, g_eff, PL, p_eff, gR, out_needed, tc->amx_ws);
+                    } else {
+#endif
                     correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                     correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
+#if HAS_AMX && USE_AMX
+                    }
+#endif
                 }
             }
         }
@@ -1277,8 +1773,14 @@ static void engine_tree_ctx(int n, const double *a,
         }
     }
 
+#if HAS_AMX && USE_AMX
+    if (tc->any_amx_school) AMX_SET();
+#endif
     tree_build_levels(tc);
     double *g_leaf = tree_propagate_g(tc, k, payout);
+#if HAS_AMX && USE_AMX
+    if (tc->any_amx_school) AMX_CLR();
+#endif
 
     int lgsz = psz[0];
     for (int j = 0; j < n; j++)
@@ -1352,13 +1854,34 @@ typedef struct {
 } LinearCtx;
 
 /* Threshold: if g_store > 32MB, use checkpointed linear */
-#define CKPT_THRESHOLD 4194304  /* 32MB / 8 bytes */
+#ifndef CKPT_THRESHOLD
+#define CKPT_THRESHOLD 4194304
+#endif  /* 32MB / 8 bytes */
+
+/* L2 cache size per core (bytes). Used for batched linear checkpointing. */
+#ifndef L2_CACHE_SIZE
+#define L2_CACHE_SIZE 1048576  /* 1MB for Zen 4; 32MB for M3 Max */
+#endif
+
+/* ══════════════════════════════════════════════════════════════
+   ADAPTIVE BQ — compile-time parameterized batched linear engine.
+   Two versions (BQ=4 and BQ=8) compiled via template inclusion.
+   Runtime dispatch based on L2 working set: n*k*BQ*8 ≤ L2_CACHE_SIZE.
+   ══════════════════════════════════════════════════════════════ */
+
+/* BQ for non-batched paths (engine_linear_ctx, etc.) — always 2 */
+#ifndef BQ
+#define BQ 2
+#endif
+
 
 static int ckpt_interval(int n) {
     int C = (int)sqrt((double)n);
     if (C < 2) C = 2;
     return C;
 }
+
+/* ckpt_interval_batched is now in linear_batched_impl.inc (parameterized by BQ) */
 
 static LinearCtx *linear_ctx_create(int n, int k) {
     LinearCtx *lc = (LinearCtx *)calloc(1, sizeof(LinearCtx));
@@ -1388,6 +1911,7 @@ static inline void apply_factor(const double *restrict g_in,
         g_out[m] = a_val * g_in[m] + b_val * g_in[m + 1];
     g_out[k - 1] = a_val * g_in[k - 1];
 }
+
 
 static void engine_linear_ctx(int n, const double *a,
                                const double *payout, int k,
@@ -1487,298 +2011,39 @@ static void engine_linear_ctx(int n, const double *a,
 }
 
 /* ══════════════════════════════════════════════════════════════
-   BATCHED LINEAR ENGINE — process 2 quad points per pass
-   Vectorizes across quad points (NEON width 2) instead of across k.
+   BATCHED LINEAR ENGINE — adaptive BQ via template instantiation.
+   Two versions compiled: BQ=8 (3x throughput) and BQ=4 (2x throughput).
+   Runtime dispatch: BQ=8 when g_store fits in L2, BQ=4 otherwise.
+   Inner q-loops auto-vectorize to full-width FMAs with -O3.
    ══════════════════════════════════════════════════════════════ */
 
-/* Interleaved layout: g[j * k * 2 + m * 2 + q] for quad point q in {0,1} */
-#define BQ 2
+/* Instantiate BQ=8 batched linear engine.
+ * BQ=8 wins on all platforms: AVX-512 (native 512-bit), Apple Silicon
+ * (4 NEON FMA ports × 128-bit = 512-bit aggregate). The interleaved
+ * a_batch layout (a_batch[j*BQ+qi]) ensures cache-friendly access
+ * regardless of n, so no BQ=4 fallback is needed. */
+#define BQ_IMPL 8
+#define SUFFIX _bq8
+#include "linear_batched_impl.inc"
+#undef SUFFIX
+#undef BQ_IMPL
 
-static double run_linear_batched(int n, const double *S, int Q,
-                                  const double *payout, int k,
-                                  double *equity, void *ctx) {
-    LinearCtx *lc_ctx = (LinearCtx *)ctx;
-    const uint8_t *active = lc_ctx ? lc_ctx->active : NULL;
-    double Smax = 0;
-    for (int i = 0; i < n; i++) if (S[i] > Smax) Smax = S[i];
-    QP *pts = (QP *)malloc(Q * sizeof(QP));
-    make_nodes(Q, Smax, pts);
-    memset(equity, 0, n * sizeof(double));
-
-    /* Interleaved payout: {payout[0], payout[0], payout[1], payout[1], ...} */
-    double *payout_il = (double *)malloc(k * BQ * sizeof(double));
-    for (int m = 0; m < k; m++) {
-        payout_il[m * 2] = payout[m];
-        payout_il[m * 2 + 1] = payout[m];
-    }
-
-    int n_pairs = Q / 2;
-    int has_leftover = (Q % 2 != 0);
-
-#ifdef _OPENMP
-    int nthreads = omp_get_max_threads();
-    if (nthreads > n_pairs) nthreads = (n_pairs > 0) ? n_pairs : 1;
-
-    /* Per-thread workspace */
-    size_t gstride = (size_t)k * BQ;
-    double **t_gstore = (double **)malloc(nthreads * sizeof(double *));
-    double **t_R      = (double **)malloc(nthreads * sizeof(double *));
-    double **t_a0     = (double **)malloc(nthreads * sizeof(double *));
-    double **t_a1     = (double **)malloc(nthreads * sizeof(double *));
-    double **t_inner0 = (double **)malloc(nthreads * sizeof(double *));
-    double **t_inner1 = (double **)malloc(nthreads * sizeof(double *));
-    double **t_equity = (double **)malloc(nthreads * sizeof(double *));
-    for (int t = 0; t < nthreads; t++) {
-        t_gstore[t] = (double *)malloc((size_t)n * gstride * sizeof(double));
-        t_R[t]      = (double *)malloc(k * BQ * sizeof(double));
-        t_a0[t]     = (double *)malloc(n * sizeof(double));
-        t_a1[t]     = (double *)malloc(n * sizeof(double));
-        t_inner0[t] = (double *)malloc(n * sizeof(double));
-        t_inner1[t] = (double *)malloc(n * sizeof(double));
-        t_equity[t] = (double *)calloc(n, sizeof(double));
-    }
-
-    double t0 = now_ns();
-    #pragma omp parallel for schedule(dynamic, 4) num_threads(nthreads)
-    for (int p = 0; p < n_pairs; p++) {
-        int q = p * 2;
-        if (pts[q].w == 0 && pts[q+1].w == 0) continue;
-        int tid = omp_get_thread_num();
-        double *g_store = t_gstore[tid];
-        double *R = t_R[tid];
-        double *a0 = t_a0[tid];
-        double *a1 = t_a1[tid];
-        double *inner0 = t_inner0[tid];
-        double *inner1 = t_inner1[tid];
-        double *eq_local = t_equity[tid];
-
-        double logv0 = pts[q].logv, logv1 = pts[q+1].logv;
-#ifdef __APPLE__
-        for (int j = 0; j < n; j++) { a0[j] = S[j]*logv0; a1[j] = S[j]*logv1; }
-        int vn = n;
-        vvexp(a0, a0, &vn);
-        vvexp(a1, a1, &vn);
-        for (int j = 0; j < n; j++) {
-            if (S[j]*logv0 < -700) a0[j] = 0;
-            if (S[j]*logv1 < -700) a1[j] = 0;
-        }
-#else
-        for (int j = 0; j < n; j++) {
-            double arg0 = S[j]*logv0, arg1 = S[j]*logv1;
-            a0[j] = (arg0 < -700) ? 0 : exp(arg0);
-            a1[j] = (arg1 < -700) ? 0 : exp(arg1);
-        }
-#endif
-
-        const double *g_prev = payout_il;
-        for (int j = 0; j < n; j++) {
-            double aj0 = a0[j], bj0 = 1 - aj0;
-            double aj1 = a1[j], bj1 = 1 - aj1;
-            double *g_cur = g_store + (size_t)j * gstride;
-            for (int m = 0; m < k - 1; m++) {
-                int idx = m * 2;
-                g_cur[idx]   = aj0 * g_prev[idx]   + bj0 * g_prev[idx+2];
-                g_cur[idx+1] = aj1 * g_prev[idx+1] + bj1 * g_prev[idx+3];
-            }
-            int last = (k-1) * 2;
-            g_cur[last]   = aj0 * g_prev[last];
-            g_cur[last+1] = aj1 * g_prev[last+1];
-            g_prev = g_cur;
-        }
-
-        memset(R, 0, k * BQ * sizeof(double));
-        R[0] = 1.0; R[1] = 1.0;
-        for (int j = n - 1; j >= 0; j--) {
-            const double *gb = (j > 0) ?
-                (g_store + (size_t)(j-1) * gstride) : payout_il;
-            /* Fused dot product + suffix update */
-            double aj0 = a0[j], bj0 = 1 - aj0;
-            double aj1 = a1[j], bj1 = 1 - aj1;
-            double eq0 = gb[0] * R[0];
-            double eq1 = gb[1] * R[1];
-            for (int m = k - 1; m >= 1; m--) {
-                eq0 += gb[m*2]   * R[m*2];
-                eq1 += gb[m*2+1] * R[m*2+1];
-                R[m*2]   = aj0 * R[m*2]   + bj0 * R[(m-1)*2];
-                R[m*2+1] = aj1 * R[m*2+1] + bj1 * R[(m-1)*2+1];
-            }
-            R[0] = aj0 * R[0];
-            R[1] = aj1 * R[1];
-            inner0[j] = eq0;
-            inner1[j] = eq1;
-        }
-
-        double wq0 = pts[q].w, wq1 = pts[q+1].w;
-        double iv0 = exp(-logv0), iv1 = exp(-logv1);
-        for (int i = 0; i < n; i++) {
-            if (active && !active[i]) continue;
-            double pw0 = wq0 * S[i] * a0[i] * iv0;
-            double pw1 = wq1 * S[i] * a1[i] * iv1;
-            if (!isfinite(pw0)) pw0 = 0;
-            if (!isfinite(pw1)) pw1 = 0;
-            eq_local[i] += pw0 * inner0[i] + pw1 * inner1[i];
-        }
-    }
-
-    /* Merge thread-local equity arrays */
-    for (int t = 0; t < nthreads; t++) {
-        for (int i = 0; i < n; i++)
-            equity[i] += t_equity[t][i];
-    }
-
-    /* Handle leftover odd quad point (serial) */
-    if (has_leftover) {
-        int q = Q - 1;
-        if (pts[q].w != 0) {
-            double logv = pts[q].logv, wq = pts[q].w;
-            double *a_tmp = t_a0[0];
-            double *inner_tmp = t_inner0[0];
-            for (int j = 0; j < n; j++) {
-                double arg = S[j]*logv;
-                a_tmp[j] = (arg < -700) ? 0 : exp(arg);
-            }
-            /* Create a temporary linear ctx for the leftover point */
-            LinearCtx *lc_tmp = linear_ctx_create(n, k);
-            lc_tmp->active = (uint8_t *)active;
-            engine_linear_ctx(n, a_tmp, payout, k, inner_tmp, lc_tmp);
-            lc_tmp->active = NULL;
-            linear_ctx_destroy(lc_tmp);
-            double iv = exp(-logv);
-            for (int i = 0; i < n; i++) {
-                if (active && !active[i]) continue;
-                double pw = wq * S[i] * a_tmp[i] * iv;
-                if (!isfinite(pw)) pw = 0;
-                equity[i] += pw * inner_tmp[i];
-            }
-        }
-    }
-
-    double elapsed = now_ns() - t0;
-    for (int t = 0; t < nthreads; t++) {
-        free(t_gstore[t]); free(t_R[t]);
-        free(t_a0[t]); free(t_a1[t]);
-        free(t_inner0[t]); free(t_inner1[t]);
-        free(t_equity[t]);
-    }
-    free(t_gstore); free(t_R); free(t_a0); free(t_a1);
-    free(t_inner0); free(t_inner1); free(t_equity);
-
-#else  /* No OpenMP — serial fallback */
-    size_t gstride = (size_t)k * BQ;
-    double *g_store = (double *)malloc((size_t)n * gstride * sizeof(double));
-    double *R = (double *)malloc(k * BQ * sizeof(double));
-    double *a0 = (double *)malloc(n * sizeof(double));
-    double *a1 = (double *)malloc(n * sizeof(double));
-    double *inner0 = (double *)malloc(n * sizeof(double));
-    double *inner1 = (double *)malloc(n * sizeof(double));
-
-    double t0 = now_ns();
-    int q = 0;
-    for (; q + 1 < Q; q += 2) {
-        if (pts[q].w == 0 && pts[q+1].w == 0) continue;
-        double logv0 = pts[q].logv, logv1 = pts[q+1].logv;
-#ifdef __APPLE__
-        for (int j = 0; j < n; j++) { a0[j] = S[j]*logv0; a1[j] = S[j]*logv1; }
-        int vn = n;
-        vvexp(a0, a0, &vn);
-        vvexp(a1, a1, &vn);
-        for (int j = 0; j < n; j++) {
-            if (S[j]*logv0 < -700) a0[j] = 0;
-            if (S[j]*logv1 < -700) a1[j] = 0;
-        }
-#else
-        for (int j = 0; j < n; j++) {
-            double arg0 = S[j]*logv0, arg1 = S[j]*logv1;
-            a0[j] = (arg0 < -700) ? 0 : exp(arg0);
-            a1[j] = (arg1 < -700) ? 0 : exp(arg1);
-        }
-#endif
-        const double *g_prev = payout_il;
-        for (int j = 0; j < n; j++) {
-            double aj0 = a0[j], bj0 = 1 - aj0;
-            double aj1 = a1[j], bj1 = 1 - aj1;
-            double *g_cur = g_store + (size_t)j * gstride;
-            for (int m = 0; m < k - 1; m++) {
-                int idx = m * 2;
-                g_cur[idx]   = aj0 * g_prev[idx]   + bj0 * g_prev[idx+2];
-                g_cur[idx+1] = aj1 * g_prev[idx+1] + bj1 * g_prev[idx+3];
-            }
-            int last = (k-1) * 2;
-            g_cur[last]   = aj0 * g_prev[last];
-            g_cur[last+1] = aj1 * g_prev[last+1];
-            g_prev = g_cur;
-        }
-        memset(R, 0, k * BQ * sizeof(double));
-        R[0] = 1.0; R[1] = 1.0;
-        for (int j = n - 1; j >= 0; j--) {
-            const double *gb = (j > 0) ?
-                (g_store + (size_t)(j-1) * gstride) : payout_il;
-            /* Fused dot product + suffix update */
-            double aj0 = a0[j], bj0 = 1 - aj0;
-            double aj1 = a1[j], bj1 = 1 - aj1;
-            double eq0 = gb[0] * R[0];
-            double eq1 = gb[1] * R[1];
-            for (int m = k - 1; m >= 1; m--) {
-                eq0 += gb[m*2]   * R[m*2];
-                eq1 += gb[m*2+1] * R[m*2+1];
-                R[m*2]   = aj0 * R[m*2]   + bj0 * R[(m-1)*2];
-                R[m*2+1] = aj1 * R[m*2+1] + bj1 * R[(m-1)*2+1];
-            }
-            R[0] = aj0 * R[0];
-            R[1] = aj1 * R[1];
-            inner0[j] = eq0;
-            inner1[j] = eq1;
-        }
-        double wq0 = pts[q].w, wq1 = pts[q+1].w;
-        double iv0 = exp(-logv0), iv1 = exp(-logv1);
-        for (int i = 0; i < n; i++) {
-            if (active && !active[i]) continue;
-            double pw0 = wq0 * S[i] * a0[i] * iv0;
-            double pw1 = wq1 * S[i] * a1[i] * iv1;
-            if (!isfinite(pw0)) pw0 = 0;
-            if (!isfinite(pw1)) pw1 = 0;
-            equity[i] += pw0 * inner0[i] + pw1 * inner1[i];
-        }
-    }
-    if (q < Q && pts[q].w != 0) {
-        double logv = pts[q].logv, wq = pts[q].w;
-        for (int j = 0; j < n; j++) {
-            double arg = S[j]*logv;
-            a0[j] = (arg < -700) ? 0 : exp(arg);
-        }
-        LinearCtx *lc_tmp = linear_ctx_create(n, k);
-        lc_tmp->active = (uint8_t *)active;
-        engine_linear_ctx(n, a0, payout, k, inner0, lc_tmp);
-        lc_tmp->active = NULL;
-        linear_ctx_destroy(lc_tmp);
-        double iv = exp(-logv);
-        for (int i = 0; i < n; i++) {
-            if (active && !active[i]) continue;
-            double pw = wq * S[i] * a0[i] * iv;
-            if (!isfinite(pw)) pw = 0;
-            equity[i] += pw * inner0[i];
-        }
-    }
-    double elapsed = now_ns() - t0;
-    free(g_store); free(R);
-    free(a0); free(a1); free(inner0); free(inner1);
-#endif /* _OPENMP */
-
-    free(pts); free(payout_il);
-    return elapsed;
-}
+#define run_linear_batched run_linear_batched_bq8
 
 /* ══════════════════════════════════════════════════════════════
    HYBRID ENGINE (block build + tree + bidirectional divide)
    ══════════════════════════════════════════════════════════════ */
 
 typedef struct {
-    int B, nblocks;
+    int B, nblocks, n;
     double *block_prods;  /* nblocks_padded * (B+1) doubles */
     TreeCtx *tc;          /* inter-block tree */
     int *sort_perm;       /* sort_perm[i] = original index of sorted player i */
     double *S_sorted;     /* stack sizes in sorted order */
+    double *a_sorted;     /* pre-allocated permutation buffer (n doubles) */
+    double *inner_sorted; /* pre-allocated permutation buffer (n doubles) */
     uint8_t *active;      /* per-player mask (sorted order). NULL = all. */
+    int owns_sorted;      /* 1 if this ctx owns sort_perm/S_sorted (0 for clones) */
 } HybridCtx;
 
 /* Comparator for qsort: sort player indices by stack size descending. */
@@ -1792,6 +2057,7 @@ static int cmp_stack_desc(const void *a, const void *b) {
 static HybridCtx *hybrid_ctx_create(int n, const double *S, int k, int B) {
     HybridCtx *hc = (HybridCtx *)calloc(1, sizeof(HybridCtx));
     hc->B = B;
+    hc->n = n;
     hc->nblocks = (n + B - 1) / B;
     int N_tree = 1;
     while (N_tree < hc->nblocks) N_tree <<= 1;
@@ -1809,14 +2075,21 @@ static HybridCtx *hybrid_ctx_create(int n, const double *S, int k, int B) {
 
     hc->block_prods = (double *)calloc((size_t)N_tree * (B + 1), sizeof(double));
     hc->tc = tree_ctx_create_ex2(hc->nblocks, B, k, B);
+    hc->a_sorted = (double *)malloc(n * sizeof(double));
+    hc->inner_sorted = (double *)malloc(n * sizeof(double));
+    hc->owns_sorted = 1;
 
     return hc;
 }
 
 static void hybrid_ctx_destroy(HybridCtx *hc) {
     free(hc->block_prods);
-    free(hc->sort_perm);
-    free(hc->S_sorted);
+    if (hc->owns_sorted) {
+        free(hc->sort_perm);
+        free(hc->S_sorted);
+    }
+    free(hc->a_sorted);
+    free(hc->inner_sorted);
     tree_ctx_destroy(hc->tc);
     free(hc);
 }
@@ -1824,16 +2097,17 @@ static void hybrid_ctx_destroy(HybridCtx *hc) {
 static HybridCtx *hybrid_ctx_clone(const HybridCtx *src, int n) {
     HybridCtx *hc = (HybridCtx *)calloc(1, sizeof(HybridCtx));
     hc->B = src->B;
+    hc->n = n;
     hc->nblocks = src->nblocks;
     int N_tree = src->tc->N;
     hc->block_prods = (double *)calloc((size_t)N_tree * (src->B + 1), sizeof(double));
-    /* Clone the inner tree context */
     hc->tc = tree_ctx_clone(src->tc);
     /* Share sort_perm and S_sorted (read-only during engine execution) */
-    hc->sort_perm = (int *)malloc(n * sizeof(int));
-    memcpy(hc->sort_perm, src->sort_perm, n * sizeof(int));
-    hc->S_sorted = (double *)malloc(n * sizeof(double));
-    memcpy(hc->S_sorted, src->S_sorted, n * sizeof(double));
+    hc->sort_perm = src->sort_perm;
+    hc->S_sorted = src->S_sorted;
+    hc->a_sorted = (double *)malloc(n * sizeof(double));
+    hc->inner_sorted = (double *)malloc(n * sizeof(double));
+    hc->owns_sorted = 0;
     return hc;
 }
 
@@ -1878,8 +2152,14 @@ static void engine_hybrid_core(int n, const double *a,
         leaf[0] = 1.0;
     }
 
+#if HAS_AMX && USE_AMX
+    if (tc->any_amx_school) AMX_SET();
+#endif
     tree_build_levels(tc);
     double *g_leaf = tree_propagate_g(tc, k, payout);
+#if HAS_AMX && USE_AMX
+    if (tc->any_amx_school) AMX_CLR();
+#endif
     int g_need = tc->g_needed[0];
 
     /* ── Step 3: Within-block divide + fused dot product ── */
@@ -1961,15 +2241,13 @@ static void engine_hybrid_ctx(int n, const double *a,
                                const double *payout, int k,
                                double *inner, void *ctx) {
     HybridCtx *hc = (HybridCtx *)ctx;
-    double *a_sorted = (double *)malloc(n * sizeof(double));
-    double *inner_sorted = (double *)malloc(n * sizeof(double));
+    double *a_sorted = hc->a_sorted;
+    double *inner_sorted = hc->inner_sorted;
     for (int i = 0; i < n; i++) a_sorted[i] = a[hc->sort_perm[i]];
 
     engine_hybrid_core(n, a_sorted, payout, k, inner_sorted, hc);
 
     for (int i = 0; i < n; i++) inner[hc->sort_perm[i]] = inner_sorted[i];
-    free(a_sorted);
-    free(inner_sorted);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -2030,6 +2308,45 @@ static double run_engine_ctx(int n, const double *S, int Q,
  * targets: array of player indices (0-based), length n_targets.
  * equity: output array of length n (only equity[targets[i]] are set).
  * Dispatches to the best engine with active-player masks for skipping work. */
+static int select_best_B(int n, int k);
+
+/* Engine dispatch: compare estimated linear vs hybrid cost for given (n, k).
+ * Returns the optimal B if hybrid wins, or 0 if linear wins.
+ * Linear cost: O(n*k) with BQ=8 batched engine, with L2 checkpoint overhead.
+ * Hybrid cost: block build + FFT tree from the same model as select_best_B. */
+static int select_engine(int n, int k) {
+    if (n < 16 || k < 4) return 0;
+
+    double ckpt_factor = ((size_t)n * k * 8 * sizeof(double) <= (size_t)L2_CACHE_SIZE) ? 1.0 : 1.3;
+    double linear_est = (double)n * k * 2.0 * POLYMUL_FMA_NS * ckpt_factor;
+
+    int B = select_best_B(n, k);
+    int nblocks = (n + B - 1) / B;
+    double block = ((double)n / B * ((double)B * (B+1) / 2.0) + (double)n * 3.0 * B) * FMA_NS;
+    TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
+    double tree = 0;
+    for (int ell = 1; ell < tc->L - 1; ell++) {
+        int cps = tc->psz[ell-1], nr = tc->n_real[ell];
+        if (tc->use_fft[ell]) {
+            int bfn = tc->build_fft_n[ell];
+            int idx = 0;
+            { int lo=0,hi=N_CALIBRATED_SIZES-1;
+              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
+              idx=lo; }
+            double fft_cost = calib_times_ns[idx] + FFT_OVERHEAD_NS;
+            double corr_cost = fft_cost * PAIRED_CACHED_CORR_RATIO;
+            tree += nr * (fft_cost + corr_cost);
+        } else {
+            int d_eff = tc->below_sat[ell] ? cps/2 : cps-1;
+            double s = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
+            double c = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
+            tree += nr * (s + c);
+        }
+    }
+    tree_ctx_destroy(tc);
+    return (block + tree < linear_est) ? B : 0;
+}
+
 static double compute_equity_subset(int n, const double *S, int Q,
                                      const double *payout, int k,
                                      double *equity,
@@ -2038,10 +2355,9 @@ static double compute_equity_subset(int n, const double *S, int Q,
     uint8_t *active = (uint8_t *)calloc(n, sizeof(uint8_t));
     for (int i = 0; i < n_targets; i++) active[targets[i]] = 1;
 
-    /* Dispatch: same rule as full computation */
-    int k_cross = (n >= 2048) ? 95 : 70;
-    if (k >= k_cross && n >= 256) {
-        HybridCtx *hc = hybrid_ctx_create(n, S, k, 8);
+    int B = select_engine(n, k);
+    if (B > 0) {
+        HybridCtx *hc = hybrid_ctx_create(n, S, k, B);
         /* Build sorted-order active mask */
         uint8_t *sorted_active = (uint8_t *)calloc(n, sizeof(uint8_t));
         for (int i = 0; i < n; i++) sorted_active[i] = active[hc->sort_perm[i]];
@@ -2056,10 +2372,7 @@ static double compute_equity_subset(int n, const double *S, int Q,
         LinearCtx *lc = linear_ctx_create(n, k);
         lc->active = active;
         double t;
-        if (n >= 2048)
-            t = run_linear_batched(n, S, Q, payout, k, equity, lc);
-        else
-            t = run_engine_ctx(n, S, Q, payout, k, equity, engine_linear_ctx, lc);
+        t = run_linear_batched(n, S, Q, payout, k, equity, lc);
         lc->active = NULL;
         linear_ctx_destroy(lc);
         free(active);
@@ -2154,50 +2467,149 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
 #endif
 
 #else  /* No OpenMP — serial fallback */
-    double *a = (double *)malloc(n * sizeof(double));
-    double *inner = (double *)malloc(n * sizeof(double));
-#ifdef __APPLE__
-    double *exp_args = (double *)malloc(n * sizeof(double));
-#endif
+    double *a_buf = (double *)malloc((size_t)BQ * n * sizeof(double));
+    double *inner_buf = (double *)malloc((size_t)BQ * n * sizeof(double));
+
+    int n_batches_e = Q / BQ;
+    int leftover_e = Q - n_batches_e * BQ;
 
     double t0 = now_ns();
-    for (int q = 0; q < Q; q++) {
-        if (pts[q].w == 0) continue;
-        double logv = pts[q].logv, wq = pts[q].w;
-#ifdef __APPLE__
-        for (int j = 0; j < n; j++) exp_args[j] = S[j] * logv;
-        int vn = n;
-        vvexp(a, exp_args, &vn);
-        for (int j = 0; j < n; j++)
-            if (exp_args[j] < -700) a[j] = 0;
-#else
-        for (int j = 0; j < n; j++) {
-            double arg = S[j] * logv;
-            a[j] = (arg < -700) ? 0 : exp(arg);
+    for (int b = 0; b < n_batches_e; b++) {
+        int qb = b * BQ;
+        int all_zero = 1;
+        for (int qi = 0; qi < BQ; qi++) if (pts[qb+qi].w != 0) { all_zero = 0; break; }
+        if (all_zero) continue;
+
+        for (int qi = 0; qi < BQ; qi++) {
+            double logv = pts[qb + qi].logv;
+            double *aq = a_buf + (size_t)qi * n;
+            for (int j = 0; j < n; j++) {
+                double arg = S[j] * logv;
+                aq[j] = (arg < -700) ? 0 : exp(arg);
+            }
         }
-#endif
-        engine(n, a, payout, k, inner, ctx);
-        double inv_v = exp(-logv);
+
+        for (int qi = 0; qi < BQ; qi++) {
+            if (pts[qb + qi].w == 0) continue;
+            engine(n, a_buf + (size_t)qi * n, payout, k,
+                   inner_buf + (size_t)qi * n, ctx);
+        }
+
+        double wq_b[BQ], iv_b[BQ];
+        for (int qi = 0; qi < BQ; qi++) {
+            wq_b[qi] = pts[qb + qi].w;
+            iv_b[qi] = exp(-pts[qb + qi].logv);
+        }
         for (int i = 0; i < n; i++) {
-            double pw = wq * S[i] * a[i] * inv_v;
-            if (!isfinite(pw)) pw = 0;
-            equity[i] += pw * inner[i];
+            double sum = 0;
+            for (int qi = 0; qi < BQ; qi++) {
+                double pw = wq_b[qi] * S[i] * a_buf[(size_t)qi * n + i] * iv_b[qi];
+                if (!isfinite(pw)) pw = 0;
+                sum += pw * inner_buf[(size_t)qi * n + i];
+            }
+            equity[i] += sum;
         }
     }
+
+    /* Handle leftover quad points */
+    for (int q = n_batches_e * BQ; q < Q; q++) {
+        if (pts[q].w == 0) continue;
+        double logv = pts[q].logv, wq = pts[q].w;
+        for (int j = 0; j < n; j++) {
+            double arg = S[j] * logv;
+            a_buf[j] = (arg < -700) ? 0 : exp(arg);
+        }
+        engine(n, a_buf, payout, k, inner_buf, ctx);
+        double inv_v = exp(-logv);
+        for (int i = 0; i < n; i++) {
+            double pw = wq * S[i] * a_buf[i] * inv_v;
+            if (!isfinite(pw)) pw = 0;
+            equity[i] += pw * inner_buf[i];
+        }
+    }
+
     double elapsed = now_ns() - t0;
-    free(a); free(inner);
-#ifdef __APPLE__
-    free(exp_args);
-#endif
+    free(a_buf); free(inner_buf);
 #endif /* _OPENMP */
 
     free(pts);
     return elapsed;
 }
 
-/* ══════════════════════════════════════════════════════════════
+
+/* ---- Optimal B selector (cost-model driven) ---- */
+
+
+/* Select optimal hybrid block size B from calibration data.
+ * Creates lightweight TreeCtx for each candidate to use the real per-level
+ * planning decisions (schoolbook vs FFT, joint vs independent, FFT sizes).
+ * O(log n) per candidate, negligible vs engine work. */
+static int select_best_B(int n, int k) {
+    int candidates[] = {8, 16, 24, 32, 48, 64};
+    int n_cand = 6;
+    double best_cost = 1e18;
+    int best_B = 16;
+    for (int ci = 0; ci < n_cand; ci++) {
+        int B = candidates[ci];
+        if (B > k || B > n) continue;
+        int n_leaves = (n + B - 1) / B;
+        TreeCtx *tc = tree_ctx_create_ex2(n_leaves, B, k, B);
+        int L = tc->L;
+        double block = ((double)n / B * ((double)B * (B+1) / 2.0) + (double)n * 3.0 * B) * FMA_NS;
+        double tree = 0;
+        for (int ell = 1; ell < L - 1; ell++) {
+            int cps = tc->psz[ell-1];
+            int nr = tc->n_real[ell];
+            if (tc->use_fft[ell]) {
+                int bfn = tc->build_fft_n[ell];
+                int bwm = tc->build_wrap_m[ell];
+                int idx = 0;
+                { int lo=0,hi=N_CALIBRATED_SIZES-1;
+                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
+                  idx=lo; }
+                double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
+                                 + (double)(bwm+1)*(bwm+1)*FMA_NS;
+                double corr;
+                if (tc->fft_cache_ok[ell]) {
+                    corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
+                         + 2.0*(double)(tc->corr_wrap_m[ell]+1)*(tc->corr_wrap_m[ell]+1)*FMA_NS;
+                } else {
+                    int cfn = tc->corr_fft_n[ell];
+                    int cwm = tc->corr_wrap_m[ell];
+                    int cidx=0;
+                    {int lo=0,hi=N_CALIBRATED_SIZES-1;
+                     while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
+                     cidx=lo;}
+                    corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
+                         + 2.0*(double)(cwm+1)*(cwm+1)*FMA_NS;
+                }
+                tree += nr * (build_fft + corr);
+            } else {
+                int is_below = tc->below_sat[ell];
+                int d_eff = is_below ? cps/2 : cps-1;
+                double school_mul, school_corr;
+#if HAS_AMX && USE_AMX
+                if (d_eff + 1 >= AMX_SCHOOL_MIN_DEG) {
+                    int nb = ((d_eff+1)+7) >> 3;
+                    school_mul = nb*nb*AMX_TILE_NS + (2*nb-1)*AMX_PERCOL_NS + AMX_CALL_NS;
+                } else
+#endif
+                    school_mul = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
+                /* Correlate uses scalar (inner loop is memory-bound at FMA_NS) */
+                school_corr = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
+                tree += nr * (school_mul + school_corr);
+            }
+        }
+        tree_ctx_destroy(tc);
+        double total = block + tree;
+        if (total < best_cost) { best_cost = total; best_B = B; }
+    }
+    return best_B;
+}
+
+/* ==============================================================
    PUBLIC API WRAPPERS
-   ══════════════════════════════════════════════════════════════ */
+   ============================================================== */
 
 void icm_init(const char *wisdom_path) {
     build_fftw_size_table();
@@ -2209,27 +2621,24 @@ void icm_init(const char *wisdom_path) {
 #ifdef _OPENMP
     fftw_make_planner_thread_safe();
 #endif
+#ifdef __linux__
+    mkl_init();
+#endif
 }
 
 double icm_equity(int n, const double *S, int Q,
                   const double *payout, int k,
                   double *equity) {
-    int k_cross = (n >= 2048) ? 95 : 70;
-    if (k >= k_cross && n >= 256) {
-        HybridCtx *hc = hybrid_ctx_create(n, S, k, 8);
+    int B = select_engine(n, k);
+    if (B > 0) {
+        HybridCtx *hc = hybrid_ctx_create(n, S, k, B);
         double t = run_engine_ctx(n, S, Q, payout, k, equity,
                                   engine_hybrid_ctx, hc);
         hybrid_ctx_destroy(hc);
         return t;
-    } else if (n >= 2048) {
-        LinearCtx *lc = linear_ctx_create(n, k);
-        double t = run_linear_batched(n, S, Q, payout, k, equity, lc);
-        linear_ctx_destroy(lc);
-        return t;
     } else {
         LinearCtx *lc = linear_ctx_create(n, k);
-        double t = run_engine_ctx(n, S, Q, payout, k, equity,
-                                  engine_linear_ctx, lc);
+        double t = run_linear_batched(n, S, Q, payout, k, equity, lc);
         linear_ctx_destroy(lc);
         return t;
     }
@@ -2272,3 +2681,4 @@ double icm_run_linear_batched(int n, const double *S, int Q,
 
 void icm_v1_exact(int n, const double *S, double *V1) { v1_exact(n, S, V1); }
 void icm_v2_exact(int n, const double *S, double *V2) { v2_exact(n, S, V2); }
+

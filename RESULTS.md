@@ -58,59 +58,73 @@ Threads  Serial  Parallel  Speedup
 
 ---
 
-## AMD Ryzen 9 7950X (Zen 4, AVX-512, BQ=8)
+## AMD Ryzen 9 7950X (Zen 4, AVX-512, FFTW+MKL dual dispatch)
 
-### Single-threaded (ms, uniform stacks)
+### Single-threaded (ms, Q=256, uniform stacks, median of 5)
 
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
+64       0      1      1      0      0      1
+128      1      1      2      1      1      2
 256      1      2      4      3      4      4
-1024     5      9     16     21     23     24
-4096     9     19     30    111    120    130
-8192    17     36     62    256    283    294
+512      3      5      8      8      9     10
+1024     5      9     15     19     21     22
+2048     6     13     26     44     49     52
+4096     7     14     28    102    114    121
+8192    14     29     52    239    270    283
+16384   49    108    231    577    658    714
+32768   95    243    524   1380   1533   1622
+65536  191    668   1059   3296   3636   3955
 ```
 
-### Parallel scaling (k=n)
+### 16-thread parallel (ms, Q=256, uniform stacks, median of 5)
 
 ```
-Threads  n=8192  Speedup
-1        287     1.0x
-2        148     1.9x
-4         76     3.8x
-8         43     6.7x
-16        34     8.4x
+n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
+256      0      0      0      0      0      0
+1024     0      1      1      1      2      2
+4096     2      4      4      7      9      9
+8192     4      8      8     17     20     22
 ```
 
-### 1-second threshold: n ≈ 19,136
+### Parallel speedup (n=8192 k=n)
 
-### Dispatch: cost-based `select_engine()`, B=32 (cost-model selected)
-Note: Zen 4 numbers are pre-BQ=8-interleaved and pre-vDSP. With the interleaved
-a_batch layout, Zen 4 should see similar ~30% gains on the linear engine.
-Re-benchmark on Zen 4 hardware to get updated numbers.
+```
+Threads  Serial  Parallel  Speedup
+1        283     —         —
+16       —       22        12.9x
+```
+
+### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32)
+
+### MKL dual dispatch
+FFTW+MKL per-size best-of-both via `dlopen`. MKL wins 181/749 smooth sizes
+(mostly small composites 14-64, plus 131072 at 1.15x). FFTW wins 568/749
+(dominates 128-65536 with PATIENT wisdom, 1.02-1.42x faster).
+`calib_lib[]` array in `fft_config.h` drives per-plan library selection.
 
 ---
 
 ## Head-to-head (single-threaded, n=8192, median of 5)
 
-| k | M3 Max (current) | M3 Max (old) | Zen 4 (old) |
-|---|---|---|---|
-| k=10 | L:14 | L:20 | L:17 |
-| k=50 | L:50 | L:74 | L:36 |
-| k=100 | L:115 | H:130 | L:62 |
-| k=n/4 | H:287 | H:291 | H:256 |
-| k=n/2 | H:318 | H:337 | H:283 |
-| k=n | H:350 | H:361 | H:294 |
+| k | M3 Max | Zen 4 |
+|---|---|---|
+| k=10 | L:14 | L:14 |
+| k=50 | L:50 | L:29 |
+| k=100 | L:115 | L:52 |
+| k=n/4 | H:287 | H:239 |
+| k=n/2 | H:318 | H:270 |
+| k=n | H:350 | H:283 |
 
-M3 Max linear engine improved 25-32% (BQ=8 interleaved + vDSP).
-Zen 4 numbers are pre-optimization — expect similar linear engine gains
-from the interleaved layout (shared template).
+Zen 4 wins at all k values: 2x faster at small k (AVX-512 linear engine),
+17-19% faster at large k (calibrated FFT tree + FFTW PATIENT wisdom).
 
 ## Head-to-head (16-thread, n=8192 k=n)
 
 | Machine | Time | Speedup vs M3 Max |
 |---|---|---|
 | M3 Max (12P+4E) | 37ms | 1.0x |
-| Zen 4 7950X (16P) | 34ms | 1.09x |
+| Zen 4 7950X (16P) | 22ms | 1.68x |
 
 ## Key optimizations by device
 
@@ -138,9 +152,11 @@ from the interleaved layout (shared template).
   to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 
 ### Zen 4 specific
-- BQ=8 (AVX-512) with same interleaved layout — expects similar linear engine gains
-- L2-aware checkpointing with 1MB L2
+- FFTW+MKL dual dispatch via `dlopen` — per-size best-of-both (181/749 sizes use MKL)
+- BQ=2 batched linear with interleaved layout (AVX-512 native width)
+- L2-aware checkpointing with 1MB per-core L2
 - B=32 (vs M3 Max B=16) — cost model adapts to Zen 4's wider schoolbook-FFT crossover
+- `MKL_THREADING_LAYER=SEQUENTIAL` set automatically at init (avoids OpenMP dependency)
 
 ## FFT Phase Split (M3 Max)
 
@@ -152,4 +168,17 @@ fft_n    fwd(ns)  pw(ns)   ifft(ns) f_fwd  f_pw   f_ifft
 4096     5833     942      5338     0.48   0.08   0.44
 8192     13183    1963     13960    0.45   0.07   0.48
 16384    31920    3851     31846    0.47   0.06   0.47
+```
+
+## FFT Phase Split (Zen 4 7950X)
+
+```
+fft_n    fwd(ns)  pw(ns)   ifft(ns) f_fwd  f_pw   f_ifft
+64       55       8        52       0.48   0.07   0.46
+256      231      28       225      0.48   0.06   0.46
+512      320      55       349      0.44   0.08   0.48
+1024     617      137      722      0.42   0.09   0.49
+4096     3298     584      3407     0.45   0.08   0.47
+8192     8509     1166     11731    0.40   0.05   0.55
+16384    25481    2312     28840    0.45   0.04   0.51
 ```
