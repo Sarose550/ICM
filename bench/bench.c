@@ -82,7 +82,7 @@ static void measure_fft_overhead(void) {
     int n_plans = 0;
     for (int i = 0; i < n_sizes; i++) {
         int bfn, bwm;
-        best_fft_config(sizes[i], &bfn, &bwm);
+        best_fft_config(sizes[i], &bfn, &bwm, 0);
         plan_sizes[n_plans++] = bfn;
     }
     FFTCache *fc = fft_cache_create_sizes(plan_sizes, n_plans);
@@ -99,7 +99,7 @@ static void measure_fft_overhead(void) {
         for (int i = 0; i <= d; i++) { a[i] = 1.0 + 0.01*i; b[i] = 1.0 - 0.01*i; }
 
         int bfn, bwm;
-        best_fft_config(2 * d, &bfn, &bwm);
+        best_fft_config(2 * d, &bfn, &bwm, 0);
 
         /* Time schoolbook */
         double t0 = now_ns();
@@ -287,7 +287,7 @@ static void run_profile(void) {
 
         /* Hybrid B=8 */
         {
-            HybridCtx *hctx = hybrid_ctx_create(n, S, k, 8);
+            HybridCtx *hctx = hybrid_ctx_create(n, S, k, select_best_B(n, k));
             memset(eq, 0, n * sizeof(double));
             double t = run_engine_ctx(n, S, Q, payout, k, eq,
                                       engine_hybrid_ctx, hctx) / 1e6;
@@ -328,12 +328,18 @@ static void run_profile(void) {
    MAIN
    ══════════════════════════════════════════════════════════════ */
 
+static int dbl_cmp(const void *a, const void *b) {
+    double da = *(const double *)a, db = *(const double *)b;
+    return (da > db) - (da < db);
+}
+
 int main(int argc, char **argv) {
     int verify_only = (argc > 1 && strcmp(argv[1], "verify") == 0);
     int quick       = (argc > 1 && strcmp(argv[1], "quick") == 0);
     int profile     = (argc > 1 && strcmp(argv[1], "profile") == 0);
     int crossover   = (argc > 1 && strcmp(argv[1], "crossover") == 0);
     int threshold   = (argc > 1 && strcmp(argv[1], "threshold") == 0);
+    int single      = (argc > 1 && strcmp(argv[1], "bench") == 0);
 
 #ifdef _OPENMP
     /* Make FFTW planner thread-safe before any plan creation */
@@ -350,6 +356,38 @@ int main(int argc, char **argv) {
     wisdom_load();
 
     if (profile) { measure_fft_overhead(); measure_phase_split(); run_profile(); return 0; }
+
+    /* ── Single (n, k) benchmark: ./bench_grid bench <n> <k> [reps] ── */
+    if (single) {
+        if (argc < 4) { printf("Usage: bench_grid bench <n> <k> [reps]\n"); return 1; }
+        int n = atoi(argv[2]), k = atoi(argv[3]);
+        int reps = (argc > 4) ? atoi(argv[4]) : 5;
+        int Q = 256;
+        double *S = (double *)malloc(n * sizeof(double));
+        srand(42);
+        for (int i = 0; i < n; i++) S[i] = 1.0 + (double)rand() / (double)RAND_MAX;
+        double *payout = (double *)malloc(k * sizeof(double));
+        for (int m = 0; m < k; m++) {
+            double v = 1.0;
+            for (int j = 0; j < m; j++) v *= (double)(n - 1 - j) / (n - j);
+            payout[m] = v;
+        }
+        double *equity = (double *)calloc(n, sizeof(double));
+
+        /* Warmup */
+        icm_equity(n, S, Q, payout, k, equity);
+
+        double best = 1e18;
+        for (int r = 0; r < reps; r++) {
+            double t = icm_equity(n, S, Q, payout, k, equity);
+            double ms = t / 1e6;
+            if (ms < best) best = ms;
+            printf("  run %d: %.1f ms\n", r + 1, ms);
+        }
+        printf("best: %.1f ms (n=%d k=%d Q=%d)\n", best, n, k, Q);
+        free(S); free(payout); free(equity);
+        return 0;
+    }
 
     /* ── Crossover sweep: linear vs hybrid at fine k granularity ── */
     if (crossover) {
@@ -393,7 +431,7 @@ int main(int argc, char **argv) {
                 linear_ctx_destroy(lc);
 
                 /* Hybrid */
-                HybridCtx *hc = hybrid_ctx_create(n, S, k, 8);
+                HybridCtx *hc = hybrid_ctx_create(n, S, k, select_best_B(n, k));
                 memset(eq, 0, n * sizeof(double));
                 double t_hyb = run_engine_ctx(n, S, Q, payout, k, eq,
                                               engine_hybrid_ctx, hc) / 1e6;
@@ -430,7 +468,7 @@ int main(int argc, char **argv) {
             double *payout = (double *)malloc(hi * sizeof(double));
             for (int m = 0; m < hi; m++) payout[m] = (double)(hi - m);
             double *eq = (double *)calloc(hi, sizeof(double));
-            HybridCtx *hc = hybrid_ctx_create(hi, S, hi, 8);
+            HybridCtx *hc = hybrid_ctx_create(hi, S, hi, select_best_B(hi, hi));
             double t = run_engine_ctx(hi, S, Q, payout, hi, eq, engine_hybrid_ctx, hc) / 1e6;
             hybrid_ctx_destroy(hc);
             free(S); free(payout); free(eq);
@@ -448,7 +486,7 @@ int main(int argc, char **argv) {
             double *payout = (double *)malloc(mid * sizeof(double));
             for (int m = 0; m < mid; m++) payout[m] = (double)(mid - m);
             double *eq = (double *)calloc(mid, sizeof(double));
-            HybridCtx *hc = hybrid_ctx_create(mid, S, mid, 8);
+            HybridCtx *hc = hybrid_ctx_create(mid, S, mid, select_best_B(mid, mid));
             double t = run_engine_ctx(mid, S, Q, payout, mid, eq, engine_hybrid_ctx, hc) / 1e6;
             hybrid_ctx_destroy(hc);
             free(S); free(payout); free(eq);
@@ -474,7 +512,7 @@ int main(int argc, char **argv) {
             double *payout = (double *)malloc(n * sizeof(double));
             for (int m = 0; m < n; m++) payout[m] = (double)(n - m);
             double *eq = (double *)calloc(n, sizeof(double));
-            HybridCtx *hc = hybrid_ctx_create(n, S, n, 8);
+            HybridCtx *hc = hybrid_ctx_create(n, S, n, select_best_B(n, n));
             double t = run_engine_ctx(n, S, Q, payout, n, eq, engine_hybrid_ctx, hc) / 1e6;
             hybrid_ctx_destroy(hc);
             free(S); free(payout); free(eq);
@@ -521,7 +559,7 @@ int main(int argc, char **argv) {
             TreeCtx *tc = tree_ctx_create(n, n);
             NaiveCtx *nc = (n <= 256) ? naive_ctx_create(n, n) : NULL;
             LinearCtx *lc = (n <= 4096) ? linear_ctx_create(n, n) : NULL;
-            HybridCtx *hc = hybrid_ctx_create(n, S, n, 8);
+            HybridCtx *hc = hybrid_ctx_create(n, S, n, select_best_B(n, n));
             VE ves[4];
             int n_eng = 0;
             ves[n_eng++] = (VE){"tree",   engine_tree_ctx,   tc};
@@ -625,11 +663,9 @@ int main(int argc, char **argv) {
         double *payout = (double *)malloc(k_sub * sizeof(double));
         for (int m = 0; m < k_sub; m++) payout[m] = (double)(n - m);
 
-        /* Full computation */
+        /* Full computation via public API (uses same dispatch as subset) */
         double *eq_full = (double *)calloc(n, sizeof(double));
-        HybridCtx *hc = hybrid_ctx_create(n, S, k_sub, 8);
-        run_engine_ctx(n, S, Q, payout, k_sub, eq_full, engine_hybrid_ctx, hc);
-        hybrid_ctx_destroy(hc);
+        icm_equity(n, S, Q, payout, k_sub, eq_full);
 
         /* Subset: 10 random players */
         int targets[] = {0, 7, 42, 100, 255, 500, 777, 900, 999, 1023};
@@ -675,11 +711,16 @@ int main(int argc, char **argv) {
     };
     int n_ks = 6;
 
+    /* Median of BENCH_REPS: sort and take middle element */
+    #define BENCH_REPS 5
+    #define MEDIAN5(arr) do { qsort(arr, BENCH_REPS, sizeof(double), dbl_cmp); } while(0)
+
     printf("%-6s", "n");
     for (int ki = 0; ki < n_ks; ki++) printf("  %-30s", kspecs[ki].label);
     printf("\n");
     for (int i = 0; i < 6 + n_ks * 32; i++) printf("-");
     printf("\n");
+    printf("(median of %d runs per engine per cell)\n\n", BENCH_REPS);
 
     for (int ni = 0; ni < n_bn; ni++) {
         int n = bench_ns[ni];
@@ -701,33 +742,60 @@ int main(int argc, char **argv) {
             double times[4] = {-1, -1, -1, -1};
             const char *names[4] = {"T", "N", "L", "H"};
 
-            /* Tree (pure, for comparison) */
+            /* Tree (pure, for comparison) — median of BENCH_REPS */
             if ((double)n * k < 5e9) {
                 TreeCtx *tc = tree_ctx_create(n, k);
+                double samples[BENCH_REPS];
+                /* warmup */
                 memset(eq, 0, n * sizeof(double));
-                times[0] = run_engine_ctx(n, S, Q, payout, k, eq,
-                                          engine_tree_ctx, tc) / 1e6;
+                run_engine_ctx(n, S, Q, payout, k, eq, engine_tree_ctx, tc);
+                for (int r = 0; r < BENCH_REPS; r++) {
+                    memset(eq, 0, n * sizeof(double));
+                    samples[r] = run_engine_ctx(n, S, Q, payout, k, eq,
+                                                engine_tree_ctx, tc) / 1e6;
+                }
+                MEDIAN5(samples);
+                times[0] = samples[BENCH_REPS / 2];
                 tree_ctx_destroy(tc);
             }
 
-            /* Hybrid (B=8) */
+            /* Hybrid — median of BENCH_REPS */
             if ((double)n * k < 5e9 && n >= 16) {
-                HybridCtx *hctx = hybrid_ctx_create(n, S, k, 8);
+                HybridCtx *hctx = hybrid_ctx_create(n, S, k, select_best_B(n, k));
+                double samples[BENCH_REPS];
+                /* warmup */
                 memset(eq, 0, n * sizeof(double));
-                times[3] = run_engine_ctx(n, S, Q, payout, k, eq,
-                                          engine_hybrid_ctx, hctx) / 1e6;
+                run_engine_ctx(n, S, Q, payout, k, eq, engine_hybrid_ctx, hctx);
+                for (int r = 0; r < BENCH_REPS; r++) {
+                    memset(eq, 0, n * sizeof(double));
+                    samples[r] = run_engine_ctx(n, S, Q, payout, k, eq,
+                                                engine_hybrid_ctx, hctx) / 1e6;
+                }
+                MEDIAN5(samples);
+                times[3] = samples[BENCH_REPS / 2];
                 hybrid_ctx_destroy(hctx);
             }
 
-            /* Linear: batched for large n, non-batched for small n */
-            if ((double)n * k < 1e8) {
+            /* Linear: only where it could plausibly beat hybrid (k ≤ 200 or n ≤ 512) */
+            if (k <= 200 || n <= 512) {
                 LinearCtx *lc = linear_ctx_create(n, k);
+                double samples[BENCH_REPS];
+                /* warmup */
                 memset(eq, 0, n * sizeof(double));
                 if (n >= 2048)
-                    times[2] = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
+                    run_linear_batched(n, S, Q, payout, k, eq, lc);
                 else
-                    times[2] = run_engine_ctx(n, S, Q, payout, k, eq,
-                                              engine_linear_ctx, lc) / 1e6;
+                    run_engine_ctx(n, S, Q, payout, k, eq, engine_linear_ctx, lc);
+                for (int r = 0; r < BENCH_REPS; r++) {
+                    memset(eq, 0, n * sizeof(double));
+                    if (n >= 2048)
+                        samples[r] = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
+                    else
+                        samples[r] = run_engine_ctx(n, S, Q, payout, k, eq,
+                                                    engine_linear_ctx, lc) / 1e6;
+                }
+                MEDIAN5(samples);
+                times[2] = samples[BENCH_REPS / 2];
                 linear_ctx_destroy(lc);
             }
 

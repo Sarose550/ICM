@@ -16,33 +16,25 @@ no FFT. Baseline: n=1024 k=n took 689ms.
 Three engines with dispatch:
 
 ```c
-int k_cross = (n >= 2048) ? 95 : 70;
-if (k >= k_cross && n >= 256)
-    use hybrid(B=8);    // block build + FFT tree + bidirectional divide
-else if (n >= 2048)
-    use linear_batched;  // 2 quad points interleaved, fused backward pass
+int B = select_engine(n, k);  // cost-based: compares linear vs hybrid
+if (B > 0)
+    use hybrid(B);        // block build + FFT tree + bidirectional divide
 else
-    use linear;          // plain forward-backward, fused backward pass
+    use linear_batched;   // BQ=8 quad points, interleaved layout, fused backward pass
 ```
 
 ### Final Performance
 
-Single-threaded (ms, Q=256, Apple M3 Max):
+Single-threaded (ms, Q=256, Apple M3 Max, median of 5):
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
-1024     3     11     18     21     25     27
-4096     9     37     72    126    142    153
-8192    19     73    143    297    343    360
-```
-
-16-thread parallel (ms):
-```
-n        k=n     ratio_to_8192
-8192     46      1.0x
-16384    110     2.4x
-32768    249     5.4x
-65536    569     12.3x
-131072   1216    26.2x
+256      1      3      4      3      4      4
+1024     3     11     16     21     24     27
+4096     7     24     46    121    137    147
+8192    14     50    115    287    318    350
+16384   28    122    230    660    709    752
+32768   55    240    457   1511   1710   1808
+65536  135    460    937   3480   4017   4392
 ```
 
 ## Optimizations — What Worked (ordered by impact)
@@ -173,7 +165,10 @@ FFTW plan creation before parallel region (not thread-safe). Context cloning use
 `FFTW_MEASURE | FFTW_WISDOM_ONLY` with ESTIMATE fallback — this gives cloned
 contexts the same PATIENT-quality plans as the original (critical for parallel
 performance; using bare ESTIMATE produces significantly slower plans).
-~8-10x on M3 Max's 12P+4E topology.
+~9.5x on M3 Max's 12P+4E topology (n=8192 k=n: 350ms serial → 37ms 16-thread).
+HybridCtx pre-allocates permutation buffers (`a_sorted`, `inner_sorted`) to avoid
+per-call malloc under parallel allocator contention — without this, tree beats hybrid
+in parallel despite hybrid winning in serial.
 
 ### 4. Truncated Correlate (35-40% at below-saturation levels)
 Exploit sparsity of P (only d+1 non-zero terms) AND limited range of g (only need
@@ -190,15 +185,18 @@ The paired cached variant was measured at 11-16% improvement at moderate k (wher
 cached levels dominate) and 3% at large k (fewer cached levels relative to total).
 
 ### 6. Quad-Point Batching for Linear Engine (2x at small k, large n)
-Interleave 2 quadrature points in the data layout. The inner loop vectorizes across
-quad points (NEON width 2) instead of across the tiny k dimension. Only helps for
-n ≥ 2048 (interleave overhead exceeds savings at smaller n).
+Interleave BQ=8 quadrature points in the data layout (`a_batch[j*BQ+qi]`). The inner
+loop vectorizes across quad points instead of across the tiny k dimension. The
+interleaved layout is cache-friendly (contiguous access) and eliminates L1 misses that
+occurred with the old strided layout. BQ=8 maps to 4 NEON FMA ports on Apple Silicon
+and native AVX-512 width on Zen 4. Only helps for n ≥ 2048 (interleave overhead
+exceeds savings at smaller n). Template in `src/linear_batched_impl.inc`.
 
 ### 7. Hybrid Block-Divide Engine (8-12%)
 Replace the tree's bottom log₂(B) levels with: sequential block build (tight loop,
 no tree overhead) + bidirectional divide (stable on the complete block product).
-B=8 is optimal on ARM. Players sorted by stack size for branch-prediction-friendly
-divide direction.
+B is selected by cost model (`select_best_B`): typically B=16 on M3 Max, B=32 on Zen 4.
+Players sorted by stack size for branch-prediction-friendly divide direction.
 
 ### 8. Truncated Propagation (2-5%)
 Only compute g_needed[ell-1] output terms at each level instead of full cgsz.
@@ -271,7 +269,7 @@ becomes essential.
 
 The hybrid engine IS the blocked linear: block build = forward within a block,
 divide = backward within a block, tree = inter-block structure. The block's working
-set (B=8 → 72 bytes) fits trivially in registers.
+set (B=16 → ~144 bytes) fits trivially in registers.
 
 ## OpenMP Parallelism
 
@@ -290,99 +288,164 @@ OMP_NUM_THREADS=16 ./bench_grid
 - Batched linear parallelized over Q/2 pairs with `schedule(dynamic, 4)`
 - ~10x speedup on M3 Max (limited by mixed P/E core topology and thread overhead)
 
-## Fine-Tuning for AMD Zen 4 (Ryzen 7950X)
+## Porting to a New Device (General)
 
-### Key Architectural Differences
-- **SIMD**: AVX-512 (8 FP64/vector) vs M3 Max's NEON (2 FP64/vector)
-- **Memory BW**: ~60 GB/s DDR5 vs M3 Max's 400 GB/s unified
-- **L1 cache**: 32KB vs M3 Max's 192KB
-- **L2 cache**: 1MB/core vs M3 Max's 32MB cluster
-- **Cores**: 16P (no E-cores) vs M3 Max's 12P + 4E
-- **FMA throughput**: 2× 512-bit FMA/cycle = 16 FP64 FMA/cycle vs M3 Max's ~4
+The codebase is designed for easy porting. All device-specific tuning lives in
+`devices/<DEVICE>/fft_config.h` — no changes to `src/icm.c` needed. The engines,
+cost models, and dispatch logic are fully parameterized by the constants in that header.
 
-### Step-by-step calibration
+## Porting to AMD Zen 4 (Ryzen 7950X)
 
-**Step 1: Calibrate FFT sizes (generates fft_config.h + fftw_wisdom.dat).**
+### Key Architectural Differences from M3 Max
+- **SIMD**: AVX-512 (8 FP64/vector) vs NEON (2 FP64/vector)
+- **Memory BW**: ~60 GB/s DDR5 vs 400 GB/s unified
+- **L1 cache**: 32KB vs 192KB
+- **L2 cache**: 1MB/core vs 32MB cluster
+- **Cores**: 16P (no E-cores) vs 12P + 4E
+- **FMA throughput**: 2× 512-bit FMA/cycle = 16 FP64 FMA/cycle vs ~4
+- **No vDSP/AMX**: Apple-only features auto-disabled via `#ifdef __APPLE__`
+
+### Complete step-by-step porting guide
+
+**Step 1: Generate calibration data.**
+
+This is the most important step — all cost models depend on accurate per-size FFT
+timings. Run on the target machine with minimal background load.
+
 ```bash
+# Build the calibration tool
 gcc -O3 -march=znver4 -o calibrate tools/calibrate.c -lfftw3 -lm
-taskset -c 0 nice -20 ./calibrate     # 10-30 min on quiet machine
+
+# Run calibration (pin to one core, high priority). Takes 10-30 min.
+taskset -c 0 nice -20 ./calibrate
+
+# Copy outputs to device directory
+mkdir -p devices/zen4
 cp fft_config.h devices/zen4/fft_config.h
 cp fftw_wisdom.dat devices/zen4/fftw_wisdom.dat
 ```
-This generates FFTW PATIENT wisdom for all 749 smooth sizes, benchmarks the full
-r2c + pointwise + c2r pipeline at each size, and writes the calibration header.
 
-**Step 2: Build and measure platform constants.**
-```bash
-make DEVICE=zen4    # or: gcc -O3 -march=znver4 -Isrc -Idevices/zen4 ...
-./bench_grid profile
-```
-The profile output has three measurement tables:
-- **FFT overhead**: the "overhead" column gives `FFT_OVERHEAD_NS`.
-- **Phase split**: `f_fwd`, `f_pw`, `f_ifft` fractions. Compute:
-  - `PAIRED_CACHED_CORR_RATIO = f_fwd + 2×(f_pw + f_ifft)` (relative to fwd+pw+ifft sum,
-    then scale by sum/calib to get ratio relative to calib).
-  - `INDEP_PAIR_RATIO = (3×fwd + 2×pw + 2×ifft) / calib` at representative sizes.
-- **Schoolbook row** in FFT overhead table: derive `FMA_NS` from
-  `school_ns / cps²` at the largest schoolbook size.
+This generates:
+- FFTW PATIENT wisdom for all 749 smooth sizes (2^a·3^b·5^c·7^d up to 131072)
+- `calib_sizes[]` and `calib_times_ns[]` arrays with per-size FFT pipeline costs
+- Skeleton `#define`s for platform constants (need manual update in Step 3)
 
-Update the `#define`s at the top of `devices/zen4/fft_config.h`:
-```c
-#define FMA_NS 0.06               /* expected: ~0.06-0.08 with AVX-512 */
-#define FFT_OVERHEAD_NS 30.0      /* measure from profile output */
-#define PAIRED_CACHED_CORR_RATIO 1.03  /* re-derive from phase split */
-#define INDEP_PAIR_RATIO 1.25     /* re-derive from phase split */
-```
+**Step 2: Build and profile.**
 
-**Step 3: Rebuild and tune dispatch.**
 ```bash
 make DEVICE=zen4
+./bench_grid profile
+```
+
+The profile output has three measurement sections. Record these values:
+
+1. **FFT overhead table** — The "overhead" column is the per-call constant cost
+   not captured in calibration (plan lookup, buffer copies, result extraction).
+   → `FFT_OVERHEAD_NS`
+
+2. **Schoolbook row** in the overhead table — `school_ns / cps²` at the largest
+   schoolbook size gives the scalar FMA cost.
+   → `FMA_NS` (expect ~0.06-0.08 with AVX-512)
+
+3. **Phase split table** — `f_fwd`, `f_pw`, `f_ifft` fractions at each FFT size.
+   Compute the paired/independent correlate ratios:
+   - `PAIRED_CACHED_CORR_RATIO`: shares FFT(g) and reuses cached FFT(P).
+     Cost = fwd(g) + 2×(pw + ifft). Ratio = this / full_pipeline_calib.
+     M3 Max measured 1.03.
+   - `INDEP_PAIR_RATIO`: shares FFT(g), computes FFT(P) fresh.
+     Cost = fwd(g) + 2×(fwd(P) + pw + ifft). Ratio = this / full_pipeline_calib.
+     M3 Max measured 1.25.
+
+4. **Memory-bound FMA cost** — For the linear engine's inner loop, which is
+   memory-bound (not compute-bound), the effective FMA cost is higher than
+   the pure compute `FMA_NS`. Measure by running `./bench_grid bench 4096 50`
+   and comparing actual time to `n × k × 2 × POLYMUL_FMA_NS`.
+   → `POLYMUL_FMA_NS` (M3 Max: 0.13, estimated Zen 4: ~0.02 due to AVX-512 width)
+
+**Step 3: Update platform constants in `devices/zen4/fft_config.h`.**
+
+Edit the `#define`s at the top of the file with measured values:
+
+```c
+#define FMA_NS             0.08    /* scalar FMA cost from profile schoolbook row */
+#define POLYMUL_FMA_NS     0.02    /* memory-bound FMA cost from bench measurement */
+#define FFT_OVERHEAD_NS    48.0    /* per-call FFT overhead from profile */
+#define PAIRED_CACHED_CORR_RATIO 1.08  /* from phase split */
+#define INDEP_PAIR_RATIO   1.30    /* from phase split */
+#define L2_CACHE_SIZE      (1 * 1024 * 1024)  /* 1MB per-core L2 */
+```
+
+**Important**: `L2_CACHE_SIZE` controls the checkpointing interval in the batched
+linear engine (`ckpt_interval_batched`). Zen 4's 1MB L2 vs M3 Max's 32MB means
+checkpointing activates much earlier, which is critical — without it, the linear
+engine would stream through DRAM at 60 GB/s instead of L2 at ~1 TB/s.
+
+**Step 4: Rebuild and verify.**
+
+```bash
+make DEVICE=zen4
+./bench_grid verify     # ALL TESTS PASSED required — do not proceed without this
+```
+
+**Step 5: Verify dispatch decisions.**
+
+```bash
 ./bench_grid crossover    # sweep k=40-150 at n=512-8192
 ```
-Find the k where hybrid first beats linear at each n. Update `k_cross` in
-`icm_equity()` and `compute_equity_subset()` if the crossover shifted.
 
-**Step 4: Tune Zen 4-specific parameters in icm.c.**
+This runs both linear and hybrid at each (n, k) and shows which wins. The
+`select_engine()` cost model should match the empirical crossover. If it doesn't,
+check that `FMA_NS`, `POLYMUL_FMA_NS`, and `FFT_OVERHEAD_NS` are correct — the
+dispatch is fully derived from these constants and the calibration table.
 
-| Parameter | M3 Max | Expected Zen 4 | How to tune |
-|-----------|--------|----------------|-------------|
-| `BQ` | 2 | 4 or 8 | AVX-512 is 8-wide; test BQ=4 and BQ=8 in `run_linear_batched` |
-| `CKPT_THRESHOLD` | 4194304 (32MB) | ~250K-500K | 1MB L2; sweep with `./bench_grid quick` |
-| `B` (hybrid) | 8 | 8 | Benchmarked: B=8 is optimal (B=16/32 help <3%, B=64 regresses). Keep 8 unless Zen 4 data disagrees — sweep B=4,8,16,32 to confirm |
-| `k_cross` | 95/70 | Measure | From crossover sweep |
-| `OMP_NUM_THREADS_DEFAULT` | 16 | 16 | Match physical core count |
+No manual `K_CROSS` tuning is needed — dispatch is cost-based.
 
-**Step 5: Test Karatsuba for intermediate multiply sizes.**
+**Step 6: Run the full benchmark grid.**
+
+```bash
+./bench_grid              # full grid, single-threaded
+OMP_NUM_THREADS=16 ./bench_grid   # parallel scaling
+```
+
+Record results in RESULTS.md under the Zen 4 section.
+
+### What auto-adapts (no manual tuning)
+
+These features automatically adapt to Zen 4 via the calibration data and constants:
+
+| Feature | How it adapts |
+|---|---|
+| `select_engine(n,k)` | Compares linear cost (using `POLYMUL_FMA_NS`) vs hybrid cost (using `calib_times_ns[]`). Zen 4's faster schoolbook shifts crossover to higher k |
+| `select_best_B(n,k)` | Derives optimal block size from calibration data. Typically B=32 on Zen 4 (vs B=16 on M3 Max) because wider schoolbook regime |
+| `ckpt_interval_batched` | Sized to fit working set in `L2_CACHE_SIZE`. Activates much earlier on Zen 4 (1MB vs 32MB) |
+| BQ=8 batched linear | Same interleaved `a_batch[j*BQ+qi]` layout. AVX-512 processes 8 doubles natively per instruction |
+| Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |
+| `best_fft_config()` | Picks optimal FFT size + wrap correction from Zen 4-specific calibration table |
+| vDSP dispatch | Auto-disabled (not Apple Silicon). All FFTs use FFTW |
+| AMX schoolbook | Auto-disabled (not Apple Silicon). All schoolbook uses scalar FMA |
+
+### What does NOT auto-adapt (needs measurement)
+
+| Constant | Why manual | How to measure |
+|---|---|---|
+| `FMA_NS` | Hardware-specific scalar FMA cost | `./bench_grid profile` schoolbook row |
+| `POLYMUL_FMA_NS` | Memory-bound FMA cost, depends on cache hierarchy | `./bench_grid bench` + manual calculation |
+| `FFT_OVERHEAD_NS` | Plan lookup + buffer copy cost | `./bench_grid profile` overhead column |
+| `PAIRED_CACHED_CORR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split |
+| `INDEP_PAIR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split |
+| `L2_CACHE_SIZE` | Hardware spec | CPU datasheet |
+
+### Optional: Karatsuba at intermediate sizes
+
 AVX-512 makes schoolbook ~4x faster than on NEON, potentially opening a gap between
 schoolbook and FFT where Karatsuba (O(n^1.585)) could win. Prior from M3 Max testing:
 Karatsuba was 1.5x slower at all sizes (FMA hardware makes schoolbook's n² FMAs cheap).
 On Zen 4, wider SIMD inflates the schoolbook regime further, making Karatsuba even less
 likely to help — but measure to be sure.
 
-Test approach: implement Karatsuba multiply for sizes 64, 128, 256, 512, 1024.
-Use the standard recursive formulation with a schoolbook base case at size 16-32.
-Search the internet for optimized AVX-512 Karatsuba implementations as reference.
-Compare against both schoolbook (`polymul_modk`) and FFT (`polymul_fft_wrap`) at each
-size. If Karatsuba beats both at any size, add it as a per-level option in the tree.
-If not (expected), document the result and move on.
+### Optional: Intel MKL as alternative FFT backend
 
-**Step 6: Checkpointing tuning.**
-With ~5x less memory bandwidth than M3 Max, streaming through large g_store arrays
-becomes bandwidth-bound. Lower `CKPT_THRESHOLD` to fit the linear engine's working set
-in L2. Sweep values:
-```c
-#define CKPT_THRESHOLD 262144   /* try 2MB (256K doubles) */
-#define CKPT_THRESHOLD 524288   /* try 4MB (512K doubles) */
-#define CKPT_THRESHOLD 1048576  /* try 8MB (1M doubles) */
-```
-Measure at n=4096 k=100 (linear-dominated) and n=8192 k=50 (linear-dominated, large).
-
-**Step 7: Verify and benchmark.**
-```bash
-./bench_grid verify     # ALL TESTS PASSED required
-./bench_grid            # full grid
-OMP_NUM_THREADS=16 ./bench_grid   # parallel scaling
-```
+See "FFT library choice: FFTW vs Intel MKL" section below for dual-library dispatch.
 
 ### FFT library choice: FFTW vs Intel MKL
 
@@ -552,7 +615,7 @@ Research (CUMODP library) suggests the schoolbook→FFT crossover on GPU is at
 ### Step 4: Hybrid block size on GPU
 
 The much higher schoolbook→FFT crossover fundamentally changes the hybrid strategy.
-On CPU, B=8 (schoolbook up to degree 8). On GPU, B=64 to B=256 may be optimal:
+On CPU, B=16-32 (cost-model selected). On GPU, B=64 to B=256 may be optimal:
 
 - B=64: eliminates 6 bottom tree levels, each needing a kernel launch + sync
 - B=256: eliminates 8 levels. Block products are degree-256 polynomials,
