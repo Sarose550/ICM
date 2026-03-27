@@ -23,6 +23,7 @@ n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
 ```
 
 Improvements vs original (BQ=2, FFTW-only, threshold dispatch):
+
 - Linear engine paths (k≤100): **25-32% faster** (BQ=8 with interleaved a_batch layout)
 - Hybrid/tree paths (k=n): **3-6% faster** (vDSP FFT dispatch + calibrated size selection)
 - Cost-based engine dispatch replaces fixed K_CROSS thresholds
@@ -107,6 +108,7 @@ Threads  Serial  Parallel  Speedup
 ### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32)
 
 ### MKL dual dispatch
+
 FFTW+MKL per-size best-of-both via `dlopen`. MKL wins 181/749 smooth sizes
 (mostly small composites 14-64, plus 131072 at 1.15x). FFTW wins 568/749
 (dominates 128-65536 with PATIENT wisdom, 1.02-1.42x faster).
@@ -116,51 +118,58 @@ FFTW+MKL per-size best-of-both via `dlopen`. MKL wins 181/749 smooth sizes
 
 ## Head-to-head (single-threaded, n=8192, median of 5)
 
-| k | M3 Max | Zen 4 |
-|---|---|---|
-| k=10 | L:14 | L:15 |
-| k=50 | L:50 | L:29 |
-| k=100 | L:115 | L:56 |
-| k=n/4 | H:287 | H:251 |
-| k=n/2 | H:318 | H:287 |
-| k=n | H:350 | H:296 |
+
+| k     | M3 Max | Zen 4 |
+| ----- | ------ | ----- |
+| k=10  | L:14   | L:15  |
+| k=50  | L:50   | L:29  |
+| k=100 | L:115  | L:56  |
+| k=n/4 | H:287  | H:251 |
+| k=n/2 | H:318  | H:287 |
+| k=n   | H:350  | H:296 |
+
 
 Zen 4 wins at all k values: ~2x faster at small k (AVX-512 linear engine),
 12-16% faster at large k (calibrated FFT tree + FFTW PATIENT wisdom).
 
 ## Head-to-head (16-thread, n=8192 k=n)
 
-| Machine | Time | Speedup vs M3 Max |
-|---|---|---|
-| M3 Max (12P+4E) | 37ms | 1.0x |
-| Zen 4 7950X (16P) | 24ms | 1.54x |
+
+| Machine           | Time | Speedup vs M3 Max |
+| ----------------- | ---- | ----------------- |
+| M3 Max (12P+4E)   | 37ms | 1.0x              |
+| Zen 4 7950X (16P) | 24ms | 1.54x             |
+
 
 ## Key optimizations by device
 
 ### Both platforms
+
 - FFTW PATIENT wisdom + MEASURE|WISDOM_ONLY for clones
 - Paired cached correlate (shares FFT(g) + cached FFT(P))
 - Cost-model-driven B selection (`select_best_B`)
 - Shared tree_build_levels / tree_propagate_g helpers
 - BQ=8 batched linear with interleaved a_batch layout
-  (`a_batch[j*BQ+qi]` — cache-friendly, eliminates L1 misses at all n).
-  Template in `src/linear_batched_impl.inc`.
+(`a_batch[j*BQ+qi]` — cache-friendly, eliminates L1 misses at all n).
+Template in `src/linear_batched_impl.inc`.
 - L2-aware checkpointing (`ckpt_interval_batched`)
 - Cost-based engine dispatch (`select_engine`) — no fixed K_CROSS thresholds
 - Cross-correlation wrap correction handles both output-wrap and input-wrap
-  cyclic aliasing (corrects a pre-existing bug with wrap_m > 0)
+cyclic aliasing (corrects a pre-existing bug with wrap_m > 0)
 - AMX FP64 infrastructure for Apple Silicon (`src/amx.h`) — validated, gated
-  at AMX_SCHOOL_MIN_DEG=160 (AMX only wins at degree ≥170 due to extraction overhead)
+at AMX_SCHOOL_MIN_DEG=160 (AMX only wins at degree ≥170 due to extraction overhead)
 
 ### M3 Max specific
+
 - vDSP interleaved DFT dispatch (`vDSP_DFT_Interleaved_CreateSetupD`) — 10-18%
-  faster FFT at 33 supported sizes (f × 2^g where f ∈ {1,3,5,15}, g ≥ 4).
-  Zero format conversion (uses same interleaved complex as FFTW). Forward ×2
-  scaling absorbed into pointwise multiply; single ×0.25 on inverse output.
+faster FFT at 33 supported sizes (f × 2^g where f ∈ {1,3,5,15}, g ≥ 4).
+Zero format conversion (uses same interleaved complex as FFTW). Forward ×2
+scaling absorbed into pointwise multiply; single ×0.25 on inverse output.
 - Calibration table updated with vDSP dispatch times, steering `best_fft_config()`
-  to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
+to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 
 ### Zen 4 specific
+
 - FFTW+MKL dual dispatch via `dlopen` — per-size best-of-both (181/749 sizes use MKL)
 - BQ=2 batched linear with interleaved layout (AVX-512 native width)
 - L2-aware checkpointing with 1MB per-core L2
@@ -191,3 +200,4 @@ fft_n    fwd(ns)  pw(ns)   ifft(ns) f_fwd  f_pw   f_ifft
 8192     8509     1166     11731    0.40   0.05   0.55
 16384    25481    2312     28840    0.45   0.04   0.51
 ```
+
