@@ -789,17 +789,16 @@ static int pick_fft_size_for_conv(const std::vector<int> &smooth, int conv_len) 
 }
 
 static double tree_school_ns_per_fma() {
-    /* Use calibrated parallel schoolbook rate if available, otherwise fall back
-     * to GPU_SCHOOL_FMA_NS (pure FMA stream, lower bound).
-     * NOTE: Do NOT clamp by GPU_BLOCK_BUILD_NS_PER_FMA — the block build is a
-     * serial recurrence (latency-limited), while the schoolbook kernel is
-     * embarrassingly parallel (throughput-limited). Using the serial rate here
-     * over-penalizes schoolbook levels by ~6x, preventing the cost model from
-     * selecting small B values (B=1,2,4) that eliminate the serial bottleneck. */
+    /* GPU_SCHOOL_FMA_NS is measured from a pure FMA stream and materially
+     * under-estimates full polynomial schoolbook kernels (register pressure,
+     * indexing, memory traffic, __syncwarp). Clamp by the measured block-build
+     * FMA cost so tier assignment does not over-predict schoolbook.
+     * Benchmarking confirmed B=1 (all-schoolbook bottom levels) is 20-56%
+     * SLOWER than larger B, validating this clamp. */
 #ifdef GPU_TREE_SCHOOL_NS_PER_FMA
     return GPU_TREE_SCHOOL_NS_PER_FMA;
 #else
-    return GPU_SCHOOL_FMA_NS;
+    return std::max(GPU_SCHOOL_FMA_NS, GPU_BLOCK_BUILD_NS_PER_FMA);
 #endif
 }
 
@@ -2933,15 +2932,27 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
                                  cudaMemcpyHostToDevice, plan->stream_compute))) return false;
 
     size_t leaf_stride = (size_t)plan->nn[0] * (size_t)plan->psz[0];
-    size_t bp_stride = (size_t)plan->N_tree * (size_t)(plan->B + 1);
-    int threads_block = 256;
-    size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-    k_block_build_qbatch<<<qb * plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
-        (const double * const *)d_a_ptrs, plan->n, plan->B,
-        plan->nblocks, plan->N_tree, qb,
-        plan->psz[0], plan->d_poly_levels[0], leaf_stride,
-        plan->d_block_prods_qbatch, bp_stride);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    if (plan->B <= 1) {
+        /* B=1: set leaves directly for each Q-point in the batch */
+        for (int qi = 0; qi < qb; ++qi) {
+            int bl = (plan->N_tree + 255) / 256;
+            double *leaves_qi = plan->d_poly_levels[0] + qi * leaf_stride;
+            k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
+                plan->d_a_qbatch[qi], plan->n, plan->N_tree,
+                plan->psz[0], leaves_qi);
+        }
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    } else {
+        size_t bp_stride = (size_t)plan->N_tree * (size_t)(plan->B + 1);
+        int threads_block = 256;
+        size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
+        k_block_build_qbatch<<<qb * plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
+            (const double * const *)d_a_ptrs, plan->n, plan->B,
+            plan->nblocks, plan->N_tree, qb,
+            plan->psz[0], plan->d_poly_levels[0], leaf_stride,
+            plan->d_block_prods_qbatch, bp_stride);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
 
     /* 3. Tree build for all Q-points (q_batch-scaled batch sizes) */
     for (int ell = 1; ell < plan->L - 1; ++ell) {
@@ -2973,15 +2984,28 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     /* 6. Leaf extract for all Q-points */
     size_t leaf_g_stride = (size_t)plan->nn[0] * (size_t)plan->psz[0];
     size_t inner_stride = (size_t)plan->n;
-    int threads_leaf = plan->B;
-    if (threads_leaf > 1024) threads_leaf = 1024;
-    k_leaf_extract_qbatch<<<qb * plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
-        (const double * const *)d_a_ptrs, plan->n, plan->B, plan->nblocks,
-        plan->d_block_prods_qbatch, bp_stride,
-        plan->d_g_levels[0], plan->psz[0], leaf_g_stride,
-        plan->g_needed[0], plan->k, qb,
-        plan->d_inner_qbatch, inner_stride);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    if (plan->B <= 1) {
+        /* B=1: direct read of g_leaf[i][0] for each Q-point */
+        for (int qi = 0; qi < qb; ++qi) {
+            int bl = (plan->n + 255) / 256;
+            double *g_leaf_qi = plan->d_g_levels[0] + qi * leaf_g_stride;
+            double *inner_qi = plan->d_inner_qbatch + qi * inner_stride;
+            k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
+                plan->n, g_leaf_qi, plan->psz[0], inner_qi);
+        }
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    } else {
+        size_t bp_stride_local = (size_t)plan->N_tree * (size_t)(plan->B + 1);
+        int threads_leaf = plan->B;
+        if (threads_leaf > 1024) threads_leaf = 1024;
+        k_leaf_extract_qbatch<<<qb * plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
+            (const double * const *)d_a_ptrs, plan->n, plan->B, plan->nblocks,
+            plan->d_block_prods_qbatch, bp_stride_local,
+            plan->d_g_levels[0], plan->psz[0], leaf_g_stride,
+            plan->g_needed[0], plan->k, qb,
+            plan->d_inner_qbatch, inner_stride);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
 
     /* 7. Accumulate equity for all Q-points.
      * Upload weights and inv_vs to pre-allocated device buffers. */
