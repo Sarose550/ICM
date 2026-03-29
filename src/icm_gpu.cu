@@ -2071,9 +2071,9 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     if (!CUFFT_OK(cufftSetStream(c.plan_fwd, plan->stream_compute))) return false;
     if (!CUFFT_OK(cufftSetStream(c.plan_inv, plan->stream_compute))) return false;
 
-    /* FFT cache is per-level (persistent) -- always allocate for graph compatibility.
-     * Scale by q_batch for batched Q processing. */
-    if (lp.cache_fft) {
+    /* FFT cache: allocated by arena or by alloc_device if arena not used.
+     * Skip if already set (arena mode). */
+    if (lp.cache_fft && !plan->d_fft_cache[ell]) {
         size_t bytes_cache = (size_t)qb * (size_t)child_batch * (size_t)cn * sizeof(cufftDoubleComplex);
         if (!alloc_device(plan, (void **)&plan->d_fft_cache[ell], bytes_cache, plan->stream_compute)) return false;
     }
@@ -2191,8 +2191,8 @@ static bool build_plan_metadata(GpuPlan *plan) {
     const char *dbg_env = getenv("ICM_GPU_DEBUG_PLAN");
     if (dbg_env && dbg_env[0] && atoi(dbg_env) != 0) debug_plan = 1;
     if (debug_plan) {
-        fprintf(stderr, "gpu_plan n=%d k=%d k_pad=%d B=%d L=%d nblocks=%d\n",
-                plan->n, plan->k, plan->k_pad, plan->B, plan->L, plan->nblocks);
+        fprintf(stderr, "gpu_plan n=%d k=%d k_pad=%d B=%d L=%d nblocks=%d q_batch=%d\n",
+                plan->n, plan->k, plan->k_pad, plan->B, plan->L, plan->nblocks, plan->q_batch);
     }
     for (int ell = 1; ell < plan->L; ++ell) {
         int cps = plan->psz[ell - 1];
@@ -2405,56 +2405,7 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     if (!maybe_init_mem_pool(plan)) return false;
 
     int qb = plan->q_batch;
-
-    if (!alloc_device(plan, (void **)&plan->d_S_sorted, (size_t)plan->n * sizeof(double), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_sort_perm, (size_t)plan->n * sizeof(int), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_inv_perm, (size_t)plan->n * sizeof(int), plan->stream_compute)) return false;
-    /* Legacy single-Q a buffers (for graph path and single-Q fallback) */
-    if (!alloc_device(plan, (void **)&plan->d_a_sorted[0], (size_t)plan->n * sizeof(double), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_a_sorted[1], (size_t)plan->n * sizeof(double), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_graph_logv[0], sizeof(double), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_graph_logv[1], sizeof(double), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_graph_scale[0], sizeof(double), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_graph_scale[1], sizeof(double), plan->stream_compute)) return false;
-    /* Legacy single-Q inner_sorted */
-    if (!alloc_device(plan, (void **)&plan->d_inner_sorted, (size_t)plan->n * sizeof(double), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_equity, (size_t)plan->n * sizeof(double), plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&plan->d_payout, (size_t)plan->k * sizeof(double), plan->stream_compute)) return false;
-
-    /* Legacy single-Q block_prods (not needed for B=1) */
-    size_t block_prod_bytes = (plan->B > 1) ? (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double) : 0;
-    if (block_prod_bytes > 0) {
-        if (!alloc_device(plan, (void **)&plan->d_block_prods, block_prod_bytes, plan->stream_compute)) return false;
-    }
-
-    /* Alternate leaf/block_prods for multi-stream Q-pipeline double-buffering */
-    if (plan->opts.enable_q_pipeline) {
-        size_t leaf_bytes = (size_t)plan->nn[0] * (size_t)plan->psz[0] * sizeof(double);
-        if (!alloc_device(plan, (void **)&plan->d_poly_leaves_alt, leaf_bytes, plan->stream_compute)) return false;
-        if (block_prod_bytes > 0) {
-            if (!alloc_device(plan, (void **)&plan->d_block_prods_alt, block_prod_bytes, plan->stream_compute)) return false;
-        }
-        if (!CUDA_OK(cudaEventCreateWithFlags(&plan->evt_prop_done, cudaEventDisableTiming))) return false;
-    }
-
-    /* Q-batch buffers */
-    if (qb > 1) {
-        for (int qi = 0; qi < qb; ++qi) {
-            if (!alloc_device(plan, (void **)&plan->d_a_qbatch[qi],
-                              (size_t)plan->n * sizeof(double), plan->stream_compute)) return false;
-        }
-        if (!alloc_device(plan, (void **)&plan->d_inner_qbatch,
-                          (size_t)qb * (size_t)plan->n * sizeof(double), plan->stream_compute)) return false;
-        if (!alloc_device(plan, (void **)&plan->d_block_prods_qbatch,
-                          (size_t)qb * block_prod_bytes, plan->stream_compute)) return false;
-        /* Small parameter buffers for Q-batch kernels */
-        if (!alloc_device(plan, (void **)&plan->d_qb_a_ptrs,
-                          (size_t)qb * sizeof(double *), plan->stream_compute)) return false;
-        if (!alloc_device(plan, (void **)&plan->d_qb_weights,
-                          (size_t)qb * sizeof(double), plan->stream_compute)) return false;
-        if (!alloc_device(plan, (void **)&plan->d_qb_inv_vs,
-                          (size_t)qb * sizeof(double), plan->stream_compute)) return false;
-    }
+    size_t block_prod_bytes = (plan->B > 1) ? (size_t)plan->N_tree * (plan->B + 1) * sizeof(double) : 0;
 
     plan->d_poly_levels.assign(plan->L, nullptr);
     plan->d_g_levels.assign(plan->L, nullptr);
@@ -2463,13 +2414,121 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     plan->build_fft.assign(plan->L, GpuFftBuffers{});
     plan->corr_fft.assign(plan->L, GpuFftBuffers{});
 
-    for (int ell = 0; ell < plan->L; ++ell) {
-        size_t poly_bytes = (size_t)qb * (size_t)plan->nn[ell] * (size_t)plan->psz[ell] * sizeof(double);
-        if (!alloc_device(plan, (void **)&plan->d_poly_levels[ell], poly_bytes, plan->stream_compute)) return false;
-        if (!alloc_device(plan, (void **)&plan->d_g_levels[ell], poly_bytes, plan->stream_compute)) return false;
+    /* Compute shared FFT buffer max sizes */
+    size_t mb_ri=0, mb_si=0, mb_sm=0, mb_ro=0, mc_ri=0, mc_si=0, mc_sm=0, mc_ro=0;
+    for (int ell = 1; ell < plan->L; ++ell) {
+        auto &lp = plan->levels[ell];
+        if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
+        int fn = lp.fft_n, cn = lp.cn, cb = plan->nn[ell-1], pb = plan->nn[ell];
+        mb_ri = std::max(mb_ri, (size_t)qb*cb*fn*sizeof(double));
+        mb_si = std::max(mb_si, (size_t)qb*cb*cn*sizeof(cufftDoubleComplex));
+        mb_sm = std::max(mb_sm, (size_t)qb*pb*cn*sizeof(cufftDoubleComplex));
+        mb_ro = std::max(mb_ro, (size_t)qb*pb*fn*sizeof(double));
+        mc_ri = std::max(mc_ri, (size_t)qb*pb*fn*sizeof(double));
+        mc_si = std::max(mc_si, (size_t)qb*pb*cn*sizeof(cufftDoubleComplex));
+        mc_sm = std::max(mc_sm, (size_t)qb*2*pb*cn*sizeof(cufftDoubleComplex));
+        mc_ro = std::max(mc_ro, (size_t)qb*2*pb*fn*sizeof(double));
     }
 
-    if (!allocate_shared_fft_buffers(plan)) return false;
+    /* ── Arena: single cudaMalloc for all plan buffers ── */
+    size_t arena_sz = 0;
+    #define A(sz) do { arena_sz = (arena_sz + 255) & ~(size_t)255; arena_sz += (sz); } while(0)
+    A((size_t)plan->n * sizeof(double));       /* d_S_sorted */
+    A((size_t)plan->n * sizeof(int));          /* d_sort_perm */
+    A((size_t)plan->n * sizeof(int));          /* d_inv_perm */
+    A((size_t)plan->n * sizeof(double));       /* d_a_sorted[0] */
+    A((size_t)plan->n * sizeof(double));       /* d_a_sorted[1] */
+    A(sizeof(double)); A(sizeof(double));      /* d_graph_logv[0,1] */
+    A(sizeof(double)); A(sizeof(double));      /* d_graph_scale[0,1] */
+    A((size_t)plan->n * sizeof(double));       /* d_inner_sorted */
+    A((size_t)plan->n * sizeof(double));       /* d_equity */
+    A((size_t)plan->k * sizeof(double));       /* d_payout */
+    A(block_prod_bytes);                        /* d_block_prods */
+    if (plan->opts.enable_q_pipeline) {
+        A((size_t)plan->nn[0] * plan->psz[0] * sizeof(double)); /* d_poly_leaves_alt */
+        A(block_prod_bytes);                    /* d_block_prods_alt */
+    }
+    if (qb > 1) {
+        for (int qi = 0; qi < qb; ++qi) A((size_t)plan->n * sizeof(double)); /* d_a_qbatch */
+        A((size_t)qb * plan->n * sizeof(double)); /* d_inner_qbatch */
+        A((size_t)qb * block_prod_bytes);          /* d_block_prods_qbatch */
+        A((size_t)qb * sizeof(double *));          /* d_qb_a_ptrs */
+        A((size_t)qb * sizeof(double));            /* d_qb_weights */
+        A((size_t)qb * sizeof(double));            /* d_qb_inv_vs */
+    }
+    for (int ell = 0; ell < plan->L; ++ell) {
+        size_t pb = (size_t)qb * plan->nn[ell] * plan->psz[ell] * sizeof(double);
+        A(pb); A(pb); /* poly + g */
+    }
+    for (int ell = 1; ell < plan->L; ++ell) {
+        auto &lp = plan->levels[ell];
+        if (lp.use_fft && lp.cache_fft && lp.tier != GPU_TIER_SCHOOLBOOK)
+            A((size_t)qb * plan->nn[ell-1] * lp.cn * sizeof(cufftDoubleComplex));
+    }
+    A(mb_ri); A(mb_si); A(mb_sm); A(mb_ro);
+    A(mc_ri); A(mc_si); A(mc_sm); A(mc_ro);
+    A(sizeof(CufftCBInfo)); A(sizeof(CufftCBInfo));
+    #undef A
+
+    char *arena = nullptr;
+    if (!CUDA_OK(cudaMalloc(&arena, arena_sz))) return false;
+    if (!CUDA_OK(cudaMemset(arena, 0, arena_sz))) return false;
+    plan->arena_base = arena;
+    plan->arena_total_bytes = arena_sz;
+    plan->peak_vram_bytes = arena_sz;
+    plan->current_vram_bytes = arena_sz;
+
+    /* ── Assign pointers from arena ── */
+    size_t off = 0;
+    #define P(ptr, type, sz) do { off = (off + 255) & ~(size_t)255; (ptr) = (type)(arena + off); off += (sz); } while(0)
+    P(plan->d_S_sorted, double*, (size_t)plan->n * sizeof(double));
+    P(plan->d_sort_perm, int*, (size_t)plan->n * sizeof(int));
+    P(plan->d_inv_perm, int*, (size_t)plan->n * sizeof(int));
+    P(plan->d_a_sorted[0], double*, (size_t)plan->n * sizeof(double));
+    P(plan->d_a_sorted[1], double*, (size_t)plan->n * sizeof(double));
+    P(plan->d_graph_logv[0], double*, sizeof(double));
+    P(plan->d_graph_logv[1], double*, sizeof(double));
+    P(plan->d_graph_scale[0], double*, sizeof(double));
+    P(plan->d_graph_scale[1], double*, sizeof(double));
+    P(plan->d_inner_sorted, double*, (size_t)plan->n * sizeof(double));
+    P(plan->d_equity, double*, (size_t)plan->n * sizeof(double));
+    P(plan->d_payout, double*, (size_t)plan->k * sizeof(double));
+    if (block_prod_bytes > 0) P(plan->d_block_prods, double*, block_prod_bytes);
+    if (plan->opts.enable_q_pipeline) {
+        P(plan->d_poly_leaves_alt, double*, (size_t)plan->nn[0] * plan->psz[0] * sizeof(double));
+        if (block_prod_bytes > 0) P(plan->d_block_prods_alt, double*, block_prod_bytes);
+        if (!CUDA_OK(cudaEventCreateWithFlags(&plan->evt_prop_done, cudaEventDisableTiming))) return false;
+    }
+    if (qb > 1) {
+        for (int qi = 0; qi < qb; ++qi) P(plan->d_a_qbatch[qi], double*, (size_t)plan->n * sizeof(double));
+        P(plan->d_inner_qbatch, double*, (size_t)qb * plan->n * sizeof(double));
+        P(plan->d_block_prods_qbatch, double*, (size_t)qb * block_prod_bytes);
+        P(plan->d_qb_a_ptrs, double**, (size_t)qb * sizeof(double*));
+        P(plan->d_qb_weights, double*, (size_t)qb * sizeof(double));
+        P(plan->d_qb_inv_vs, double*, (size_t)qb * sizeof(double));
+    }
+    for (int ell = 0; ell < plan->L; ++ell) {
+        size_t pb = (size_t)qb * plan->nn[ell] * plan->psz[ell] * sizeof(double);
+        P(plan->d_poly_levels[ell], double*, pb);
+        P(plan->d_g_levels[ell], double*, pb);
+    }
+    for (int ell = 1; ell < plan->L; ++ell) {
+        auto &lp = plan->levels[ell];
+        if (lp.use_fft && lp.cache_fft && lp.tier != GPU_TIER_SCHOOLBOOK)
+            P(plan->d_fft_cache[ell], cufftDoubleComplex*, (size_t)qb * plan->nn[ell-1] * lp.cn * sizeof(cufftDoubleComplex));
+    }
+    auto &sb = plan->shared_build_work;
+    auto &sc = plan->shared_corr_work;
+    sb.real_in_bytes=mb_ri; sb.spec_in_bytes=mb_si; sb.spec_mid_bytes=mb_sm; sb.real_out_bytes=mb_ro;
+    sc.real_in_bytes=mc_ri; sc.spec_in_bytes=mc_si; sc.spec_mid_bytes=mc_sm; sc.real_out_bytes=mc_ro;
+    P(sb.real_in, double*, mb_ri); P(sb.spec_in, cufftDoubleComplex*, mb_si);
+    P(sb.spec_mid, cufftDoubleComplex*, mb_sm); P(sb.real_out, double*, mb_ro);
+    P(sc.real_in, double*, mc_ri); P(sc.spec_in, cufftDoubleComplex*, mc_si);
+    P(sc.spec_mid, cufftDoubleComplex*, mc_sm); P(sc.real_out, double*, mc_ro);
+    P(plan->d_cb_info_fwd, CufftCBInfo*, sizeof(CufftCBInfo));
+    P(plan->d_cb_info_inv, CufftCBInfo*, sizeof(CufftCBInfo));
+    #undef P
+    plan->use_async_pool = false;
 
     for (int ell = 1; ell < plan->L; ++ell) {
         if (!allocate_level_buffers(plan, ell, {})) return false;
@@ -2528,84 +2587,27 @@ static void destroy_plan(GpuPlan *plan) {
     if (!plan) return;
     cudaStream_t stream = plan->stream_compute;
     if (stream) cudaStreamSynchronize(stream);
-    int qb = plan->q_batch;
 
+    /* Destroy cuFFT plan handles (lightweight, no device memory) */
     for (int ell = 1; ell < plan->L; ++ell) {
         destroy_fft_buffers(plan, plan->build_fft[ell], stream);
         destroy_fft_buffers(plan, plan->corr_fft[ell], stream);
-        if (plan->d_fft_cache[ell]) {
-            size_t bytes = (size_t)qb * (size_t)plan->nn[ell - 1] * (size_t)plan->levels[ell].cn * sizeof(cufftDoubleComplex);
-            free_device(plan, plan->d_fft_cache[ell], bytes, stream);
-            plan->d_fft_cache[ell] = nullptr;
-        }
-    }
-    for (int ell = 0; ell < plan->L; ++ell) {
-        if (plan->d_poly_levels.size() > (size_t)ell && plan->d_poly_levels[ell]) {
-            size_t bytes = (size_t)qb * (size_t)plan->nn[ell] * (size_t)plan->psz[ell] * sizeof(double);
-            free_device(plan, plan->d_poly_levels[ell], bytes, stream);
-        }
-        if (plan->d_g_levels.size() > (size_t)ell && plan->d_g_levels[ell]) {
-            size_t bytes = (size_t)qb * (size_t)plan->nn[ell] * (size_t)plan->psz[ell] * sizeof(double);
-            free_device(plan, plan->d_g_levels[ell], bytes, stream);
-        }
     }
 
-    /* Free shared FFT work buffers */
-    if (plan->shared_build_work.real_in) free_device(plan, plan->shared_build_work.real_in, plan->shared_build_work.real_in_bytes, stream);
-    if (plan->shared_build_work.spec_in) free_device(plan, plan->shared_build_work.spec_in, plan->shared_build_work.spec_in_bytes, stream);
-    if (plan->shared_build_work.spec_mid) free_device(plan, plan->shared_build_work.spec_mid, plan->shared_build_work.spec_mid_bytes, stream);
-    if (plan->shared_build_work.real_out) free_device(plan, plan->shared_build_work.real_out, plan->shared_build_work.real_out_bytes, stream);
-    if (plan->shared_corr_work.real_in) free_device(plan, plan->shared_corr_work.real_in, plan->shared_corr_work.real_in_bytes, stream);
-    if (plan->shared_corr_work.spec_in) free_device(plan, plan->shared_corr_work.spec_in, plan->shared_corr_work.spec_in_bytes, stream);
-    if (plan->shared_corr_work.spec_mid) free_device(plan, plan->shared_corr_work.spec_mid, plan->shared_corr_work.spec_mid_bytes, stream);
-    if (plan->shared_corr_work.real_out) free_device(plan, plan->shared_corr_work.real_out, plan->shared_corr_work.real_out_bytes, stream);
-    if (plan->shared_cufft_workspace) free_device(plan, plan->shared_cufft_workspace, plan->shared_cufft_workspace_bytes, stream);
-
-    /* Free Q-batch buffers */
-    if (qb > 1) {
-        for (int qi = 0; qi < qb; ++qi) {
-            if (plan->d_a_qbatch[qi])
-                free_device(plan, plan->d_a_qbatch[qi], (size_t)plan->n * sizeof(double), stream);
-        }
-        size_t bp_bytes = (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double);
-        if (plan->d_inner_qbatch)
-            free_device(plan, plan->d_inner_qbatch, (size_t)qb * (size_t)plan->n * sizeof(double), stream);
-        if (plan->d_block_prods_qbatch)
-            free_device(plan, plan->d_block_prods_qbatch, (size_t)qb * bp_bytes, stream);
-        if (plan->d_qb_a_ptrs)
-            free_device(plan, plan->d_qb_a_ptrs, (size_t)qb * sizeof(double *), stream);
-        if (plan->d_qb_weights)
-            free_device(plan, plan->d_qb_weights, (size_t)qb * sizeof(double), stream);
-        if (plan->d_qb_inv_vs)
-            free_device(plan, plan->d_qb_inv_vs, (size_t)qb * sizeof(double), stream);
+    /* cuFFT workspace is a separate allocation (not in arena) */
+    if (plan->shared_cufft_workspace) {
+        cudaFree(plan->shared_cufft_workspace);
+        plan->shared_cufft_workspace = nullptr;
     }
 
-    if (plan->d_block_prods) {
-        size_t bytes = (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double);
-        free_device(plan, plan->d_block_prods, bytes, stream);
+    /* Single free for the entire arena */
+    if (plan->arena_base) {
+        cudaFree(plan->arena_base);
+        plan->arena_base = nullptr;
     }
-    /* Free multi-stream Q-pipeline alternate buffers */
-    if (plan->d_poly_leaves_alt) {
-        size_t leaf_bytes = (plan->nn.size() > 0 && plan->psz.size() > 0)
-            ? (size_t)plan->nn[0] * (size_t)plan->psz[0] * sizeof(double) : 0;
-        free_device(plan, plan->d_poly_leaves_alt, leaf_bytes, stream);
-    }
-    if (plan->d_block_prods_alt) {
-        size_t bytes = (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double);
-        free_device(plan, plan->d_block_prods_alt, bytes, stream);
-    }
-    if (plan->d_payout) free_device(plan, plan->d_payout, (size_t)plan->k * sizeof(double), stream);
-    if (plan->d_equity) free_device(plan, plan->d_equity, (size_t)plan->n * sizeof(double), stream);
-    if (plan->d_inner_sorted) free_device(plan, plan->d_inner_sorted, (size_t)plan->n * sizeof(double), stream);
-    if (plan->d_graph_scale[1]) free_device(plan, plan->d_graph_scale[1], sizeof(double), stream);
-    if (plan->d_graph_scale[0]) free_device(plan, plan->d_graph_scale[0], sizeof(double), stream);
-    if (plan->d_graph_logv[1]) free_device(plan, plan->d_graph_logv[1], sizeof(double), stream);
-    if (plan->d_graph_logv[0]) free_device(plan, plan->d_graph_logv[0], sizeof(double), stream);
-    if (plan->d_a_sorted[0]) free_device(plan, plan->d_a_sorted[0], (size_t)plan->n * sizeof(double), stream);
-    if (plan->d_a_sorted[1]) free_device(plan, plan->d_a_sorted[1], (size_t)plan->n * sizeof(double), stream);
-    if (plan->d_inv_perm) free_device(plan, plan->d_inv_perm, (size_t)plan->n * sizeof(int), stream);
-    if (plan->d_sort_perm) free_device(plan, plan->d_sort_perm, (size_t)plan->n * sizeof(int), stream);
-    if (plan->d_S_sorted) free_device(plan, plan->d_S_sorted, (size_t)plan->n * sizeof(double), stream);
+
+    /* Pipeline event */
+    if (plan->evt_prop_done) cudaEventDestroy(plan->evt_prop_done);
 
     for (int q = 0; q < 2; ++q) {
         if (plan->graph_exec[q]) cudaGraphExecDestroy(plan->graph_exec[q]);
