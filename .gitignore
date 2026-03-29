@@ -5,6 +5,9 @@ bench_avx512
 bench_topk
 calibrate
 calibrate_B
+calibrate_dual
+accuracy_bench
+bench_amx
 contour_1s
 contour_1s_par
 bench_gpu
@@ -13,6 +16,8 @@ calibrate_gpu
 heatmap_gpu
 push_limit_gpu
 validate_planner_gpu
+icm_debug_compare
+micro_fft_vs_seq
 build/
 
 # Generated data (from calibration/benchmarking)
@@ -29,6 +34,19 @@ results_b200_local/
 contour_*.csv
 results_*.csv
 gpu_heatmap.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.so
+*.dylib
+
+# Editors
+.vscode/
+.idea/
 
 # Claude Code
 .claude/

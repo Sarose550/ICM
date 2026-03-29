@@ -6,7 +6,8 @@
 #   make DEVICE=zen4        # build for a different device
 #   make test               # quick verify
 #   make bench              # full benchmark grid
-#   make libicm.a           # build the library
+#   make libicm.a           # build the static library
+#   make libicm             # build the shared library (.so/.dylib)
 #   make contour_1s         # contour sweep tool (serial)
 #   make contour_1s_par     # contour sweep tool (parallel)
 
@@ -72,6 +73,29 @@ $(LIBICM_OBJ): src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)
 $(LIBICM): $(LIBICM_OBJ)
 	ar rcs $@ $^
 
+# Shared library
+ifeq ($(UNAME),Darwin)
+  SHARED_EXT = dylib
+  SHARED_FLAGS = -dynamiclib -install_name @rpath/libicm.$(SHARED_EXT)
+else
+  SHARED_EXT = so
+  SHARED_FLAGS = -shared
+endif
+
+LIBICM_SHARED = $(BUILD_DIR)/libicm.$(SHARED_EXT)
+
+$(BUILD_DIR)/icm_shared.o: src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -fPIC $(INCLUDES) -c src/icm.c -o $@
+
+$(LIBICM_SHARED): $(BUILD_DIR)/icm_shared.o
+	$(CC) $(SHARED_FLAGS) -o $@ $^ $(LDFLAGS)
+
+libicm: $(LIBICM_SHARED)
+
+libicm.dylib: $(LIBICM_SHARED)
+
+libicm.so: $(LIBICM_SHARED)
+
 # OpenMP variant
 $(LIBICM_OMP_OBJ): src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -c src/icm.c -o $@
@@ -83,7 +107,7 @@ libicm.a: $(LIBICM)
 
 # ── Bench grid (includes icm.c directly for profiling access) ──
 
-.PHONY: all parallel test bench calibrate clean libicm.a
+.PHONY: all parallel test bench calibrate clean libicm.a libicm libicm.dylib libicm.so
 
 all:
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(OUT) $(SRC) $(LDFLAGS)
@@ -149,3 +173,4 @@ clean:
 	rm -f $(OUT) calibrate contour_1s contour_1s_par
 	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	rm -rf $(BUILD_DIR)
+	rm -rf python/*.egg-info python/build python/dist
