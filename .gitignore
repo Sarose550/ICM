@@ -5,6 +5,13 @@ bench_avx512
 bench_topk
 calibrate
 calibrate_B
+bench_gpu
+bench_gpu_fused
+calibrate_gpu
+heatmap_gpu
+push_limit_gpu
+validate_planner_gpu
+build/
 
 # Generated data (from calibration/benchmarking)
 calibration.csv
@@ -13,6 +20,10 @@ fftw_wisdom.dat
 **/cpu_*.csv
 **/*.png
 zen4_*.txt
+planner_validation.csv
+gpu_limit_frontier.csv
+results_b200_instance_*/
+results_b200_local/
 
 # OS
 .DS_Store

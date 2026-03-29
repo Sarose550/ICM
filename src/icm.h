@@ -11,6 +11,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ── Public API ──────────────────────────────────────────────── */
 
 /* Compute equities for all n players.
@@ -79,5 +83,9 @@ void icm_measure_fft_overhead(void);
 /* Closed-form references for verification */
 void icm_v1_exact(int n, const double *S, double *V1);
 void icm_v2_exact(int n, const double *S, double *V2);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* ICM_H */
