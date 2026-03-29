@@ -994,6 +994,10 @@ struct GpuPlan {
     void *shared_cufft_workspace = nullptr;
     size_t shared_cufft_workspace_bytes = 0;
 
+    /* Arena: single device allocation for all plan buffers */
+    void *arena_base = nullptr;
+    size_t arena_total_bytes = 0;
+
     size_t peak_vram_bytes = 0;
     size_t current_vram_bytes = 0;
 };
@@ -2467,10 +2471,12 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     }
     A(mb_ri); A(mb_si); A(mb_sm); A(mb_ro);
     A(mc_ri); A(mc_si); A(mc_sm); A(mc_ro);
-    A(sizeof(CufftCBInfo)); A(sizeof(CufftCBInfo));
+    /* callback info slots removed (callbacks disabled) */
     #undef A
 
     char *arena = nullptr;
+    fprintf(stderr, "arena: allocating %zu bytes (%.1f MB)\n", arena_sz, (double)arena_sz / (1024.0 * 1024.0));
+    if (arena_sz == 0) { set_last_errorf("Arena size is 0"); return false; }
     if (!CUDA_OK(cudaMalloc(&arena, arena_sz))) return false;
     if (!CUDA_OK(cudaMemset(arena, 0, arena_sz))) return false;
     plan->arena_base = arena;
@@ -2525,14 +2531,16 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     P(sb.spec_mid, cufftDoubleComplex*, mb_sm); P(sb.real_out, double*, mb_ro);
     P(sc.real_in, double*, mc_ri); P(sc.spec_in, cufftDoubleComplex*, mc_si);
     P(sc.spec_mid, cufftDoubleComplex*, mc_sm); P(sc.real_out, double*, mc_ro);
-    P(plan->d_cb_info_fwd, CufftCBInfo*, sizeof(CufftCBInfo));
-    P(plan->d_cb_info_inv, CufftCBInfo*, sizeof(CufftCBInfo));
+    /* callback info slots removed (callbacks disabled) */
     #undef P
     plan->use_async_pool = false;
+    fprintf(stderr, "arena: pointers assigned, off=%zu/%zu\n", off, arena_sz);
 
     for (int ell = 1; ell < plan->L; ++ell) {
+        fprintf(stderr, "arena: creating cuFFT plans for level %d\n", ell);
         if (!allocate_level_buffers(plan, ell, {})) return false;
     }
+    fprintf(stderr, "arena: all cuFFT plans created\n");
 
     /* Share cuFFT workspace across all plans */
     {
@@ -2561,6 +2569,7 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
         }
     }
 
+    fprintf(stderr, "arena: workspace done, starting H->D copies\n");
     if (!CUDA_OK(cudaMemcpyAsync(plan->d_S_sorted, plan->S_sorted.data(),
                                  (size_t)plan->n * sizeof(double), cudaMemcpyHostToDevice,
                                  plan->stream_compute))) return false;
@@ -2571,6 +2580,7 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
                                  (size_t)plan->n * sizeof(int), cudaMemcpyHostToDevice,
                                  plan->stream_compute))) return false;
     if (!CUDA_OK(cudaStreamSynchronize(plan->stream_compute))) return false;
+    fprintf(stderr, "arena: allocate_plan_device_memory done\n");
     return true;
 }
 
@@ -2607,8 +2617,6 @@ static void destroy_plan(GpuPlan *plan) {
     }
 
     /* Pipeline event */
-    if (plan->evt_prop_done) cudaEventDestroy(plan->evt_prop_done);
-
     for (int q = 0; q < 2; ++q) {
         if (plan->graph_exec[q]) cudaGraphExecDestroy(plan->graph_exec[q]);
         if (plan->graph[q]) cudaGraphDestroy(plan->graph[q]);
@@ -3846,7 +3854,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                 }
             }
         }
-    } else if (plan->opts.enable_q_pipeline) {
+    } else if (plan->opts.enable_q_pipeline && plan->d_poly_leaves_alt) {
         /* Multi-stream pipeline: overlap compute_a + block_build of q+1
          * with tree_build + propagation + leaf_extract + accumulate of q.
          * Double-buffered leaf level (d_poly_levels[0]) and d_block_prods
@@ -3894,7 +3902,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
 
             /* Point d_poly_levels[0] and d_block_prods at this Q's buffer */
             plan->d_poly_levels[0] = leaf_bufs[buf_idx];
-            plan->d_block_prods    = bp_bufs[buf_idx];
+            if (plan->B > 1) plan->d_block_prods = bp_bufs[buf_idx];
 
             /* Find next non-zero Q-point */
             int qn = q + 1;
@@ -3985,7 +3993,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
 pipeline_cleanup:
         /* Restore original pointers so destroy_plan frees the right buffers */
         plan->d_poly_levels[0] = orig_poly_levels_0;
-        plan->d_block_prods    = orig_block_prods;
+        if (plan->B > 1) plan->d_block_prods = orig_block_prods;
         if (!pipeline_ok) return -1.0;
     } else {
         for (int q = 0; q < Q; ++q) {
