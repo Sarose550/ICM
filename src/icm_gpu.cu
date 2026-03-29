@@ -963,6 +963,11 @@ struct GpuPlan {
     cudaStream_t stream_aux = nullptr;
     cudaEvent_t evt_a_ready[2] = {nullptr, nullptr};
 
+    /* Multi-stream Q-pipeline: alternate leaf/block_prods for double-buffering */
+    double *d_poly_leaves_alt = nullptr;   /* alternate leaf level for pipelining */
+    double *d_block_prods_alt = nullptr;   /* alternate block_prods for pipelining */
+    cudaEvent_t evt_prop_done = nullptr;   /* signals propagation is done reading poly_levels */
+
     cudaGraph_t graph[2] = {nullptr, nullptr};
     cudaGraphExec_t graph_exec[2] = {nullptr, nullptr};
     bool graph_ready[2] = {false, false};
@@ -2422,6 +2427,16 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
         if (!alloc_device(plan, (void **)&plan->d_block_prods, block_prod_bytes, plan->stream_compute)) return false;
     }
 
+    /* Alternate leaf/block_prods for multi-stream Q-pipeline double-buffering */
+    if (plan->opts.enable_q_pipeline) {
+        size_t leaf_bytes = (size_t)plan->nn[0] * (size_t)plan->psz[0] * sizeof(double);
+        if (!alloc_device(plan, (void **)&plan->d_poly_leaves_alt, leaf_bytes, plan->stream_compute)) return false;
+        if (block_prod_bytes > 0) {
+            if (!alloc_device(plan, (void **)&plan->d_block_prods_alt, block_prod_bytes, plan->stream_compute)) return false;
+        }
+        if (!CUDA_OK(cudaEventCreateWithFlags(&plan->evt_prop_done, cudaEventDisableTiming))) return false;
+    }
+
     /* Q-batch buffers */
     if (qb > 1) {
         for (int qi = 0; qi < qb; ++qi) {
@@ -2569,6 +2584,16 @@ static void destroy_plan(GpuPlan *plan) {
         size_t bytes = (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double);
         free_device(plan, plan->d_block_prods, bytes, stream);
     }
+    /* Free multi-stream Q-pipeline alternate buffers */
+    if (plan->d_poly_leaves_alt) {
+        size_t leaf_bytes = (plan->nn.size() > 0 && plan->psz.size() > 0)
+            ? (size_t)plan->nn[0] * (size_t)plan->psz[0] * sizeof(double) : 0;
+        free_device(plan, plan->d_poly_leaves_alt, leaf_bytes, stream);
+    }
+    if (plan->d_block_prods_alt) {
+        size_t bytes = (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double);
+        free_device(plan, plan->d_block_prods_alt, bytes, stream);
+    }
     if (plan->d_payout) free_device(plan, plan->d_payout, (size_t)plan->k * sizeof(double), stream);
     if (plan->d_equity) free_device(plan, plan->d_equity, (size_t)plan->n * sizeof(double), stream);
     if (plan->d_inner_sorted) free_device(plan, plan->d_inner_sorted, (size_t)plan->n * sizeof(double), stream);
@@ -2588,6 +2613,7 @@ static void destroy_plan(GpuPlan *plan) {
     }
     if (plan->evt_a_ready[0]) cudaEventDestroy(plan->evt_a_ready[0]);
     if (plan->evt_a_ready[1]) cudaEventDestroy(plan->evt_a_ready[1]);
+    if (plan->evt_prop_done) cudaEventDestroy(plan->evt_prop_done);
     if (plan->stream_aux) cudaStreamDestroy(plan->stream_aux);
     if (plan->stream_compute) cudaStreamDestroy(plan->stream_compute);
     delete plan;
@@ -3819,37 +3845,146 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
             }
         }
     } else if (plan->opts.enable_q_pipeline) {
+        /* Multi-stream pipeline: overlap compute_a + block_build of q+1
+         * with tree_build + propagation + leaf_extract + accumulate of q.
+         * Double-buffered leaf level (d_poly_levels[0]) and d_block_prods
+         * prevent write-after-read hazards between streams. */
+        double *leaf_bufs[2] = { plan->d_poly_levels[0], plan->d_poly_leaves_alt };
+        double *bp_bufs[2]   = { plan->d_block_prods,    plan->d_block_prods_alt };
+        double *orig_poly_levels_0 = plan->d_poly_levels[0];
+        double *orig_block_prods   = plan->d_block_prods;
+        int buf_idx = 0;
+        bool pipeline_ok = true;
+
         int q_start = 0;
         while (q_start < Q && pts[q_start].w == 0.0) ++q_start;
+
         if (q_start < Q) {
+            /* Pre-launch compute_a + block_build for q_start on stream_aux */
             int curr = q_start & 1;
             k_compute_a<<<blocks, threads, 0, plan->stream_aux>>>(
                 plan->d_S_sorted, plan->d_a_sorted[curr], plan->n, pts[q_start].logv);
-            if (!CUDA_OK(cudaGetLastError())) return -1.0;
-            if (!CUDA_OK(cudaEventRecord(plan->evt_a_ready[curr], plan->stream_aux))) return -1.0;
+            if (!CUDA_OK(cudaGetLastError())) { pipeline_ok = false; goto pipeline_cleanup; }
+
+            if (plan->B <= 1) {
+                int bl = (plan->N_tree + 255) / 256;
+                k_set_leaves_b1<<<bl, 256, 0, plan->stream_aux>>>(
+                    plan->d_a_sorted[curr], plan->n, plan->N_tree,
+                    plan->psz[0], leaf_bufs[buf_idx]);
+            } else {
+                int threads_block = 256;
+                size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
+                k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
+                    plan->d_a_sorted[curr], plan->n, plan->B,
+                    plan->nblocks, plan->N_tree, plan->psz[0],
+                    leaf_bufs[buf_idx], bp_bufs[buf_idx]);
+            }
+            if (!CUDA_OK(cudaGetLastError())) { pipeline_ok = false; goto pipeline_cleanup; }
+            if (!CUDA_OK(cudaEventRecord(plan->evt_a_ready[curr], plan->stream_aux))) { pipeline_ok = false; goto pipeline_cleanup; }
         }
 
         for (int q = q_start; q < Q; ++q) {
             if (pts[q].w == 0.0) continue;
             int curr = q & 1;
-            if (!CUDA_OK(cudaStreamWaitEvent(plan->stream_compute, plan->evt_a_ready[curr], 0))) return -1.0;
 
+            /* Wait for this Q-point's compute_a + block_build to finish */
+            if (!CUDA_OK(cudaStreamWaitEvent(plan->stream_compute, plan->evt_a_ready[curr], 0))) { pipeline_ok = false; break; }
+
+            /* Point d_poly_levels[0] and d_block_prods at this Q's buffer */
+            plan->d_poly_levels[0] = leaf_bufs[buf_idx];
+            plan->d_block_prods    = bp_bufs[buf_idx];
+
+            /* Find next non-zero Q-point */
             int qn = q + 1;
             while (qn < Q && pts[qn].w == 0.0) ++qn;
+            int next_buf = 1 - buf_idx;
+
+            /* Launch next Q's compute_a + block_build on stream_aux (overlapped) */
             if (qn < Q) {
+                /* Wait for current Q's propagation to finish reading poly_levels[0] */
+                if (!CUDA_OK(cudaStreamWaitEvent(plan->stream_aux, plan->evt_prop_done, 0))) { pipeline_ok = false; break; }
                 int next = qn & 1;
                 k_compute_a<<<blocks, threads, 0, plan->stream_aux>>>(
                     plan->d_S_sorted, plan->d_a_sorted[next], plan->n, pts[qn].logv);
-                if (!CUDA_OK(cudaGetLastError())) return -1.0;
-                if (!CUDA_OK(cudaEventRecord(plan->evt_a_ready[next], plan->stream_aux))) return -1.0;
+                if (!CUDA_OK(cudaGetLastError())) { pipeline_ok = false; break; }
+
+                if (plan->B <= 1) {
+                    int bl = (plan->N_tree + 255) / 256;
+                    k_set_leaves_b1<<<bl, 256, 0, plan->stream_aux>>>(
+                        plan->d_a_sorted[next], plan->n, plan->N_tree,
+                        plan->psz[0], leaf_bufs[next_buf]);
+                } else {
+                    int threads_block = 256;
+                    size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
+                    k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
+                        plan->d_a_sorted[next], plan->n, plan->B,
+                        plan->nblocks, plan->N_tree, plan->psz[0],
+                        leaf_bufs[next_buf], bp_bufs[next_buf]);
+                }
+                if (!CUDA_OK(cudaGetLastError())) { pipeline_ok = false; break; }
+                if (!CUDA_OK(cudaEventRecord(plan->evt_a_ready[next], plan->stream_aux))) { pipeline_ok = false; break; }
             }
 
-            if (!run_hybrid_single_q(plan, curr, pts[q].logv, pts[q].w, true, fast,
-                                     &block_ns, &tree_build_ns, &tree_prop_cached_ns,
-                                     &tree_prop_recomp_ns, &leaf_ns, &accum_ns)) {
-                return -1.0;
+            /* Run tree_build + propagate + leaf_extract + accumulate on stream_compute.
+             * block_build already done (skip_compute_a=true, and we also skip block_build
+             * by calling the tree/prop/leaf/accum stages directly). */
+
+            /* Tree build: levels 1..L-2 (reads poly_levels[0] at level 1) */
+            for (int ell = 1; ell < plan->L - 1; ++ell) {
+                auto &lp = plan->levels[ell];
+                if (!lp.use_fft) { if (!run_build_level_schoolbook(plan, ell)) { pipeline_ok = false; break; } }
+                else if (lp.tier == GPU_TIER_FUSED && plan->opts.use_cufftdx) { if (!run_build_level_fused(plan, ell)) { pipeline_ok = false; break; } }
+                else { if (!run_build_level_fft(plan, ell)) { pipeline_ok = false; break; } }
             }
+            if (!pipeline_ok) break;
+
+            /* Set root g */
+            int top = plan->L - 1;
+            int root_gsz = plan->psz[top];
+            int blocks_root = (root_gsz + threads - 1) / threads;
+            k_set_root_g<<<blocks_root, threads, 0, plan->stream_compute>>>(
+                plan->d_g_levels[top], root_gsz, plan->d_payout, plan->k);
+
+            /* Propagate: levels top..1 (reads poly_levels at each level) */
+            for (int ell = top; ell >= 1; --ell) {
+                auto &lp = plan->levels[ell];
+                if (!lp.use_fft) { if (!run_prop_level_schoolbook(plan, ell)) { pipeline_ok = false; break; } }
+                else if (lp.tier == GPU_TIER_FUSED && plan->opts.use_cufftdx) { if (!run_prop_level_fused(plan, ell)) { pipeline_ok = false; break; } }
+                else { if (!run_prop_level_fft(plan, ell)) { pipeline_ok = false; break; } }
+            }
+            if (!pipeline_ok) break;
+
+            /* Signal that propagation is done reading poly_levels[0].
+             * stream_aux can now safely overwrite the alternate buffer. */
+            if (!CUDA_OK(cudaEventRecord(plan->evt_prop_done, plan->stream_compute))) { pipeline_ok = false; break; }
+
+            /* Leaf extract + accumulate (still on stream_compute) */
+            if (plan->B <= 1) {
+                int bl = (plan->n + 255) / 256;
+                k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
+                    plan->n, plan->d_g_levels[0], plan->psz[0], plan->d_inner_sorted);
+            } else {
+                int threads_leaf = plan->B;
+                if (threads_leaf > 1024) threads_leaf = 1024;
+                k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
+                    plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
+                    plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
+                    plan->g_needed[0], plan->k, plan->d_inner_sorted);
+            }
+
+            double inv_v = exp(-pts[q].logv);
+            k_accumulate_equity<<<blocks, threads, 0, plan->stream_compute>>>(
+                plan->d_inner_sorted, plan->d_a_sorted[curr], plan->d_S_sorted,
+                plan->d_sort_perm, plan->n, pts[q].w, inv_v, plan->d_equity);
+
+            buf_idx = next_buf;
         }
+
+pipeline_cleanup:
+        /* Restore original pointers so destroy_plan frees the right buffers */
+        plan->d_poly_levels[0] = orig_poly_levels_0;
+        plan->d_block_prods    = orig_block_prods;
+        if (!pipeline_ok) return -1.0;
     } else {
         for (int q = 0; q < Q; ++q) {
             if (pts[q].w == 0.0) continue;
