@@ -1837,6 +1837,160 @@ __global__ static void k_accumulate_equity_scaled(const double *inner_sorted,
     atomicAdd(&equity[orig], pw * inner_sorted[i]);
 }
 
+/* ── Single-kernel shared-memory engine for small n ──
+ *
+ * One block per Q-point. Entire tree lives in shared memory.
+ * B=1: each player is a leaf, schoolbook at all levels.
+ * No cuFFT, no HBM intermediates, no plan creation overhead.
+ * Works for n up to ~2048 (shared memory limit).
+ *
+ * Shared memory layout:
+ *   poly[0..total_poly-1] : tree polynomial data (all levels interleaved)
+ *   g[0..total_g-1]       : g-vector data (two alternating buffers)
+ */
+__global__ static void k_icm_single_kernel(
+        const double *S_sorted, const int *sort_perm, int n,
+        int Q, const double *d_logv, const double *d_weights,
+        const double *payout, int k,
+        double *equity,
+        /* Tree geometry (compile-time-like params) */
+        int N, int L, const int *d_nn, const int *d_psz, const int *d_g_needed,
+        const size_t *d_plev_off, int total_poly, int max_g) {
+
+    int q = blockIdx.x;
+    if (q >= Q) return;
+
+    double logv = d_logv[q];
+    double w = d_weights[q];
+    if (w == 0.0) return;
+
+    extern __shared__ double smem[];
+    double *poly = smem;                        /* tree polynomial levels */
+    double *g0   = smem + total_poly;           /* g buffer 0 */
+    double *g1   = g0 + max_g;                  /* g buffer 1 */
+
+    int tid = threadIdx.x;
+    int nthreads = blockDim.x;
+
+    /* ── 1. Set leaves: P[i] = [a[i], 1-a[i]] ── */
+    int leaf_psz = d_psz[0];
+    for (int i = tid; i < N; i += nthreads) {
+        double *leaf = poly + d_plev_off[0] + (size_t)i * leaf_psz;
+        if (i < n) {
+            double arg = S_sorted[i] * logv;
+            double ai = (arg < -700.0) ? 0.0 : exp(arg);
+            leaf[0] = ai;
+            if (leaf_psz > 1) leaf[1] = 1.0 - ai;
+            for (int m = 2; m < leaf_psz; m++) leaf[m] = 0.0;
+        } else {
+            leaf[0] = 1.0;
+            for (int m = 1; m < leaf_psz; m++) leaf[m] = 0.0;
+        }
+    }
+    __syncthreads();
+
+    /* ── 2. Tree build: schoolbook multiply bottom-up ── */
+    for (int ell = 1; ell < L - 1; ell++) {
+        int cps = d_psz[ell - 1];
+        int pps = d_psz[ell];
+        int nn_parent = d_nn[ell];
+        double *child_base = poly + d_plev_off[ell - 1];
+        double *parent_base = poly + d_plev_off[ell];
+
+        for (int j = tid; j < nn_parent; j += nthreads) {
+            double *Lc = child_base + (size_t)(2 * j) * cps;
+            double *Rc = child_base + (size_t)(2 * j + 1) * cps;
+            double *out = parent_base + (size_t)j * pps;
+            /* Schoolbook: out[m] = sum_{i+j=m} Lc[i]*Rc[j], truncated to pps */
+            for (int m = 0; m < pps; m++) {
+                int j_lo = m - (cps - 1);
+                if (j_lo < 0) j_lo = 0;
+                int j_hi = m;
+                if (j_hi > cps - 1) j_hi = cps - 1;
+                double sum = 0.0;
+                for (int jj = j_lo; jj <= j_hi; jj++)
+                    sum += Lc[jj] * Rc[m - jj];
+                out[m] = sum;
+            }
+        }
+        __syncthreads();
+    }
+
+    /* ── 3. Set root g = payout ── */
+    int top = L - 1;
+    int root_gsz = d_psz[top];
+    double *g_parent = g0;
+    for (int m = tid; m < root_gsz; m += nthreads)
+        g_parent[m] = (m < k) ? payout[m] : 0.0;
+    __syncthreads();
+
+    /* ── 4. Tree propagate: schoolbook correlate top-down ── */
+    for (int ell = top; ell >= 1; ell--) {
+        int cps = d_psz[ell - 1];
+        int pgsz = d_psz[ell];
+        int nn_parent = d_nn[ell];
+        int out_needed = d_g_needed[ell - 1];
+        int p_eff = cps;  /* for B=1 all-schoolbook, p_eff = cps */
+        double *child_base = poly + d_plev_off[ell - 1];
+        double *g_child = (g_parent == g0) ? g1 : g0;
+
+        for (int j = tid; j < nn_parent; j += nthreads) {
+            double *gp = g_parent + (size_t)j * pgsz;
+            double *PL = child_base + (size_t)(2 * j) * cps;
+            double *PR = child_base + (size_t)(2 * j + 1) * cps;
+            double *gL = g_child + (size_t)(2 * j) * cps;
+            double *gR = g_child + (size_t)(2 * j + 1) * cps;
+
+            int len_g = pgsz;  /* use full g at this level */
+            for (int m = 0; m < out_needed; m++) {
+                double sumL = 0.0, sumR = 0.0;
+                int j_max = len_g - m;
+                if (j_max > p_eff) j_max = p_eff;
+                for (int jj = 0; jj < j_max; jj++) {
+                    double gv = gp[m + jj];
+                    sumL += PR[jj] * gv;
+                    sumR += PL[jj] * gv;
+                }
+                gL[m] = sumL;
+                gR[m] = sumR;
+            }
+        }
+        __syncthreads();
+        g_parent = g_child;
+    }
+
+    /* ── 5. Extract inner[i] = g_leaf[i][0] and accumulate equity ── */
+    double inv_v = exp(-logv);
+    int leaf_gsz = d_psz[0];
+    for (int i = tid; i < n; i += nthreads) {
+        double inner = g_parent[(size_t)i * leaf_gsz];
+        double arg = S_sorted[i] * logv;
+        double ai = (arg < -700.0) ? 0.0 : exp(arg);
+        double pw = w * S_sorted[i] * ai * inv_v;
+        if (!isfinite(pw)) pw = 0.0;
+        int orig = sort_perm[i];
+        atomicAdd(&equity[orig], pw * inner);
+    }
+}
+
+/* Maximum n for single-kernel engine (shared memory limit) */
+static int single_kernel_max_n(int k) {
+    /* Compute shared memory needed for n players with B=1 */
+    /* poly: sum(nn[ell] * psz[ell]) for all levels */
+    /* g: 2 * max_level_g_size */
+    /* Conservative: each level stores ~2n doubles for poly, ~2n for g */
+    /* With 228KB = 28672 doubles, and ~4n per level, max levels ~7 → n ~1024 */
+    /* For k=n: total ≈ 2 * sum(nn[ell]*psz[ell]) ≈ 2 * n * L * 2 */
+    /* Be conservative: limit to n=1024 */
+    (void)k;
+    const char *env = getenv("ICM_GPU_SINGLE_KERNEL_MAX_N");
+    if (env && env[0]) {
+        int v = atoi(env);
+        if (v > 0) return v;
+    }
+    return 1024;
+}
+
 /* ── Q-batch kernels ── */
 
 /* Block build for Q-batched execution.
@@ -3727,7 +3881,7 @@ static bool create_graph_stub(GpuPlan *plan) {
 /* For small n, CPU is faster due to GPU plan creation overhead (~5-7ms).
  * Default crossover at n=1024; overridable via gpu_fft_config.h or env var. */
 #ifndef GPU_CPU_CROSSOVER
-#define GPU_CPU_CROSSOVER 1024
+#define GPU_CPU_CROSSOVER 0  /* GPU competitive at all n with arena allocator */
 #endif
 
 static int gpu_cpu_crossover() {
@@ -4160,20 +4314,145 @@ double icm_gpu_equity(int n, const double *S, int Q,
                       const double *payout, int k,
                       double *equity, const IcmGpuOptions *opts,
                       IcmGpuRunStats *stats) {
-    /* For small n, CPU is faster due to GPU plan creation overhead */
-    if (n <= gpu_cpu_crossover()) {
-        double *eq_buf = (double *)calloc(n, sizeof(double));
-        if (!eq_buf) return -1.0;
-        double t = icm_equity(n, S, Q, payout, k, eq_buf);
-        memcpy(equity, eq_buf, n * sizeof(double));
-        free(eq_buf);
-        if (stats) {
-            memset(stats, 0, sizeof(*stats));
-            stats->total_ns = t;
-        }
-        return t;
+    if (g_cuda_device < 0) {
+        if (!icm_gpu_init(0)) return -1.0;
     }
 
+    int sk_max = single_kernel_max_n(k);
+    if (n <= sk_max && n > 0 && k > 0 && k <= n) {
+        /* Single-kernel shared-memory engine: no plan, no cuFFT, no HBM intermediates.
+         * Entire tree computation in one kernel launch. */
+        double t0_sk = now_ns_host();
+
+        /* Sort players on host (same as plan creation) */
+        std::vector<std::pair<double, int>> pairs(n);
+        for (int i = 0; i < n; i++) pairs[i] = {S[i], i};
+        std::sort(pairs.begin(), pairs.end(), [](const auto &a, const auto &b) {
+            return a.first > b.first ? true : (a.first < b.first ? false : a.second < b.second);
+        });
+        std::vector<double> S_sorted(n);
+        std::vector<int> sort_perm(n);
+        for (int i = 0; i < n; i++) {
+            S_sorted[i] = pairs[i].first;
+            sort_perm[i] = pairs[i].second;
+        }
+
+        /* Compute tree geometry (B=1) */
+        int N = 1;
+        while (N < n) N <<= 1;
+        int L = 0;
+        { int tmp = N; while (tmp > 1) { tmp >>= 1; L++; } L++; }
+        std::vector<int> nn(L), psz(L), g_needed(L);
+        std::vector<size_t> plev_off(L);
+        nn[0] = N;
+        for (int ell = 1; ell < L; ell++) nn[ell] = N >> ell;
+        size_t off = 0;
+        for (int ell = 0; ell < L; ell++) {
+            long d = 1L << (ell + 1);  /* B=1: leaf_degree=1 */
+            psz[ell] = (d > k) ? k : (int)d;
+            plev_off[ell] = off;
+            off += (size_t)nn[ell] * psz[ell];
+        }
+        int total_poly = (int)off;
+        g_needed[0] = 1;  /* B=1: only need g_leaf[0] */
+        for (int ell = 1; ell < L; ell++) {
+            int need = g_needed[ell - 1] + psz[ell - 1] - 1;
+            g_needed[ell] = (need < psz[ell]) ? need : psz[ell];
+        }
+        int max_g = 0;
+        for (int ell = 0; ell < L; ell++) {
+            int sz = nn[ell] * psz[ell];
+            if (sz > max_g) max_g = sz;
+        }
+
+        size_t shmem_bytes = ((size_t)total_poly + 2 * (size_t)max_g) * sizeof(double);
+        if (shmem_bytes > 200 * 1024) {
+            /* Too large for shared memory, fall back to standard GPU path */
+            goto standard_gpu_path;
+        }
+
+        /* Compute quadrature points */
+        double Smax = S_sorted[0];
+        std::vector<QP> pts;
+        make_nodes(Q, Smax, pts);
+        int active_Q = 0;
+        for (int q = 0; q < Q; q++) if (pts[q].w != 0.0) active_Q++;
+
+        /* Upload to device: small buffers, few mallocs */
+        double *d_S = nullptr, *d_payout = nullptr, *d_equity_buf = nullptr;
+        double *d_logv = nullptr, *d_weights = nullptr;
+        int *d_perm = nullptr, *d_nn = nullptr, *d_psz = nullptr, *d_g_needed = nullptr;
+        size_t *d_plev_off_d = nullptr;
+
+        size_t arena_sz = 0;
+        arena_sz += 256; arena_sz += n * sizeof(double);         /* S */
+        arena_sz += 256; arena_sz += n * sizeof(int);            /* perm */
+        arena_sz += 256; arena_sz += k * sizeof(double);         /* payout */
+        arena_sz += 256; arena_sz += n * sizeof(double);         /* equity */
+        arena_sz += 256; arena_sz += Q * sizeof(double);         /* logv */
+        arena_sz += 256; arena_sz += Q * sizeof(double);         /* weights */
+        arena_sz += 256; arena_sz += L * sizeof(int);            /* nn */
+        arena_sz += 256; arena_sz += L * sizeof(int);            /* psz */
+        arena_sz += 256; arena_sz += L * sizeof(int);            /* g_needed */
+        arena_sz += 256; arena_sz += L * sizeof(size_t);         /* plev_off */
+        char *sk_arena = nullptr;
+        if (!CUDA_OK(cudaMalloc(&sk_arena, arena_sz))) return -1.0;
+        if (!CUDA_OK(cudaMemset(sk_arena, 0, arena_sz))) { cudaFree(sk_arena); return -1.0; }
+
+        size_t sk_off = 0;
+        #define SKP(ptr, type, sz) do { sk_off = (sk_off + 255) & ~(size_t)255; (ptr) = (type)(sk_arena + sk_off); sk_off += (sz); } while(0)
+        SKP(d_S, double*, n * sizeof(double));
+        SKP(d_perm, int*, n * sizeof(int));
+        SKP(d_payout, double*, k * sizeof(double));
+        SKP(d_equity_buf, double*, n * sizeof(double));
+        SKP(d_logv, double*, Q * sizeof(double));
+        SKP(d_weights, double*, Q * sizeof(double));
+        SKP(d_nn, int*, L * sizeof(int));
+        SKP(d_psz, int*, L * sizeof(int));
+        SKP(d_g_needed, int*, L * sizeof(int));
+        SKP(d_plev_off_d, size_t*, L * sizeof(size_t));
+        #undef SKP
+
+        /* Upload data */
+        std::vector<double> h_logv(Q), h_weights(Q);
+        for (int q = 0; q < Q; q++) { h_logv[q] = pts[q].logv; h_weights[q] = pts[q].w; }
+        cudaMemcpy(d_S, S_sorted.data(), n * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_perm, sort_perm.data(), n * sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_payout, payout, k * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_logv, h_logv.data(), Q * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_weights, h_weights.data(), Q * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_nn, nn.data(), L * sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_psz, psz.data(), L * sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_g_needed, g_needed.data(), L * sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_plev_off_d, plev_off.data(), L * sizeof(size_t), cudaMemcpyHostToDevice);
+
+        /* Set shared memory limit for the kernel */
+        cudaFuncSetAttribute(k_icm_single_kernel,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem_bytes);
+
+        /* Launch: one block per Q-point, 256 threads per block */
+        int nthreads = 256;
+        if (n < 256) nthreads = ((n + 31) / 32) * 32;  /* at least 1 warp per player */
+        k_icm_single_kernel<<<Q, nthreads, shmem_bytes>>>(
+            d_S, d_perm, n, Q, d_logv, d_weights, d_payout, k, d_equity_buf,
+            N, L, d_nn, d_psz, d_g_needed, d_plev_off_d, total_poly, max_g);
+        cudaDeviceSynchronize();
+
+        /* Download result */
+        memset(equity, 0, n * sizeof(double));
+        cudaMemcpy(equity, d_equity_buf, n * sizeof(double), cudaMemcpyDeviceToHost);
+        cudaFree(sk_arena);
+
+        double total_ns = now_ns_host() - t0_sk;
+        if (stats) {
+            memset(stats, 0, sizeof(*stats));
+            stats->total_ns = total_ns;
+            stats->engine = 2; /* single-kernel engine */
+        }
+        return total_ns;
+    }
+
+standard_gpu_path:
     IcmGpuPlan *plan = icm_gpu_plan_create(n, S, k, opts);
     if (!plan) return -1.0;
     double t = icm_gpu_equity_with_plan(plan, Q, payout, equity, stats);
