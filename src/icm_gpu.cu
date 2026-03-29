@@ -1,4 +1,5 @@
 #include "icm_gpu.h"
+#include "icm.h"
 
 #include <cuda_runtime.h>
 #include <cufft.h>
@@ -921,6 +922,7 @@ struct GpuPlan {
 
     std::vector<int> nn;
     std::vector<int> psz;
+    std::vector<int> fft_stride;  /* Per-level memory stride: >= psz, accommodates cuFFT idist/odist */
     std::vector<size_t> plev_off;
     std::vector<int> g_needed;
     std::vector<int> below_sat;
@@ -1383,41 +1385,43 @@ __global__ static void k_block_build(const double *a_sorted, int n, int B,
 }
 
 __global__ static void k_schoolbook_build(const double *child, int cps,
-                                          double *parent, int pps, int nparents) {
+                                          double *parent, int pps, int nparents,
+                                          int child_stride, int parent_stride) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     size_t total = (size_t)nparents * (size_t)pps;
     if (idx >= total) return;
     int p = (int)(idx / (size_t)pps);
     int m = (int)(idx % (size_t)pps);
-    const double *L = child + (size_t)(2 * p) * (size_t)cps;
-    const double *R = child + (size_t)(2 * p + 1) * (size_t)cps;
+    const double *L = child + (size_t)(2 * p) * (size_t)child_stride;
+    const double *R = child + (size_t)(2 * p + 1) * (size_t)child_stride;
     int j_lo = m - (cps - 1);
     if (j_lo < 0) j_lo = 0;
     int j_hi = m;
     if (j_hi > cps - 1) j_hi = cps - 1;
     double sum = 0.0;
     for (int j = j_lo; j <= j_hi; ++j) sum += L[j] * R[m - j];
-    parent[idx] = sum;
+    parent[(size_t)p * (size_t)parent_stride + (size_t)m] = sum;
 }
 
 /* Shared-memory block kernel: one parent per block. */
 __global__ static void k_schoolbook_build_smem_parent(const double *child, int cps,
-                                                      double *parent, int pps, int nparents) {
+                                                      double *parent, int pps, int nparents,
+                                                      int child_stride, int parent_stride) {
     int p = blockIdx.x;
     if (p >= nparents) return;
     extern __shared__ double sh[];
     double *Lsh = sh;
     double *Rsh = sh + cps;
 
-    const double *L = child + (size_t)(2 * p) * (size_t)cps;
-    const double *R = child + (size_t)(2 * p + 1) * (size_t)cps;
+    const double *L = child + (size_t)(2 * p) * (size_t)child_stride;
+    const double *R = child + (size_t)(2 * p + 1) * (size_t)child_stride;
     for (int i = threadIdx.x; i < cps; i += blockDim.x) {
         Lsh[i] = L[i];
         Rsh[i] = R[i];
     }
     __syncthreads();
 
-    double *out = parent + (size_t)p * (size_t)pps;
+    double *out = parent + (size_t)p * (size_t)parent_stride;
     for (int m = threadIdx.x; m < pps; m += blockDim.x) {
         int j_lo = m - (cps - 1);
         if (j_lo < 0) j_lo = 0;
@@ -1431,7 +1435,8 @@ __global__ static void k_schoolbook_build_smem_parent(const double *child, int c
 
 /* Warp-batched kernel: one warp computes one parent pair. */
 __global__ static void k_schoolbook_build_warp_batch(const double *child, int cps,
-                                                     double *parent, int pps, int nparents) {
+                                                     double *parent, int pps, int nparents,
+                                                     int child_stride, int parent_stride) {
     constexpr int WARP = 32;
     int lane = threadIdx.x & (WARP - 1);
     int warp = threadIdx.x / WARP;
@@ -1444,15 +1449,15 @@ __global__ static void k_schoolbook_build_warp_batch(const double *child, int cp
     double *Lsh = warp_sh;
     double *Rsh = warp_sh + cps;
 
-    const double *L = child + (size_t)(2 * p) * (size_t)cps;
-    const double *R = child + (size_t)(2 * p + 1) * (size_t)cps;
+    const double *L = child + (size_t)(2 * p) * (size_t)child_stride;
+    const double *R = child + (size_t)(2 * p + 1) * (size_t)child_stride;
     for (int i = lane; i < cps; i += WARP) {
         Lsh[i] = L[i];
         Rsh[i] = R[i];
     }
     __syncwarp();
 
-    double *out = parent + (size_t)p * (size_t)pps;
+    double *out = parent + (size_t)p * (size_t)parent_stride;
     for (int m = lane; m < pps; m += WARP) {
         int j_lo = m - (cps - 1);
         if (j_lo < 0) j_lo = 0;
@@ -1501,14 +1506,37 @@ __global__ static void k_unpack_fft_to_level(const double *src, int fft_n, doubl
     dst[idx] = (m < fft_n) ? in[m] * inv_fft_n : 0.0;
 }
 
+/* In-place scale + zero-pad kernel for FFT-stride layout.
+ * After cuFFT Z2D writes fft_n elements per batch into a buffer with stride
+ * fft_stride (>= fft_n), this kernel:
+ *   - scales elements [0, valid_len) by inv_fft_n
+ *   - zeros elements [valid_len, fft_stride)
+ * Each thread handles one element within the fft_stride-wide slot.
+ * Total threads = batch * fft_stride. */
+__global__ static void k_scale_zero_pad(double *data, int fft_stride, int valid_len,
+                                        double inv_fft_n, int batch) {
+    size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
+    size_t total = (size_t)batch * (size_t)fft_stride;
+    if (idx >= total) return;
+    int b = (int)(idx / (size_t)fft_stride);
+    int m = (int)(idx % (size_t)fft_stride);
+    (void)b;
+    if (m < valid_len) {
+        data[idx] *= inv_fft_n;
+    } else {
+        data[idx] = 0.0;
+    }
+}
+
 __global__ static void k_wrap_build(double *parent, int pps, int nparents,
                                     const double *child, int cps, int conv_len,
-                                    int fft_n, int wrap_m) {
+                                    int fft_n, int wrap_m,
+                                    int parent_stride, int child_stride) {
     int p = blockIdx.x;
     if (p >= nparents || threadIdx.x != 0) return;
-    double *out = parent + (size_t)p * (size_t)pps;
-    const double *L = child + (size_t)(2 * p) * (size_t)cps;
-    const double *R = child + (size_t)(2 * p + 1) * (size_t)cps;
+    double *out = parent + (size_t)p * (size_t)parent_stride;
+    const double *L = child + (size_t)(2 * p) * (size_t)child_stride;
+    const double *R = child + (size_t)(2 * p + 1) * (size_t)child_stride;
     int da = cps - 1;
     int db = cps - 1;
     for (int i = 0; i <= wrap_m; ++i) {
@@ -1568,15 +1596,17 @@ __global__ static void k_wrap_corr_pair(double *g_child, int child_gsz, int npar
                                         const double *g_parent, int parent_gsz, int len_g,
                                         const double *child_poly, int cps, int len_P,
                                         int len_out,
-                                        int fft_n, int wrap_m) {
+                                        int fft_n, int wrap_m,
+                                        int child_g_stride, int parent_g_stride,
+                                        int child_poly_stride) {
     int p = blockIdx.x;
     if (p >= nparents || threadIdx.x != 0) return;
 
-    double *outL = g_child + (size_t)(2 * p) * (size_t)child_gsz;
-    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_gsz;
-    const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
-    const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
-    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
+    double *outL = g_child + (size_t)(2 * p) * (size_t)child_g_stride;
+    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_g_stride;
+    const double *gp = g_parent + (size_t)p * (size_t)parent_g_stride;
+    const double *PL = child_poly + (size_t)(2 * p) * (size_t)child_poly_stride;
+    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)child_poly_stride;
 
     int conv_len = len_g + len_P - 1;
 
@@ -1618,15 +1648,16 @@ __global__ static void k_wrap_corr_pair(double *g_child, int child_gsz, int npar
 __global__ static void k_schoolbook_corr_pair(const double *g_parent, int parent_gsz,
                                               int len_g,
                                               const double *child_poly, int cps, int len_P,
-                                              double *g_child, int child_gsz, int len_out, int nparents) {
+                                              double *g_child, int child_gsz, int len_out, int nparents,
+                                              int parent_g_stride, int child_poly_stride, int child_g_stride) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     size_t total = (size_t)nparents * (size_t)len_out;
     if (idx >= total) return;
     int p = (int)(idx / (size_t)len_out);
     int m = (int)(idx % (size_t)len_out);
-    const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
-    const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
-    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
+    const double *gp = g_parent + (size_t)p * (size_t)parent_g_stride;
+    const double *PL = child_poly + (size_t)(2 * p) * (size_t)child_poly_stride;
+    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)child_poly_stride;
     double sumL = 0.0;
     double sumR = 0.0;
     int j_max = len_g - m;
@@ -1635,8 +1666,8 @@ __global__ static void k_schoolbook_corr_pair(const double *g_parent, int parent
         sumL += PR[j] * gp[m + j];
         sumR += PL[j] * gp[m + j];
     }
-    g_child[(size_t)(2 * p) * (size_t)child_gsz + (size_t)m] = sumL;
-    g_child[(size_t)(2 * p + 1) * (size_t)child_gsz + (size_t)m] = sumR;
+    g_child[(size_t)(2 * p) * (size_t)child_g_stride + (size_t)m] = sumL;
+    g_child[(size_t)(2 * p + 1) * (size_t)child_g_stride + (size_t)m] = sumR;
 }
 
 /* Shared-memory block kernel: one parent per block for paired correlation. */
@@ -1644,7 +1675,9 @@ __global__ static void k_schoolbook_corr_pair_smem_parent(const double *g_parent
                                                            int len_g,
                                                            const double *child_poly, int cps, int len_P,
                                                            double *g_child, int child_gsz,
-                                                           int len_out, int nparents) {
+                                                           int len_out, int nparents,
+                                                           int parent_g_stride, int child_poly_stride,
+                                                           int child_g_stride) {
     int p = blockIdx.x;
     if (p >= nparents) return;
 
@@ -1653,9 +1686,9 @@ __global__ static void k_schoolbook_corr_pair_smem_parent(const double *g_parent
     double *pl_sh = gp_sh + len_g;
     double *pr_sh = pl_sh + len_P;
 
-    const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
-    const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
-    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
+    const double *gp = g_parent + (size_t)p * (size_t)parent_g_stride;
+    const double *PL = child_poly + (size_t)(2 * p) * (size_t)child_poly_stride;
+    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)child_poly_stride;
     for (int i = threadIdx.x; i < len_g; i += blockDim.x) gp_sh[i] = gp[i];
     for (int i = threadIdx.x; i < len_P; i += blockDim.x) {
         pl_sh[i] = PL[i];
@@ -1663,8 +1696,8 @@ __global__ static void k_schoolbook_corr_pair_smem_parent(const double *g_parent
     }
     __syncthreads();
 
-    double *outL = g_child + (size_t)(2 * p) * (size_t)child_gsz;
-    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_gsz;
+    double *outL = g_child + (size_t)(2 * p) * (size_t)child_g_stride;
+    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_g_stride;
     for (int m = threadIdx.x; m < len_out; m += blockDim.x) {
         int j_max = len_g - m;
         if (j_max > len_P) j_max = len_P;
@@ -1685,7 +1718,9 @@ __global__ static void k_schoolbook_corr_pair_warp_batch(const double *g_parent,
                                                           int len_g,
                                                           const double *child_poly, int cps, int len_P,
                                                           double *g_child, int child_gsz,
-                                                          int len_out, int nparents) {
+                                                          int len_out, int nparents,
+                                                          int parent_g_stride, int child_poly_stride,
+                                                          int child_g_stride) {
     constexpr int WARP = 32;
     int lane = threadIdx.x & (WARP - 1);
     int warp = threadIdx.x / WARP;
@@ -1700,9 +1735,9 @@ __global__ static void k_schoolbook_corr_pair_warp_batch(const double *g_parent,
     double *pl_sh = gp_sh + len_g;
     double *pr_sh = pl_sh + len_P;
 
-    const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
-    const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
-    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
+    const double *gp = g_parent + (size_t)p * (size_t)parent_g_stride;
+    const double *PL = child_poly + (size_t)(2 * p) * (size_t)child_poly_stride;
+    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)child_poly_stride;
     for (int i = lane; i < len_g; i += WARP) gp_sh[i] = gp[i];
     for (int i = lane; i < len_P; i += WARP) {
         pl_sh[i] = PL[i];
@@ -1710,8 +1745,8 @@ __global__ static void k_schoolbook_corr_pair_warp_batch(const double *g_parent,
     }
     __syncwarp();
 
-    double *outL = g_child + (size_t)(2 * p) * (size_t)child_gsz;
-    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_gsz;
+    double *outL = g_child + (size_t)(2 * p) * (size_t)child_g_stride;
+    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_g_stride;
     for (int m = lane; m < len_out; m += WARP) {
         int j_max = len_g - m;
         if (j_max > len_P) j_max = len_P;
@@ -1995,22 +2030,30 @@ static void make_nodes(int Q, double Smax, std::vector<QP> &pts) {
     }
 }
 
-static bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c) {
+/* Create cuFFT plan with custom real-side stride (real_dist).
+ * For D2Z: reads from real data at stride real_dist, writes complex at stride cn.
+ * For Z2D: reads complex at stride cn, writes real data at stride real_dist.
+ * When real_dist == n, this is equivalent to the old contiguous layout. */
+static bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist = 0) {
+    if (real_dist <= 0) real_dist = n;
     if (!CUFFT_OK(cufftCreate(plan))) return false;
     int rank = 1;
     int n_arr[1] = {n};
-    int inembed[1] = {n};
-    int onembed[1] = {n / 2 + 1};
+    int cn = n / 2 + 1;
     size_t work_size = 0;
     if (r2c) {
+        int ie[1] = {real_dist};
+        int oe[1] = {cn};
         if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
-                                        inembed, 1, n,
-                                        onembed, 1, n / 2 + 1,
+                                        ie, 1, real_dist,
+                                        oe, 1, cn,
                                         CUFFT_D2Z, batch, &work_size))) return false;
     } else {
+        int ie[1] = {cn};
+        int oe[1] = {real_dist};
         if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
-                                        onembed, 1, n / 2 + 1,
-                                        inembed, 1, n,
+                                        ie, 1, cn,
+                                        oe, 1, real_dist,
                                         CUFFT_Z2D, batch, &work_size))) return false;
     }
     return true;
@@ -2043,35 +2086,40 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     int parent_batch = plan->nn[ell];
     int qb = plan->q_batch;
 
-    /* Build FFT: point to shared buffers, create per-level plan handles.
-     * cuFFT batch sizes are scaled by q_batch so all Q-points' trees
-     * are processed in a single cuFFT call. */
+    /* Build FFT: cuFFT reads directly from poly_levels[ell-1] at fft_stride[ell-1]
+     * and writes directly to poly_levels[ell] at fft_stride[ell].
+     * The real_dist parameter sets the batch pitch on the real side.
+     * Spectral buffers (spec_in, spec_mid) remain contiguous at cn stride. */
+    int child_stride = plan->fft_stride[ell - 1];
+    int parent_stride = plan->fft_stride[ell];
+
     auto &b = plan->build_fft[ell];
     b.fft_n = fft_n;
     b.cn = cn;
     b.batch_fwd = qb * child_batch;
     b.batch_inv = qb * parent_batch;
-    b.real_in = plan->shared_build_work.real_in;
+    b.real_in = nullptr;   /* cuFFT reads poly_levels directly */
     b.spec_in = plan->shared_build_work.spec_in;
     b.spec_mid = plan->shared_build_work.spec_mid;
-    b.real_out = plan->shared_build_work.real_out;
-    if (!create_cufft_plan(&b.plan_fwd, fft_n, qb * child_batch, true)) return false;
-    if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false)) return false;
+    b.real_out = nullptr;  /* cuFFT writes poly_levels directly */
+    if (!create_cufft_plan(&b.plan_fwd, fft_n, qb * child_batch, true, child_stride)) return false;
+    if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false, parent_stride)) return false;
     if (!CUFFT_OK(cufftSetStream(b.plan_fwd, plan->stream_compute))) return false;
     if (!CUFFT_OK(cufftSetStream(b.plan_inv, plan->stream_compute))) return false;
 
-    /* Corr FFT: point to shared buffers, create per-level plan handles */
+    /* Corr FFT: forward reads g_levels[ell] at parent_stride,
+     * inverse writes g_levels[ell-1] at child_stride. */
     auto &c = plan->corr_fft[ell];
     c.fft_n = fft_n;
     c.cn = cn;
     c.batch_fwd = qb * parent_batch;
     c.batch_inv = qb * 2 * parent_batch;
-    c.real_in = plan->shared_corr_work.real_in;
+    c.real_in = nullptr;   /* cuFFT reads g_levels directly */
     c.spec_in = plan->shared_corr_work.spec_in;
     c.spec_mid = plan->shared_corr_work.spec_mid;
-    c.real_out = plan->shared_corr_work.real_out;
-    if (!create_cufft_plan(&c.plan_fwd, fft_n, qb * parent_batch, true)) return false;
-    if (!create_cufft_plan(&c.plan_inv, fft_n, qb * 2 * parent_batch, false)) return false;
+    c.real_out = nullptr;  /* cuFFT writes g_levels directly */
+    if (!create_cufft_plan(&c.plan_fwd, fft_n, qb * parent_batch, true, parent_stride)) return false;
+    if (!create_cufft_plan(&c.plan_inv, fft_n, qb * 2 * parent_batch, false, child_stride)) return false;
     if (!CUFFT_OK(cufftSetStream(c.plan_fwd, plan->stream_compute))) return false;
     if (!CUFFT_OK(cufftSetStream(c.plan_inv, plan->stream_compute))) return false;
 
@@ -2299,6 +2347,47 @@ static bool build_plan_metadata(GpuPlan *plan) {
         }
     }
     choose_uncached_levels(plan);
+
+    /* ── Compute fft_stride: the per-level memory stride for poly/g levels ──
+     * For each level ell, fft_stride[ell] must be large enough so that cuFFT
+     * at any referencing level can use it as idist/odist directly.
+     *
+     * poly_levels[ell] is read by:
+     *   - build forward D2Z at level ell+1  (needs stride >= fft_n[ell+1])
+     *   - corr forward D2Z at level ell+1   (same fft_n due to joint optimization)
+     * poly_levels[ell] is written by:
+     *   - build inverse Z2D at level ell     (needs stride >= fft_n[ell])
+     *
+     * g_levels[ell] is read by:
+     *   - corr forward D2Z at level ell      (needs stride >= fft_n[ell])
+     * g_levels[ell] is written by:
+     *   - corr inverse Z2D at level ell+1    (needs stride >= fft_n[ell+1])
+     *
+     * So: fft_stride[ell] = max(psz[ell], fft_n[ell] if use_fft, fft_n[ell+1] if use_fft)
+     * For schoolbook-only levels with no adjacent cuFFT levels: fft_stride = psz.
+     */
+    plan->fft_stride.assign(plan->L, 0);
+    for (int ell = 0; ell < plan->L; ++ell) {
+        int s = plan->psz[ell];
+        /* Level ell's own cuFFT (build/corr at level ell) */
+        if (ell >= 1 && plan->levels[ell].use_fft &&
+            plan->levels[ell].tier != GPU_TIER_SCHOOLBOOK) {
+            s = std::max(s, plan->levels[ell].fft_n);
+        }
+        /* Level ell+1's cuFFT reads poly_levels[ell] as children / writes g_levels[ell] */
+        if (ell + 1 < plan->L && plan->levels[ell + 1].use_fft &&
+            plan->levels[ell + 1].tier != GPU_TIER_SCHOOLBOOK) {
+            s = std::max(s, plan->levels[ell + 1].fft_n);
+        }
+        plan->fft_stride[ell] = s;
+    }
+    if (debug_plan) {
+        for (int ell = 0; ell < plan->L; ++ell) {
+            fprintf(stderr, "  fft_stride[%d] = %d  (psz=%d)\n",
+                    ell, plan->fft_stride[ell], plan->psz[ell]);
+        }
+    }
+
     return true;
 }
 
@@ -2364,39 +2453,34 @@ static bool device_sort_players(GpuPlan *plan) {
 }
 
 static bool allocate_shared_fft_buffers(GpuPlan *plan) {
-    size_t mb_ri = 0, mb_si = 0, mb_sm = 0, mb_ro = 0;
-    size_t mc_ri = 0, mc_si = 0, mc_sm = 0, mc_ro = 0;
+    size_t mb_si = 0, mb_sm = 0;
+    size_t mc_si = 0, mc_sm = 0;
     int qb = plan->q_batch;
     for (int ell = 1; ell < plan->L; ++ell) {
         auto &lp = plan->levels[ell];
         /* Include ALL FFT-using levels (cuFFT AND fused, since fused falls back to cuFFT) */
         if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
-        int fft_n = lp.fft_n, cn = lp.cn;
+        int cn = lp.cn;
         int cb = plan->nn[ell - 1], pb = plan->nn[ell];
-        /* Scale by q_batch: cuFFT processes qb * batch transforms at once */
-        mb_ri = std::max(mb_ri, (size_t)qb * (size_t)cb * fft_n * sizeof(double));
+        /* With FFT-stride layout, real_in/real_out are no longer needed.
+         * Only spectral buffers remain shared. */
         mb_si = std::max(mb_si, (size_t)qb * (size_t)cb * cn * sizeof(cufftDoubleComplex));
         mb_sm = std::max(mb_sm, (size_t)qb * (size_t)pb * cn * sizeof(cufftDoubleComplex));
-        mb_ro = std::max(mb_ro, (size_t)qb * (size_t)pb * fft_n * sizeof(double));
-        mc_ri = std::max(mc_ri, (size_t)qb * (size_t)pb * fft_n * sizeof(double));
         mc_si = std::max(mc_si, (size_t)qb * (size_t)pb * cn * sizeof(cufftDoubleComplex));
         mc_sm = std::max(mc_sm, (size_t)qb * (size_t)(2 * pb) * cn * sizeof(cufftDoubleComplex));
-        mc_ro = std::max(mc_ro, (size_t)qb * (size_t)(2 * pb) * fft_n * sizeof(double));
     }
     auto &sb = plan->shared_build_work;
-    sb.real_in_bytes = mb_ri; sb.spec_in_bytes = mb_si;
-    sb.spec_mid_bytes = mb_sm; sb.real_out_bytes = mb_ro;
+    sb.real_in_bytes = 0; sb.spec_in_bytes = mb_si;
+    sb.spec_mid_bytes = mb_sm; sb.real_out_bytes = 0;
+    sb.real_in = nullptr; sb.real_out = nullptr;
     auto &sc = plan->shared_corr_work;
-    sc.real_in_bytes = mc_ri; sc.spec_in_bytes = mc_si;
-    sc.spec_mid_bytes = mc_sm; sc.real_out_bytes = mc_ro;
-    if (!alloc_device(plan, (void **)&sb.real_in, mb_ri, plan->stream_compute)) return false;
+    sc.real_in_bytes = 0; sc.spec_in_bytes = mc_si;
+    sc.spec_mid_bytes = mc_sm; sc.real_out_bytes = 0;
+    sc.real_in = nullptr; sc.real_out = nullptr;
     if (!alloc_device(plan, (void **)&sb.spec_in, mb_si, plan->stream_compute)) return false;
     if (!alloc_device(plan, (void **)&sb.spec_mid, mb_sm, plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&sb.real_out, mb_ro, plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&sc.real_in, mc_ri, plan->stream_compute)) return false;
     if (!alloc_device(plan, (void **)&sc.spec_in, mc_si, plan->stream_compute)) return false;
     if (!alloc_device(plan, (void **)&sc.spec_mid, mc_sm, plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&sc.real_out, mc_ro, plan->stream_compute)) return false;
     return true;
 }
 
@@ -2418,20 +2502,21 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     plan->build_fft.assign(plan->L, GpuFftBuffers{});
     plan->corr_fft.assign(plan->L, GpuFftBuffers{});
 
-    /* Compute shared FFT buffer max sizes */
+    /* Compute shared FFT buffer max sizes.
+     * With FFT-stride layout, cuFFT reads/writes directly from poly/g levels,
+     * so real_in and real_out are no longer needed.  Only the spectral buffers
+     * (spec_in for forward output / cache source, spec_mid for pairwise multiply
+     * output / inverse input) are still required. */
     size_t mb_ri=0, mb_si=0, mb_sm=0, mb_ro=0, mc_ri=0, mc_si=0, mc_sm=0, mc_ro=0;
     for (int ell = 1; ell < plan->L; ++ell) {
         auto &lp = plan->levels[ell];
         if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
-        int fn = lp.fft_n, cn = lp.cn, cb = plan->nn[ell-1], pb = plan->nn[ell];
-        mb_ri = std::max(mb_ri, (size_t)qb*cb*fn*sizeof(double));
+        int cn = lp.cn, cb = plan->nn[ell-1], pb = plan->nn[ell];
+        /* real_in / real_out no longer needed (cuFFT uses poly/g directly) */
         mb_si = std::max(mb_si, (size_t)qb*cb*cn*sizeof(cufftDoubleComplex));
         mb_sm = std::max(mb_sm, (size_t)qb*pb*cn*sizeof(cufftDoubleComplex));
-        mb_ro = std::max(mb_ro, (size_t)qb*pb*fn*sizeof(double));
-        mc_ri = std::max(mc_ri, (size_t)qb*pb*fn*sizeof(double));
         mc_si = std::max(mc_si, (size_t)qb*pb*cn*sizeof(cufftDoubleComplex));
         mc_sm = std::max(mc_sm, (size_t)qb*2*pb*cn*sizeof(cufftDoubleComplex));
-        mc_ro = std::max(mc_ro, (size_t)qb*2*pb*fn*sizeof(double));
     }
 
     /* ── Arena: single cudaMalloc for all plan buffers ── */
@@ -2449,7 +2534,7 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     A((size_t)plan->k * sizeof(double));       /* d_payout */
     A(block_prod_bytes);                        /* d_block_prods */
     if (plan->opts.enable_q_pipeline) {
-        A((size_t)plan->nn[0] * plan->psz[0] * sizeof(double)); /* d_poly_leaves_alt */
+        A((size_t)plan->nn[0] * plan->fft_stride[0] * sizeof(double)); /* d_poly_leaves_alt */
         A(block_prod_bytes);                    /* d_block_prods_alt */
     }
     if (qb > 1) {
@@ -2461,16 +2546,17 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
         A((size_t)qb * sizeof(double));            /* d_qb_inv_vs */
     }
     for (int ell = 0; ell < plan->L; ++ell) {
-        size_t pb = (size_t)qb * plan->nn[ell] * plan->psz[ell] * sizeof(double);
-        A(pb); A(pb); /* poly + g */
+        size_t pb = (size_t)qb * plan->nn[ell] * plan->fft_stride[ell] * sizeof(double);
+        A(pb); A(pb); /* poly + g (at fft_stride spacing for cuFFT direct access) */
     }
     for (int ell = 1; ell < plan->L; ++ell) {
         auto &lp = plan->levels[ell];
         if (lp.use_fft && lp.cache_fft && lp.tier != GPU_TIER_SCHOOLBOOK)
             A((size_t)qb * plan->nn[ell-1] * lp.cn * sizeof(cufftDoubleComplex));
     }
-    A(mb_ri); A(mb_si); A(mb_sm); A(mb_ro);
-    A(mc_ri); A(mc_si); A(mc_sm); A(mc_ro);
+    /* real_in / real_out no longer needed; only spectral buffers */
+    A(mb_si); A(mb_sm);
+    A(mc_si); A(mc_sm);
     /* callback info slots removed (callbacks disabled) */
     #undef A
 
@@ -2501,7 +2587,7 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     P(plan->d_payout, double*, (size_t)plan->k * sizeof(double));
     if (block_prod_bytes > 0) P(plan->d_block_prods, double*, block_prod_bytes);
     if (plan->opts.enable_q_pipeline) {
-        P(plan->d_poly_leaves_alt, double*, (size_t)plan->nn[0] * plan->psz[0] * sizeof(double));
+        P(plan->d_poly_leaves_alt, double*, (size_t)plan->nn[0] * plan->fft_stride[0] * sizeof(double));
         if (block_prod_bytes > 0) P(plan->d_block_prods_alt, double*, block_prod_bytes);
         if (!CUDA_OK(cudaEventCreateWithFlags(&plan->evt_prop_done, cudaEventDisableTiming))) return false;
     }
@@ -2514,7 +2600,7 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
         P(plan->d_qb_inv_vs, double*, (size_t)qb * sizeof(double));
     }
     for (int ell = 0; ell < plan->L; ++ell) {
-        size_t pb = (size_t)qb * plan->nn[ell] * plan->psz[ell] * sizeof(double);
+        size_t pb = (size_t)qb * plan->nn[ell] * plan->fft_stride[ell] * sizeof(double);
         P(plan->d_poly_levels[ell], double*, pb);
         P(plan->d_g_levels[ell], double*, pb);
     }
@@ -2525,12 +2611,15 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     }
     auto &sb = plan->shared_build_work;
     auto &sc = plan->shared_corr_work;
-    sb.real_in_bytes=mb_ri; sb.spec_in_bytes=mb_si; sb.spec_mid_bytes=mb_sm; sb.real_out_bytes=mb_ro;
-    sc.real_in_bytes=mc_ri; sc.spec_in_bytes=mc_si; sc.spec_mid_bytes=mc_sm; sc.real_out_bytes=mc_ro;
-    P(sb.real_in, double*, mb_ri); P(sb.spec_in, cufftDoubleComplex*, mb_si);
-    P(sb.spec_mid, cufftDoubleComplex*, mb_sm); P(sb.real_out, double*, mb_ro);
-    P(sc.real_in, double*, mc_ri); P(sc.spec_in, cufftDoubleComplex*, mc_si);
-    P(sc.spec_mid, cufftDoubleComplex*, mc_sm); P(sc.real_out, double*, mc_ro);
+    /* real_in / real_out no longer needed with FFT-stride layout */
+    sb.real_in_bytes=0; sb.spec_in_bytes=mb_si; sb.spec_mid_bytes=mb_sm; sb.real_out_bytes=0;
+    sc.real_in_bytes=0; sc.spec_in_bytes=mc_si; sc.spec_mid_bytes=mc_sm; sc.real_out_bytes=0;
+    sb.real_in=nullptr; sb.real_out=nullptr;
+    sc.real_in=nullptr; sc.real_out=nullptr;
+    P(sb.spec_in, cufftDoubleComplex*, mb_si);
+    P(sb.spec_mid, cufftDoubleComplex*, mb_sm);
+    P(sc.spec_in, cufftDoubleComplex*, mc_si);
+    P(sc.spec_mid, cufftDoubleComplex*, mc_sm);
     /* callback info slots removed (callbacks disabled) */
     #undef P
     plan->use_async_pool = false;
@@ -2633,48 +2722,48 @@ static bool run_build_level_schoolbook(GpuPlan *plan, int ell);
 static bool run_prop_level_schoolbook(GpuPlan *plan, int ell);
 
 static bool run_build_level_fft(GpuPlan *plan, int ell) {
-    int cps = plan->psz[ell - 1];
     int pps = plan->psz[ell];
     int child_batch = plan->nn[ell - 1];
     int parent_batch = plan->nn[ell];
+    int parent_stride = plan->fft_stride[ell];
+    int child_stride = plan->fft_stride[ell - 1];
     auto &lp = plan->levels[ell];
     auto &b = plan->build_fft[ell];
     int threads = 256;
-    size_t pack_total = (size_t)child_batch * (size_t)b.fft_n;
-    int blocks_pack = (int)((pack_total + threads - 1) / threads);
-    k_pack_level_to_fft<<<blocks_pack, threads, 0, plan->stream_compute>>>(
-        plan->d_poly_levels[ell - 1], cps, child_batch,
-        b.real_in, b.fft_n, cps);
-    if (!CUDA_OK(cudaGetLastError())) return false;
 
-    if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, b.real_in, b.spec_in))) return false;
+    /* D2Z: read directly from poly_levels[ell-1] at fft_stride[ell-1] */
+    /* When caching, write FFT output directly to cache to avoid D2D copy */
+    cufftDoubleComplex *fwd_out = (lp.cache_fft && plan->d_fft_cache[ell]) ? plan->d_fft_cache[ell] : b.spec_in;
+    if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, plan->d_poly_levels[ell - 1], fwd_out))) return false;
 
     if (lp.cache_fft && plan->d_fft_cache[ell]) {
-        size_t bytes = (size_t)child_batch * (size_t)b.cn * sizeof(cufftDoubleComplex);
-        if (!CUDA_OK(cudaMemcpyAsync(plan->d_fft_cache[ell], b.spec_in, bytes,
-                                     cudaMemcpyDeviceToDevice, plan->stream_compute))) return false;
         if (ell < (int)plan->fft_cache_valid.size()) plan->fft_cache_valid[ell] = true;
     }
 
     size_t mul_total = (size_t)parent_batch * (size_t)b.cn;
     int blocks_mul = (int)((mul_total + threads - 1) / threads);
     k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(
-        b.spec_in, b.cn, b.spec_mid, parent_batch);
+        fwd_out, b.cn, b.spec_mid, parent_batch);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
-    if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, b.spec_mid, b.real_out))) return false;
+    /* Z2D: write directly to poly_levels[ell] at fft_stride[ell] */
+    if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, b.spec_mid, plan->d_poly_levels[ell]))) return false;
 
-    size_t unpack_total = (size_t)parent_batch * (size_t)pps;
-    int blocks_unpack = (int)((unpack_total + threads - 1) / threads);
-    k_unpack_fft_to_level<<<blocks_unpack, threads, 0, plan->stream_compute>>>(
-        b.real_out, b.fft_n, 1.0 / (double)b.fft_n,
-        pps, parent_batch, plan->d_poly_levels[ell]);
+    /* Scale valid coefficients by 1/fft_n and zero the padding region */
+    size_t szp_total = (size_t)parent_batch * (size_t)parent_stride;
+    int blocks_szp = (int)((szp_total + threads - 1) / threads);
+    k_scale_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
+        plan->d_poly_levels[ell], parent_stride, pps,
+        1.0 / (double)b.fft_n, parent_batch);
     if (!CUDA_OK(cudaGetLastError())) return false;
+
     if (lp.build_wrap_m > 0) {
+        int cps = plan->psz[ell - 1];
         k_wrap_build<<<parent_batch, 1, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, parent_batch,
             plan->d_poly_levels[ell - 1], cps, lp.build_conv,
-            b.fft_n, lp.build_wrap_m);
+            b.fft_n, lp.build_wrap_m,
+            parent_stride, child_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -2688,18 +2777,20 @@ static bool run_build_level_fused(GpuPlan *plan, int ell) {
     }
     int cps = plan->psz[ell - 1];
     int pps = plan->psz[ell];
+    int child_stride = plan->fft_stride[ell - 1];
+    int parent_stride = plan->fft_stride[ell];
     int nparents = plan->nn[ell];
     if (nparents <= 0 || cps <= 0 || pps <= 0) return true;
     /* Try R2C first (half FFT work for real polynomials), fall back to C2C, then cuFFT */
     bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n,
-                                                plan->d_poly_levels[ell - 1], cps,
-                                                plan->d_poly_levels[ell], pps, nparents,
+                                                plan->d_poly_levels[ell - 1], child_stride,
+                                                plan->d_poly_levels[ell], parent_stride, nparents,
                                                 1.0 / (double)lp.fft_n,
                                                 plan->stream_compute);
     if (!ok) {
         ok = launch_cufftdx_build_dispatch(lp.fft_n,
-                                           plan->d_poly_levels[ell - 1], cps,
-                                           plan->d_poly_levels[ell], pps, nparents,
+                                           plan->d_poly_levels[ell - 1], child_stride,
+                                           plan->d_poly_levels[ell], parent_stride, nparents,
                                            1.0 / (double)lp.fft_n,
                                            plan->stream_compute);
     }
@@ -2708,7 +2799,8 @@ static bool run_build_level_fused(GpuPlan *plan, int ell) {
         k_wrap_build<<<nparents, 1, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, nparents,
             plan->d_poly_levels[ell - 1], cps, lp.build_conv,
-            lp.fft_n, lp.build_wrap_m);
+            lp.fft_n, lp.build_wrap_m,
+            parent_stride, child_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -2717,6 +2809,8 @@ static bool run_build_level_fused(GpuPlan *plan, int ell) {
 static bool run_build_level_schoolbook(GpuPlan *plan, int ell) {
     int cps = plan->psz[ell - 1];
     int pps = plan->psz[ell];
+    int child_stride = plan->fft_stride[ell - 1];
+    int parent_stride = plan->fft_stride[ell];
     int nparents = plan->nn[ell];
     if (nparents <= 0 || cps <= 0 || pps <= 0) return true;
 
@@ -2729,14 +2823,16 @@ static bool run_build_level_schoolbook(GpuPlan *plan, int ell) {
         if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
             k_schoolbook_build_warp_batch<<<blocks, threads, shmem, plan->stream_compute>>>(
                 plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents);
+                plan->d_poly_levels[ell], pps, nparents,
+                child_stride, parent_stride);
         } else {
             int fb_threads = 256;
             size_t total = (size_t)nparents * (size_t)pps;
             int fb_blocks = (int)((total + fb_threads - 1) / fb_threads);
             k_schoolbook_build<<<fb_blocks, fb_threads, 0, plan->stream_compute>>>(
                 plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents);
+                plan->d_poly_levels[ell], pps, nparents,
+                child_stride, parent_stride);
         }
     } else {
         int threads = 256;
@@ -2745,13 +2841,15 @@ static bool run_build_level_schoolbook(GpuPlan *plan, int ell) {
         if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
             k_schoolbook_build_smem_parent<<<blocks, threads, shmem, plan->stream_compute>>>(
                 plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents);
+                plan->d_poly_levels[ell], pps, nparents,
+                child_stride, parent_stride);
         } else {
             size_t total = (size_t)nparents * (size_t)pps;
             int fb_blocks = (int)((total + threads - 1) / threads);
             k_schoolbook_build<<<fb_blocks, threads, 0, plan->stream_compute>>>(
                 plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents);
+                plan->d_poly_levels[ell], pps, nparents,
+                child_stride, parent_stride);
         }
     }
     if (!CUDA_OK(cudaGetLastError())) return false;
@@ -2759,10 +2857,10 @@ static bool run_build_level_schoolbook(GpuPlan *plan, int ell) {
 }
 
 static bool run_prop_level_fft(GpuPlan *plan, int ell) {
-    int parent_gsz = plan->psz[ell];
     int child_gsz = plan->psz[ell - 1];
-    int cps = plan->psz[ell - 1];
     int nparents = plan->nn[ell];
+    int parent_stride = plan->fft_stride[ell];
+    int child_stride = plan->fft_stride[ell - 1];
     auto &lp = plan->levels[ell];
     auto &c = plan->corr_fft[ell];
     int len_g = lp.g_eff;
@@ -2770,26 +2868,14 @@ static bool run_prop_level_fft(GpuPlan *plan, int ell) {
     int len_out = lp.out_needed;
     int threads = 256;
 
-    size_t pack_total = (size_t)nparents * (size_t)c.fft_n;
-    int blocks_pack = (int)((pack_total + threads - 1) / threads);
-    k_pack_level_to_fft<<<blocks_pack, threads, 0, plan->stream_compute>>>(
-        plan->d_g_levels[ell], parent_gsz, nparents,
-        c.real_in, c.fft_n, len_g);
-    if (!CUDA_OK(cudaGetLastError())) return false;
-
-    if (!CUFFT_OK(cufftExecD2Z(c.plan_fwd, c.real_in, c.spec_in))) return false;
+    /* D2Z: read directly from g_levels[ell] at fft_stride[ell] */
+    if (!CUFFT_OK(cufftExecD2Z(c.plan_fwd, plan->d_g_levels[ell], c.spec_in))) return false;
 
     const cufftDoubleComplex *child_spec = (plan->d_fft_cache[ell] && ell < (int)plan->fft_cache_valid.size() && plan->fft_cache_valid[ell]) ? plan->d_fft_cache[ell] : nullptr;
     if (!child_spec) {
+        /* Re-compute child spectra: D2Z directly from poly_levels[ell-1] */
         auto &b = plan->build_fft[ell];
-        int child_batch = plan->nn[ell - 1];
-        size_t child_pack_total = (size_t)child_batch * (size_t)b.fft_n;
-        int child_pack_blocks = (int)((child_pack_total + threads - 1) / threads);
-        k_pack_level_to_fft<<<child_pack_blocks, threads, 0, plan->stream_compute>>>(
-            plan->d_poly_levels[ell - 1], cps, child_batch,
-            b.real_in, b.fft_n, len_P);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-        if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, b.real_in, b.spec_in))) return false;
+        if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, plan->d_poly_levels[ell - 1], b.spec_in))) return false;
         child_spec = b.spec_in;
     }
 
@@ -2799,22 +2885,26 @@ static bool run_prop_level_fft(GpuPlan *plan, int ell) {
         c.spec_in, child_spec, c.cn, nparents, c.spec_mid);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
-    if (!CUFFT_OK(cufftExecZ2D(c.plan_inv, c.spec_mid, c.real_out))) return false;
+    /* Z2D: write directly to g_levels[ell-1] at fft_stride[ell-1] */
+    if (!CUFFT_OK(cufftExecZ2D(c.plan_inv, c.spec_mid, plan->d_g_levels[ell - 1]))) return false;
 
-    size_t unpack_total = (size_t)(2 * nparents) * (size_t)len_out;
-    int blocks_unpack = (int)((unpack_total + threads - 1) / threads);
-    k_unpack_corr_children<<<blocks_unpack, threads, 0, plan->stream_compute>>>(
-        c.real_out, c.fft_n, 1.0 / (double)c.fft_n, child_gsz, len_out,
-        nparents, plan->d_g_levels[ell - 1]);
+    /* Scale valid coefficients by 1/fft_n and zero the padding region */
+    int n_children = 2 * nparents;
+    size_t szp_total = (size_t)n_children * (size_t)child_stride;
+    int blocks_szp = (int)((szp_total + threads - 1) / threads);
+    k_scale_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
+        plan->d_g_levels[ell - 1], child_stride, child_gsz,
+        1.0 / (double)c.fft_n, n_children);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents, 1, 0, plan->stream_compute>>>(
             plan->d_g_levels[ell - 1], child_gsz, nparents,
-            plan->d_g_levels[ell], parent_gsz, len_g,
-            plan->d_poly_levels[ell - 1], cps, len_P,
+            plan->d_g_levels[ell], plan->psz[ell], len_g,
+            plan->d_poly_levels[ell - 1], plan->psz[ell - 1], len_P,
             len_out,
-            c.fft_n, lp.corr_wrap_m);
+            c.fft_n, lp.corr_wrap_m,
+            child_stride, parent_stride, child_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
 
@@ -2834,6 +2924,8 @@ static bool run_prop_level_fused(GpuPlan *plan, int ell) {
     int parent_gsz = plan->psz[ell];
     int child_gsz = plan->psz[ell - 1];
     int cps = plan->psz[ell - 1];
+    int parent_stride = plan->fft_stride[ell];
+    int child_stride = plan->fft_stride[ell - 1];
     int nparents = plan->nn[ell];
     int len_g = lp.g_eff;
     int len_P = lp.p_eff;
@@ -2841,16 +2933,16 @@ static bool run_prop_level_fused(GpuPlan *plan, int ell) {
     if (nparents <= 0 || len_out <= 0 || len_g <= 0 || len_P <= 0) return true;
     /* Try R2C first (half FFT work for real polynomials), fall back to C2C, then cuFFT */
     bool ok = launch_cufftdx_corr_r2c_dispatch(lp.fft_n,
-                                               plan->d_g_levels[ell], parent_gsz, len_g,
-                                               plan->d_poly_levels[ell - 1], cps, len_P,
-                                               plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
+                                               plan->d_g_levels[ell], parent_stride, len_g,
+                                               plan->d_poly_levels[ell - 1], child_stride, len_P,
+                                               plan->d_g_levels[ell - 1], child_stride, len_out, nparents,
                                                1.0 / (double)lp.fft_n,
                                                plan->stream_compute);
     if (!ok) {
         ok = launch_cufftdx_corr_dispatch(lp.fft_n,
-                                          plan->d_g_levels[ell], parent_gsz, len_g,
-                                          plan->d_poly_levels[ell - 1], cps, len_P,
-                                          plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
+                                          plan->d_g_levels[ell], parent_stride, len_g,
+                                          plan->d_poly_levels[ell - 1], child_stride, len_P,
+                                          plan->d_g_levels[ell - 1], child_stride, len_out, nparents,
                                           1.0 / (double)lp.fft_n,
                                           plan->stream_compute);
     }
@@ -2861,7 +2953,8 @@ static bool run_prop_level_fused(GpuPlan *plan, int ell) {
             plan->d_g_levels[ell], parent_gsz, len_g,
             plan->d_poly_levels[ell - 1], cps, len_P,
             len_out,
-            lp.fft_n, lp.corr_wrap_m);
+            lp.fft_n, lp.corr_wrap_m,
+            child_stride, parent_stride, child_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -2871,6 +2964,8 @@ static bool run_prop_level_schoolbook(GpuPlan *plan, int ell) {
     int parent_gsz = plan->psz[ell];
     int child_gsz = plan->psz[ell - 1];
     int cps = plan->psz[ell - 1];
+    int parent_stride = plan->fft_stride[ell];
+    int child_stride = plan->fft_stride[ell - 1];
     int nparents = plan->nn[ell];
     auto &lp = plan->levels[ell];
     int len_g = lp.g_eff;
@@ -2889,7 +2984,8 @@ static bool run_prop_level_schoolbook(GpuPlan *plan, int ell) {
             k_schoolbook_corr_pair_warp_batch<<<blocks, threads, shmem, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
+                parent_stride, child_stride, child_stride);
         } else {
             int fb_threads = 256;
             size_t total = (size_t)nparents * (size_t)len_out;
@@ -2897,7 +2993,8 @@ static bool run_prop_level_schoolbook(GpuPlan *plan, int ell) {
             k_schoolbook_corr_pair<<<fb_blocks, fb_threads, 0, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
+                parent_stride, child_stride, child_stride);
         }
     } else {
         int threads = 256;
@@ -2907,14 +3004,16 @@ static bool run_prop_level_schoolbook(GpuPlan *plan, int ell) {
             k_schoolbook_corr_pair_smem_parent<<<blocks, threads, shmem, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
+                parent_stride, child_stride, child_stride);
         } else {
             size_t total = (size_t)nparents * (size_t)len_out;
             int fb_blocks = (int)((total + threads - 1) / threads);
             k_schoolbook_corr_pair<<<fb_blocks, threads, 0, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
+                parent_stride, child_stride, child_stride);
         }
     }
     if (!CUDA_OK(cudaGetLastError())) return false;
@@ -2926,20 +3025,22 @@ static bool run_prop_level_schoolbook(GpuPlan *plan, int ell) {
  * These functions run the tree build and propagation for q_batch Q-points
  * simultaneously. The poly/g level buffers have layout:
  *   [Q0_node0..Q0_nodeN, Q1_node0..Q1_nodeN, ... Qq_node0..Qq_nodeN]
- * where each Q-point's nodes occupy nn[ell] * psz[ell] doubles.
+ * where each Q-point's nodes occupy nn[ell] * fft_stride[ell] doubles.
  *
  * Because nn[ell-1] = 2 * nn[ell], the parent-child indexing is preserved:
  * parent at (global) index nn[ell]*qi + p reads children at
  * nn[ell-1]*qi + 2p and nn[ell-1]*qi + 2p + 1, which is correct because
  * the Q-point blocks are contiguous and parent p maps to children 2p, 2p+1
- * within each Q-point's block. The existing kernels (pack, mul, unpack,
- * schoolbook, wrap) all operate on flat arrays indexed by nparents, so we
+ * within each Q-point's block. The existing kernels (mul,
+ * schoolbook, wrap, scale_zero_pad) all operate on flat arrays indexed by nparents, so we
  * just multiply nparents (and all batch counts) by q_batch.
  */
 
 static bool run_build_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
     int cps = plan->psz[ell - 1];
     int pps = plan->psz[ell];
+    int cs = plan->fft_stride[ell - 1];
+    int ps = plan->fft_stride[ell];
     int nparents_total = qb * plan->nn[ell];
     if (nparents_total <= 0 || cps <= 0 || pps <= 0) return true;
 
@@ -2952,14 +3053,14 @@ static bool run_build_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
         if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
             k_schoolbook_build_warp_batch<<<blocks, threads, shmem, plan->stream_compute>>>(
                 plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents_total);
+                plan->d_poly_levels[ell], pps, nparents_total, cs, ps);
         } else {
             int fb_threads = 256;
             size_t total = (size_t)nparents_total * (size_t)pps;
             int fb_blocks = (int)((total + fb_threads - 1) / fb_threads);
             k_schoolbook_build<<<fb_blocks, fb_threads, 0, plan->stream_compute>>>(
                 plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents_total);
+                plan->d_poly_levels[ell], pps, nparents_total, cs, ps);
         }
     } else {
         int threads = 256;
@@ -2968,13 +3069,13 @@ static bool run_build_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
         if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
             k_schoolbook_build_smem_parent<<<blocks, threads, shmem, plan->stream_compute>>>(
                 plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents_total);
+                plan->d_poly_levels[ell], pps, nparents_total, cs, ps);
         } else {
             size_t total = (size_t)nparents_total * (size_t)pps;
             int fb_blocks = (int)((total + threads - 1) / threads);
             k_schoolbook_build<<<fb_blocks, threads, 0, plan->stream_compute>>>(
                 plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents_total);
+                plan->d_poly_levels[ell], pps, nparents_total, cs, ps);
         }
     }
     if (!CUDA_OK(cudaGetLastError())) return false;
@@ -2986,44 +3087,42 @@ static bool run_build_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     int pps = plan->psz[ell];
     int child_batch = qb * plan->nn[ell - 1];
     int parent_batch = qb * plan->nn[ell];
+    int parent_stride = plan->fft_stride[ell];
+    int child_stride = plan->fft_stride[ell - 1];
     auto &lp = plan->levels[ell];
     auto &b = plan->build_fft[ell];
     int threads = 256;
-    size_t pack_total = (size_t)child_batch * (size_t)b.fft_n;
-    int blocks_pack = (int)((pack_total + threads - 1) / threads);
-    k_pack_level_to_fft<<<blocks_pack, threads, 0, plan->stream_compute>>>(
-        plan->d_poly_levels[ell - 1], cps, child_batch,
-        b.real_in, b.fft_n, cps);
-    if (!CUDA_OK(cudaGetLastError())) return false;
 
-    if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, b.real_in, b.spec_in))) return false;
+    /* D2Z: read directly from poly_levels[ell-1] at fft_stride */
+    cufftDoubleComplex *fwd_out = (lp.cache_fft && plan->d_fft_cache[ell]) ? plan->d_fft_cache[ell] : b.spec_in;
+    if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, plan->d_poly_levels[ell - 1], fwd_out))) return false;
 
     if (lp.cache_fft && plan->d_fft_cache[ell]) {
-        size_t bytes = (size_t)child_batch * (size_t)b.cn * sizeof(cufftDoubleComplex);
-        if (!CUDA_OK(cudaMemcpyAsync(plan->d_fft_cache[ell], b.spec_in, bytes,
-                                     cudaMemcpyDeviceToDevice, plan->stream_compute))) return false;
         if (ell < (int)plan->fft_cache_valid.size()) plan->fft_cache_valid[ell] = true;
     }
 
     size_t mul_total = (size_t)parent_batch * (size_t)b.cn;
     int blocks_mul = (int)((mul_total + threads - 1) / threads);
     k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(
-        b.spec_in, b.cn, b.spec_mid, parent_batch);
+        fwd_out, b.cn, b.spec_mid, parent_batch);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
-    if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, b.spec_mid, b.real_out))) return false;
+    /* Z2D: write directly to poly_levels[ell] at fft_stride */
+    if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, b.spec_mid, plan->d_poly_levels[ell]))) return false;
 
-    size_t unpack_total = (size_t)parent_batch * (size_t)pps;
-    int blocks_unpack = (int)((unpack_total + threads - 1) / threads);
-    k_unpack_fft_to_level<<<blocks_unpack, threads, 0, plan->stream_compute>>>(
-        b.real_out, b.fft_n, 1.0 / (double)b.fft_n,
-        pps, parent_batch, plan->d_poly_levels[ell]);
+    /* Scale valid coefficients and zero padding */
+    size_t szp_total = (size_t)parent_batch * (size_t)parent_stride;
+    int blocks_szp = (int)((szp_total + threads - 1) / threads);
+    k_scale_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
+        plan->d_poly_levels[ell], parent_stride, pps,
+        1.0 / (double)b.fft_n, parent_batch);
     if (!CUDA_OK(cudaGetLastError())) return false;
     if (lp.build_wrap_m > 0) {
         k_wrap_build<<<parent_batch, 1, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, parent_batch,
             plan->d_poly_levels[ell - 1], cps, lp.build_conv,
-            b.fft_n, lp.build_wrap_m);
+            b.fft_n, lp.build_wrap_m,
+            parent_stride, child_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -3038,17 +3137,19 @@ static bool run_build_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     }
     int cps = plan->psz[ell - 1];
     int pps = plan->psz[ell];
+    int cs = plan->fft_stride[ell - 1];
+    int ps = plan->fft_stride[ell];
     if (nparents_total <= 0 || cps <= 0 || pps <= 0) return true;
     /* Try R2C first (half FFT work for real polynomials), fall back to C2C, then cuFFT */
     bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n,
-                                                plan->d_poly_levels[ell - 1], cps,
-                                                plan->d_poly_levels[ell], pps, nparents_total,
+                                                plan->d_poly_levels[ell - 1], cs,
+                                                plan->d_poly_levels[ell], ps, nparents_total,
                                                 1.0 / (double)lp.fft_n,
                                                 plan->stream_compute);
     if (!ok) {
         ok = launch_cufftdx_build_dispatch(lp.fft_n,
-                                            plan->d_poly_levels[ell - 1], cps,
-                                            plan->d_poly_levels[ell], pps, nparents_total,
+                                            plan->d_poly_levels[ell - 1], cs,
+                                            plan->d_poly_levels[ell], ps, nparents_total,
                                             1.0 / (double)lp.fft_n,
                                             plan->stream_compute);
     }
@@ -3057,7 +3158,8 @@ static bool run_build_level_fused_qb(GpuPlan *plan, int ell, int qb) {
         k_wrap_build<<<nparents_total, 1, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, nparents_total,
             plan->d_poly_levels[ell - 1], cps, lp.build_conv,
-            lp.fft_n, lp.build_wrap_m);
+            lp.fft_n, lp.build_wrap_m,
+            ps, cs);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -3067,6 +3169,8 @@ static bool run_prop_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
     int parent_gsz = plan->psz[ell];
     int child_gsz = plan->psz[ell - 1];
     int cps = plan->psz[ell - 1];
+    int ps = plan->fft_stride[ell];
+    int cs = plan->fft_stride[ell - 1];
     int nparents_total = qb * plan->nn[ell];
     auto &lp = plan->levels[ell];
     int len_g = lp.g_eff;
@@ -3085,7 +3189,8 @@ static bool run_prop_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
             k_schoolbook_corr_pair_warp_batch<<<blocks, threads, shmem, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total,
+                ps, cs, cs);
         } else {
             int fb_threads = 256;
             size_t total = (size_t)nparents_total * (size_t)len_out;
@@ -3093,7 +3198,8 @@ static bool run_prop_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
             k_schoolbook_corr_pair<<<fb_blocks, fb_threads, 0, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total,
+                ps, cs, cs);
         }
     } else {
         int threads = 256;
@@ -3103,14 +3209,16 @@ static bool run_prop_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
             k_schoolbook_corr_pair_smem_parent<<<blocks, threads, shmem, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total,
+                ps, cs, cs);
         } else {
             size_t total = (size_t)nparents_total * (size_t)len_out;
             int fb_blocks = (int)((total + threads - 1) / threads);
             k_schoolbook_corr_pair<<<fb_blocks, threads, 0, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total,
+                ps, cs, cs);
         }
     }
     if (!CUDA_OK(cudaGetLastError())) return false;
@@ -3118,10 +3226,10 @@ static bool run_prop_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
 }
 
 static bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
-    int parent_gsz = plan->psz[ell];
     int child_gsz = plan->psz[ell - 1];
-    int cps = plan->psz[ell - 1];
     int nparents_total = qb * plan->nn[ell];
+    int ps = plan->fft_stride[ell];
+    int cs = plan->fft_stride[ell - 1];
     auto &lp = plan->levels[ell];
     auto &c = plan->corr_fft[ell];
     int len_g = lp.g_eff;
@@ -3129,26 +3237,13 @@ static bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     int len_out = lp.out_needed;
     int threads = 256;
 
-    size_t pack_total = (size_t)nparents_total * (size_t)c.fft_n;
-    int blocks_pack = (int)((pack_total + threads - 1) / threads);
-    k_pack_level_to_fft<<<blocks_pack, threads, 0, plan->stream_compute>>>(
-        plan->d_g_levels[ell], parent_gsz, nparents_total,
-        c.real_in, c.fft_n, len_g);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    /* D2Z: read directly from g_levels[ell] at fft_stride */
+    if (!CUFFT_OK(cufftExecD2Z(c.plan_fwd, plan->d_g_levels[ell], c.spec_in))) return false;
 
-    if (!CUFFT_OK(cufftExecD2Z(c.plan_fwd, c.real_in, c.spec_in))) return false;
-
-    int child_batch_total = qb * plan->nn[ell - 1];
     const cufftDoubleComplex *child_spec = (plan->d_fft_cache[ell] && ell < (int)plan->fft_cache_valid.size() && plan->fft_cache_valid[ell]) ? plan->d_fft_cache[ell] : nullptr;
     if (!child_spec) {
         auto &b = plan->build_fft[ell];
-        size_t child_pack_total = (size_t)child_batch_total * (size_t)b.fft_n;
-        int child_pack_blocks = (int)((child_pack_total + threads - 1) / threads);
-        k_pack_level_to_fft<<<child_pack_blocks, threads, 0, plan->stream_compute>>>(
-            plan->d_poly_levels[ell - 1], cps, child_batch_total,
-            b.real_in, b.fft_n, len_P);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-        if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, b.real_in, b.spec_in))) return false;
+        if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, plan->d_poly_levels[ell - 1], b.spec_in))) return false;
         child_spec = b.spec_in;
     }
 
@@ -3158,22 +3253,26 @@ static bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
         c.spec_in, child_spec, c.cn, nparents_total, c.spec_mid);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
-    if (!CUFFT_OK(cufftExecZ2D(c.plan_inv, c.spec_mid, c.real_out))) return false;
+    /* Z2D: write directly to g_levels[ell-1] at fft_stride */
+    if (!CUFFT_OK(cufftExecZ2D(c.plan_inv, c.spec_mid, plan->d_g_levels[ell - 1]))) return false;
 
-    size_t unpack_total = (size_t)(2 * nparents_total) * (size_t)len_out;
-    int blocks_unpack = (int)((unpack_total + threads - 1) / threads);
-    k_unpack_corr_children<<<blocks_unpack, threads, 0, plan->stream_compute>>>(
-        c.real_out, c.fft_n, 1.0 / (double)c.fft_n, child_gsz, len_out,
-        nparents_total, plan->d_g_levels[ell - 1]);
+    /* Scale valid coefficients and zero padding */
+    int n_children = 2 * nparents_total;
+    size_t szp_total = (size_t)n_children * (size_t)cs;
+    int blocks_szp = (int)((szp_total + threads - 1) / threads);
+    k_scale_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
+        plan->d_g_levels[ell - 1], cs, child_gsz,
+        1.0 / (double)c.fft_n, n_children);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents_total, 1, 0, plan->stream_compute>>>(
             plan->d_g_levels[ell - 1], child_gsz, nparents_total,
-            plan->d_g_levels[ell], parent_gsz, len_g,
-            plan->d_poly_levels[ell - 1], cps, len_P,
+            plan->d_g_levels[ell], plan->psz[ell], len_g,
+            plan->d_poly_levels[ell - 1], plan->psz[ell - 1], len_P,
             len_out,
-            c.fft_n, lp.corr_wrap_m);
+            c.fft_n, lp.corr_wrap_m,
+            cs, ps, cs);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
 
@@ -3194,22 +3293,24 @@ static bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     int parent_gsz = plan->psz[ell];
     int child_gsz = plan->psz[ell - 1];
     int cps = plan->psz[ell - 1];
+    int ps = plan->fft_stride[ell];
+    int cs = plan->fft_stride[ell - 1];
     int len_g = lp.g_eff;
     int len_P = lp.p_eff;
     int len_out = lp.out_needed;
     if (nparents_total <= 0 || len_out <= 0 || len_g <= 0 || len_P <= 0) return true;
     /* Try R2C first (half FFT work for real polynomials), fall back to C2C, then cuFFT */
     bool ok = launch_cufftdx_corr_r2c_dispatch(lp.fft_n,
-                                               plan->d_g_levels[ell], parent_gsz, len_g,
-                                               plan->d_poly_levels[ell - 1], cps, len_P,
-                                               plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total,
+                                               plan->d_g_levels[ell], ps, len_g,
+                                               plan->d_poly_levels[ell - 1], cs, len_P,
+                                               plan->d_g_levels[ell - 1], cs, len_out, nparents_total,
                                                1.0 / (double)lp.fft_n,
                                                plan->stream_compute);
     if (!ok) {
         ok = launch_cufftdx_corr_dispatch(lp.fft_n,
-                                           plan->d_g_levels[ell], parent_gsz, len_g,
-                                           plan->d_poly_levels[ell - 1], cps, len_P,
-                                           plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total,
+                                           plan->d_g_levels[ell], ps, len_g,
+                                           plan->d_poly_levels[ell - 1], cs, len_P,
+                                           plan->d_g_levels[ell - 1], cs, len_out, nparents_total,
                                            1.0 / (double)lp.fft_n,
                                            plan->stream_compute);
     }
@@ -3220,7 +3321,8 @@ static bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
             plan->d_g_levels[ell], parent_gsz, len_g,
             plan->d_poly_levels[ell - 1], cps, len_P,
             len_out,
-            lp.fft_n, lp.corr_wrap_m);
+            lp.fft_n, lp.corr_wrap_m,
+            cs, ps, cs);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -3251,7 +3353,7 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     if (!CUDA_OK(cudaMemcpyAsync(d_a_ptrs, h_a_ptrs, (size_t)qb * sizeof(double *),
                                  cudaMemcpyHostToDevice, plan->stream_compute))) return false;
 
-    size_t leaf_stride = (size_t)plan->nn[0] * (size_t)plan->psz[0];
+    size_t leaf_stride = (size_t)plan->nn[0] * (size_t)plan->fft_stride[0];
     if (plan->B <= 1) {
         /* B=1: set leaves directly for each Q-point in the batch */
         for (int qi = 0; qi < qb; ++qi) {
@@ -3259,7 +3361,7 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
             double *leaves_qi = plan->d_poly_levels[0] + qi * leaf_stride;
             k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
                 plan->d_a_qbatch[qi], plan->n, plan->N_tree,
-                plan->psz[0], leaves_qi);
+                plan->fft_stride[0], leaves_qi);
         }
         if (!CUDA_OK(cudaGetLastError())) return false;
     } else {
@@ -3269,7 +3371,7 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
         k_block_build_qbatch<<<qb * plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
             (const double * const *)d_a_ptrs, plan->n, plan->B,
             plan->nblocks, plan->N_tree, qb,
-            plan->psz[0], plan->d_poly_levels[0], leaf_stride,
+            plan->fft_stride[0], plan->d_poly_levels[0], leaf_stride,
             plan->d_block_prods_qbatch, bp_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
@@ -3284,7 +3386,7 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
 
     /* 4. Set root g for all Q-points */
     int top = plan->L - 1;
-    int root_gsz = plan->psz[top];
+    int root_gsz = plan->fft_stride[top];
     size_t g_root_stride = (size_t)plan->nn[top] * (size_t)root_gsz;
     int root_total = qb * root_gsz;
     int blocks_root = (root_total + threads - 1) / threads;
@@ -3302,7 +3404,7 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     }
 
     /* 6. Leaf extract for all Q-points */
-    size_t leaf_g_stride = (size_t)plan->nn[0] * (size_t)plan->psz[0];
+    size_t leaf_g_stride = (size_t)plan->nn[0] * (size_t)plan->fft_stride[0];
     size_t inner_stride = (size_t)plan->n;
     if (plan->B <= 1) {
         /* B=1: direct read of g_leaf[i][0] for each Q-point */
@@ -3311,7 +3413,7 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
             double *g_leaf_qi = plan->d_g_levels[0] + qi * leaf_g_stride;
             double *inner_qi = plan->d_inner_qbatch + qi * inner_stride;
             k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
-                plan->n, g_leaf_qi, plan->psz[0], inner_qi);
+                plan->n, g_leaf_qi, plan->fft_stride[0], inner_qi);
         }
         if (!CUDA_OK(cudaGetLastError())) return false;
     } else {
@@ -3321,7 +3423,7 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
         k_leaf_extract_qbatch<<<qb * plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
             (const double * const *)d_a_ptrs, plan->n, plan->B, plan->nblocks,
             plan->d_block_prods_qbatch, bp_stride_local,
-            plan->d_g_levels[0], plan->psz[0], leaf_g_stride,
+            plan->d_g_levels[0], plan->fft_stride[0], leaf_g_stride,
             plan->g_needed[0], plan->k, qb,
             plan->d_inner_qbatch, inner_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
@@ -3387,13 +3489,13 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
             int bl = (plan->N_tree + 255) / 256;
             k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->N_tree,
-                plan->psz[0], plan->d_poly_levels[0]);
+                plan->fft_stride[0], plan->d_poly_levels[0]);
         } else {
             int threads_block = 256;
             size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
             k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->B,
-                plan->nblocks, plan->N_tree, plan->psz[0],
+                plan->nblocks, plan->N_tree, plan->fft_stride[0],
                 plan->d_poly_levels[0], plan->d_block_prods);
         }
 
@@ -3405,7 +3507,7 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
         }
 
         int top = plan->L - 1;
-        int root_gsz = plan->psz[top];
+        int root_gsz = plan->fft_stride[top];
         int blocks_root = (root_gsz + threads - 1) / threads;
         k_set_root_g<<<blocks_root, threads, 0, plan->stream_compute>>>(
             plan->d_g_levels[top], root_gsz, plan->d_payout, plan->k);
@@ -3421,13 +3523,13 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
         if (plan->B <= 1) {
             int bl = (plan->n + 255) / 256;
             k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
-                plan->n, plan->d_g_levels[0], plan->psz[0], plan->d_inner_sorted);
+                plan->n, plan->d_g_levels[0], plan->fft_stride[0], plan->d_inner_sorted);
         } else {
             int threads_leaf = plan->B;
             if (threads_leaf > 1024) threads_leaf = 1024;
             k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
-                plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
+                plan->d_block_prods, plan->d_g_levels[0], plan->fft_stride[0],
                 plan->g_needed[0], plan->k, plan->d_inner_sorted);
         }
 
@@ -3452,14 +3554,14 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
         int bl = (plan->N_tree + 255) / 256;
         k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
             plan->d_a_sorted[curr], plan->n, plan->N_tree,
-            plan->psz[0], plan->d_poly_levels[0]);
+            plan->fft_stride[0], plan->d_poly_levels[0]);
         if (!CUDA_OK(cudaGetLastError())) return false;
     } else {
         int threads_block = 256;
         size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
         k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
             plan->d_a_sorted[curr], plan->n, plan->B,
-            plan->nblocks, plan->N_tree, plan->psz[0],
+            plan->nblocks, plan->N_tree, plan->fft_stride[0],
             plan->d_poly_levels[0], plan->d_block_prods);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
@@ -3479,7 +3581,7 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
     }
 
     int top = plan->L - 1;
-    int root_gsz = plan->psz[top];
+    int root_gsz = plan->fft_stride[top];
     int blocks_root = (root_gsz + threads - 1) / threads;
     k_set_root_g<<<blocks_root, threads, 0, plan->stream_compute>>>(
         plan->d_g_levels[top], root_gsz, plan->d_payout, plan->k);
@@ -3505,14 +3607,14 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
     if (plan->B <= 1) {
         int bl = (plan->n + 255) / 256;
         k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
-            plan->n, plan->d_g_levels[0], plan->psz[0], plan->d_inner_sorted);
+            plan->n, plan->d_g_levels[0], plan->fft_stride[0], plan->d_inner_sorted);
         if (!CUDA_OK(cudaGetLastError())) return false;
     } else {
         int threads_leaf = plan->B;
         if (threads_leaf > 1024) threads_leaf = 1024;
         k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
             plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
-            plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
+            plan->d_block_prods, plan->d_g_levels[0], plan->fft_stride[0],
             plan->g_needed[0], plan->k, plan->d_inner_sorted);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
@@ -3540,7 +3642,7 @@ static bool create_graph_stub(GpuPlan *plan) {
     int threads = 256;
     int blocks_n = (plan->n + threads - 1) / threads;
     int top = plan->L - 1;
-    int root_gsz = plan->psz[top];
+    int root_gsz = plan->fft_stride[top];
     int blocks_root = (root_gsz + threads - 1) / threads;
     int threads_leaf = plan->B;
     if (threads_leaf > 1024) threads_leaf = 1024;
@@ -3561,11 +3663,11 @@ static bool create_graph_stub(GpuPlan *plan) {
             int bl = (plan->N_tree + 255) / 256;
             k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->N_tree,
-                plan->psz[0], plan->d_poly_levels[0]);
+                plan->fft_stride[0], plan->d_poly_levels[0]);
         } else {
             k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->B,
-                plan->nblocks, plan->N_tree, plan->psz[0],
+                plan->nblocks, plan->N_tree, plan->fft_stride[0],
                 plan->d_poly_levels[0], plan->d_block_prods);
         }
         if (!CUDA_OK(cudaGetLastError())) return false;
@@ -3595,11 +3697,11 @@ static bool create_graph_stub(GpuPlan *plan) {
         if (plan->B <= 1) {
             int bl = (plan->n + 255) / 256;
             k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
-                plan->n, plan->d_g_levels[0], plan->psz[0], plan->d_inner_sorted);
+                plan->n, plan->d_g_levels[0], plan->fft_stride[0], plan->d_inner_sorted);
         } else {
             k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
-                plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
+                plan->d_block_prods, plan->d_g_levels[0], plan->fft_stride[0],
                 plan->g_needed[0], plan->k, plan->d_inner_sorted);
         }
         if (!CUDA_OK(cudaGetLastError())) return false;
@@ -3617,6 +3719,25 @@ static bool create_graph_stub(GpuPlan *plan) {
 }
 
 }  // namespace
+
+/* For small n, CPU is faster due to GPU plan creation overhead (~5-7ms).
+ * Default crossover at n=1024; overridable via gpu_fft_config.h or env var. */
+#ifndef GPU_CPU_CROSSOVER
+#define GPU_CPU_CROSSOVER 1024
+#endif
+
+static int gpu_cpu_crossover() {
+    static int val = -1;
+    if (val < 0) {
+        val = GPU_CPU_CROSSOVER;
+        const char *env = getenv("ICM_GPU_CPU_CROSSOVER");
+        if (env && env[0]) {
+            int v = atoi(env);
+            if (v >= 0) val = v;
+        }
+    }
+    return val;
+}
 
 extern "C" {
 
@@ -3880,13 +4001,13 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                 int bl = (plan->N_tree + 255) / 256;
                 k_set_leaves_b1<<<bl, 256, 0, plan->stream_aux>>>(
                     plan->d_a_sorted[curr], plan->n, plan->N_tree,
-                    plan->psz[0], leaf_bufs[buf_idx]);
+                    plan->fft_stride[0], leaf_bufs[buf_idx]);
             } else {
                 int threads_block = 256;
                 size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
                 k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
                     plan->d_a_sorted[curr], plan->n, plan->B,
-                    plan->nblocks, plan->N_tree, plan->psz[0],
+                    plan->nblocks, plan->N_tree, plan->fft_stride[0],
                     leaf_bufs[buf_idx], bp_bufs[buf_idx]);
             }
             if (!CUDA_OK(cudaGetLastError())) { pipeline_ok = false; goto pipeline_cleanup; }
@@ -3922,13 +4043,13 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                     int bl = (plan->N_tree + 255) / 256;
                     k_set_leaves_b1<<<bl, 256, 0, plan->stream_aux>>>(
                         plan->d_a_sorted[next], plan->n, plan->N_tree,
-                        plan->psz[0], leaf_bufs[next_buf]);
+                        plan->fft_stride[0], leaf_bufs[next_buf]);
                 } else {
                     int threads_block = 256;
                     size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
                     k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
                         plan->d_a_sorted[next], plan->n, plan->B,
-                        plan->nblocks, plan->N_tree, plan->psz[0],
+                        plan->nblocks, plan->N_tree, plan->fft_stride[0],
                         leaf_bufs[next_buf], bp_bufs[next_buf]);
                 }
                 if (!CUDA_OK(cudaGetLastError())) { pipeline_ok = false; break; }
@@ -3950,7 +4071,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
 
             /* Set root g */
             int top = plan->L - 1;
-            int root_gsz = plan->psz[top];
+            int root_gsz = plan->fft_stride[top];
             int blocks_root = (root_gsz + threads - 1) / threads;
             k_set_root_g<<<blocks_root, threads, 0, plan->stream_compute>>>(
                 plan->d_g_levels[top], root_gsz, plan->d_payout, plan->k);
@@ -3972,13 +4093,13 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
             if (plan->B <= 1) {
                 int bl = (plan->n + 255) / 256;
                 k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
-                    plan->n, plan->d_g_levels[0], plan->psz[0], plan->d_inner_sorted);
+                    plan->n, plan->d_g_levels[0], plan->fft_stride[0], plan->d_inner_sorted);
             } else {
                 int threads_leaf = plan->B;
                 if (threads_leaf > 1024) threads_leaf = 1024;
                 k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
                     plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
-                    plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
+                    plan->d_block_prods, plan->d_g_levels[0], plan->fft_stride[0],
                     plan->g_needed[0], plan->k, plan->d_inner_sorted);
             }
 
@@ -4035,6 +4156,20 @@ double icm_gpu_equity(int n, const double *S, int Q,
                       const double *payout, int k,
                       double *equity, const IcmGpuOptions *opts,
                       IcmGpuRunStats *stats) {
+    /* For small n, CPU is faster due to GPU plan creation overhead */
+    if (n <= gpu_cpu_crossover()) {
+        double *eq_buf = (double *)calloc(n, sizeof(double));
+        if (!eq_buf) return -1.0;
+        double t = icm_equity(n, S, Q, payout, k, eq_buf);
+        memcpy(equity, eq_buf, n * sizeof(double));
+        free(eq_buf);
+        if (stats) {
+            memset(stats, 0, sizeof(*stats));
+            stats->total_ns = t;
+        }
+        return t;
+    }
+
     IcmGpuPlan *plan = icm_gpu_plan_create(n, S, k, opts);
     if (!plan) return -1.0;
     double t = icm_gpu_equity_with_plan(plan, Q, payout, equity, stats);
