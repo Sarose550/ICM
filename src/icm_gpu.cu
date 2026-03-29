@@ -345,6 +345,22 @@ using cufftdx_fft_inv_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
                                    cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<1>() +
                                    cufftdx::SM<1000>());
 
+#if ICM_HAVE_CUFFTDX_R2C
+template<int FFT_N>
+using cufftdx_r2c_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
+                                cufftdx::Type<cufftdx::fft_type::r2c>() +
+                                cufftdx::Direction<cufftdx::fft_direction::forward>() +
+                                cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<1>() +
+                                cufftdx::SM<1000>());
+
+template<int FFT_N>
+using cufftdx_c2r_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
+                                cufftdx::Type<cufftdx::fft_type::c2r>() +
+                                cufftdx::Direction<cufftdx::fft_direction::inverse>() +
+                                cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<1>() +
+                                cufftdx::SM<1000>());
+#endif /* ICM_HAVE_CUFFTDX_R2C */
+
 template<class FFT>
 __device__ inline void cufftdx_load_real(const double *src, int copy_len,
                                          typename FFT::value_type *thread_data) {
@@ -417,6 +433,40 @@ __device__ inline void cufftdx_mul_freq_conj_inplace(typename FFT::value_type *l
         }
     }
 }
+
+#if ICM_HAVE_CUFFTDX_R2C
+/* ── R2C/C2R load/store helpers ──
+ *
+ * For R2C, the input is real: we load into the scalar (real) components of thread_data.
+ * For C2R, the output is real: we extract from the scalar (real) components of thread_data.
+ * In cuFFTDx R2C/C2R, the thread_data is still complex_t[], but the real-domain side
+ * is accessed by reinterpreting as scalar_t*.
+ */
+template<class R2C_FFT>
+__device__ inline void cufftdx_load_real_r2c(const double *src, int copy_len,
+                                              typename R2C_FFT::value_type *thread_data) {
+    using scalar_t = typename R2C_FFT::value_type::value_type;
+    const unsigned stride = R2C_FFT::stride;
+    for (unsigned i = 0; i < R2C_FFT::elements_per_thread; ++i) {
+        unsigned idx = i * stride + threadIdx.x;
+        reinterpret_cast<scalar_t*>(thread_data)[i] =
+            (idx < (unsigned)copy_len) ? src[idx] : 0.0;
+    }
+}
+
+template<class C2R_FFT>
+__device__ inline void cufftdx_store_real_c2r(const typename C2R_FFT::value_type *thread_data,
+                                               double *dst, int out_len, double scale) {
+    using scalar_t = typename C2R_FFT::value_type::value_type;
+    const unsigned stride = C2R_FFT::stride;
+    for (unsigned i = 0; i < C2R_FFT::elements_per_thread; ++i) {
+        unsigned idx = i * stride + threadIdx.x;
+        if (idx < (unsigned)out_len) {
+            dst[idx] = reinterpret_cast<const scalar_t*>(thread_data)[i] * scale;
+        }
+    }
+}
+#endif /* ICM_HAVE_CUFFTDX_R2C */
 
 template<int FFT_N>
 __launch_bounds__(cufftdx_fft_fwd_t<FFT_N>::max_threads_per_block)
@@ -527,6 +577,147 @@ static bool launch_cufftdx_corr_t(const double *g_parent, int parent_gsz, int le
 }
 #endif
 
+/* ── R2C/C2R fused kernels ──
+ *
+ * These do the same work as the C2C fused kernels above, but use R2C for the forward
+ * transform and C2R for the inverse. Since the input polynomials are real, R2C does
+ * roughly half the FFT work (only computing N/2+1 complex outputs for Hermitian symmetry).
+ * The pointwise multiply operates on the complex frequency-domain data, and C2R converts
+ * back to real output.
+ */
+#if ICM_HAVE_CUFFTDX_R2C
+
+template<int FFT_N>
+__launch_bounds__(cufftdx_r2c_t<FFT_N>::max_threads_per_block)
+__global__ static void k_cufftdx_build_parent_r2c(const double *child, int cps,
+                                                    double *parent, int pps,
+                                                    int nparents, double inv_fft_n) {
+    if (blockIdx.x >= (unsigned)nparents) return;
+    using R2C = cufftdx_r2c_t<FFT_N>;
+    using C2R = cufftdx_c2r_t<FFT_N>;
+    using complex_t = typename R2C::value_type;
+    complex_t a[R2C::storage_size];
+    complex_t b[R2C::storage_size];
+    extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
+
+    int p = (int)blockIdx.x;
+    const double *L = child + (size_t)(2 * p) * (size_t)cps;
+    const double *R_ptr = child + (size_t)(2 * p + 1) * (size_t)cps;
+    double *out = parent + (size_t)p * (size_t)pps;
+
+    cufftdx_load_real_r2c<R2C>(L, cps, a);
+    R2C().execute(a, shared_mem);
+    cufftdx_load_real_r2c<R2C>(R_ptr, cps, b);
+    R2C().execute(b, shared_mem);
+
+    /* Pointwise complex multiply in frequency domain */
+    for (unsigned i = 0; i < R2C::elements_per_thread; ++i) {
+        complex_t va = a[i], vb = b[i];
+        complex_t vo;
+        vo.x = va.x * vb.x - va.y * vb.y;
+        vo.y = va.x * vb.y + va.y * vb.x;
+        a[i] = vo;
+    }
+
+    C2R().execute(a, shared_mem);
+    cufftdx_store_real_c2r<C2R>(a, out, pps, inv_fft_n);
+}
+
+template<int FFT_N>
+__launch_bounds__(cufftdx_r2c_t<FFT_N>::max_threads_per_block)
+__global__ static void k_cufftdx_corr_pair_parent_r2c(
+        const double *g_parent, int parent_gsz, int len_g,
+        const double *child_poly, int cps, int len_P,
+        double *g_child, int child_gsz, int len_out,
+        int nparents, double inv_fft_n) {
+    if (blockIdx.x >= (unsigned)nparents) return;
+    using R2C = cufftdx_r2c_t<FFT_N>;
+    using C2R = cufftdx_c2r_t<FFT_N>;
+    using complex_t = typename R2C::value_type;
+    complex_t gbuf[R2C::storage_size];
+    complex_t pbuf[R2C::storage_size];
+    complex_t gspec_saved[R2C::elements_per_thread];
+    extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
+
+    int p = (int)blockIdx.x;
+    const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
+    const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
+    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
+    double *outL = g_child + (size_t)(2 * p) * (size_t)child_gsz;
+    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_gsz;
+
+    /* Forward R2C of g_parent */
+    cufftdx_load_real_r2c<R2C>(gp, len_g, gbuf);
+    R2C().execute(gbuf, shared_mem);
+
+    /* Save g spectrum for reuse */
+    for (unsigned i = 0; i < R2C::elements_per_thread; ++i)
+        gspec_saved[i] = gbuf[i];
+
+    /* Left child: g * conj(PR) */
+    cufftdx_load_real_r2c<R2C>(PR, len_P, pbuf);
+    R2C().execute(pbuf, shared_mem);
+    for (unsigned i = 0; i < R2C::elements_per_thread; ++i) {
+        complex_t g = gbuf[i], p_val = pbuf[i];
+        gbuf[i].x = g.x * p_val.x + g.y * p_val.y;
+        gbuf[i].y = g.y * p_val.x - g.x * p_val.y;
+    }
+    C2R().execute(gbuf, shared_mem);
+    cufftdx_store_real_c2r<C2R>(gbuf, outL, len_out, inv_fft_n);
+
+    /* Right child: g * conj(PL), restore g spectrum */
+    cufftdx_load_real_r2c<R2C>(PL, len_P, pbuf);
+    R2C().execute(pbuf, shared_mem);
+    for (unsigned i = 0; i < R2C::elements_per_thread; ++i)
+        gbuf[i] = gspec_saved[i];
+    for (unsigned i = 0; i < R2C::elements_per_thread; ++i) {
+        complex_t g = gbuf[i], p_val = pbuf[i];
+        gbuf[i].x = g.x * p_val.x + g.y * p_val.y;
+        gbuf[i].y = g.y * p_val.x - g.x * p_val.y;
+    }
+    C2R().execute(gbuf, shared_mem);
+    cufftdx_store_real_c2r<C2R>(gbuf, outR, len_out, inv_fft_n);
+}
+
+template<int FFT_N>
+static bool launch_cufftdx_build_r2c_t(const double *child, int cps,
+                                        double *parent, int pps, int nparents,
+                                        double inv_fft_n, cudaStream_t stream) {
+    using R2C = cufftdx_r2c_t<FFT_N>;
+    using C2R = cufftdx_c2r_t<FFT_N>;
+    static_assert(R2C::ffts_per_block == 1, "Expected one FFT per block");
+    static_assert(R2C::block_dim.y == 1, "Unexpected cuFFTDx block_dim.y");
+    size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
+    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N>,
+                                      cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                      (int)shmem))) return false;
+    k_cufftdx_build_parent_r2c<FFT_N><<<nparents, R2C::block_dim, shmem, stream>>>(
+        child, cps, parent, pps, nparents, inv_fft_n);
+    return CUDA_OK(cudaGetLastError());
+}
+
+template<int FFT_N>
+static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, int len_g,
+                                       const double *child_poly, int cps, int len_P,
+                                       double *g_child, int child_gsz, int len_out, int nparents,
+                                       double inv_fft_n, cudaStream_t stream) {
+    using R2C = cufftdx_r2c_t<FFT_N>;
+    using C2R = cufftdx_c2r_t<FFT_N>;
+    static_assert(R2C::ffts_per_block == 1, "Expected one FFT per block");
+    static_assert(R2C::block_dim.y == 1, "Unexpected cuFFTDx block_dim.y");
+    size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
+    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N>,
+                                      cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                      (int)shmem))) return false;
+    k_cufftdx_corr_pair_parent_r2c<FFT_N><<<nparents, R2C::block_dim, shmem, stream>>>(
+        g_parent, parent_gsz, len_g,
+        child_poly, cps, len_P,
+        g_child, child_gsz, len_out, nparents, inv_fft_n);
+    return CUDA_OK(cudaGetLastError());
+}
+
+#endif /* ICM_HAVE_CUFFTDX_R2C */
+
 static bool is_cufftdx_supported_fft_n(int fft_n) {
     switch (fft_n) {
         case 64:
@@ -591,6 +782,65 @@ static bool launch_cufftdx_corr_dispatch(int fft_n,
         case 4096:
             return launch_cufftdx_corr_t<4096>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+        default:
+            return false;
+    }
+#else
+    (void)fft_n; (void)g_parent; (void)parent_gsz; (void)len_g; (void)child_poly; (void)cps; (void)len_P;
+    (void)g_child; (void)child_gsz; (void)len_out; (void)nparents; (void)inv_fft_n; (void)stream;
+    return false;
+#endif
+}
+
+static bool launch_cufftdx_build_r2c_dispatch(int fft_n,
+                                               const double *child, int cps,
+                                               double *parent, int pps, int nparents,
+                                               double inv_fft_n, cudaStream_t stream) {
+#if ICM_HAVE_CUFFTDX_R2C
+    switch (fft_n) {
+        case 64: return launch_cufftdx_build_r2c_t<64>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        case 128: return launch_cufftdx_build_r2c_t<128>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        case 256: return launch_cufftdx_build_r2c_t<256>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        case 512: return launch_cufftdx_build_r2c_t<512>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        case 1024: return launch_cufftdx_build_r2c_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        case 2048: return launch_cufftdx_build_r2c_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        case 4096: return launch_cufftdx_build_r2c_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        default: return false;
+    }
+#else
+    (void)fft_n; (void)child; (void)cps; (void)parent; (void)pps; (void)nparents; (void)inv_fft_n; (void)stream;
+    return false;
+#endif
+}
+
+static bool launch_cufftdx_corr_r2c_dispatch(int fft_n,
+                                              const double *g_parent, int parent_gsz, int len_g,
+                                              const double *child_poly, int cps, int len_P,
+                                              double *g_child, int child_gsz, int len_out, int nparents,
+                                              double inv_fft_n, cudaStream_t stream) {
+#if ICM_HAVE_CUFFTDX_R2C
+    switch (fft_n) {
+        case 64:
+            return launch_cufftdx_corr_r2c_t<64>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                                                   g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+        case 128:
+            return launch_cufftdx_corr_r2c_t<128>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+        case 256:
+            return launch_cufftdx_corr_r2c_t<256>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+        case 512:
+            return launch_cufftdx_corr_r2c_t<512>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+        case 1024:
+            return launch_cufftdx_corr_r2c_t<1024>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+        case 2048:
+            return launch_cufftdx_corr_r2c_t<2048>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+        case 4096:
+            return launch_cufftdx_corr_r2c_t<4096>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
         default:
             return false;
     }
@@ -2404,11 +2654,19 @@ static bool run_build_level_fused(GpuPlan *plan, int ell) {
     int pps = plan->psz[ell];
     int nparents = plan->nn[ell];
     if (nparents <= 0 || cps <= 0 || pps <= 0) return true;
-    bool ok = launch_cufftdx_build_dispatch(lp.fft_n,
-                                            plan->d_poly_levels[ell - 1], cps,
-                                            plan->d_poly_levels[ell], pps, nparents,
-                                            1.0 / (double)lp.fft_n,
-                                            plan->stream_compute);
+    /* Try R2C first (half FFT work for real polynomials), fall back to C2C, then cuFFT */
+    bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n,
+                                                plan->d_poly_levels[ell - 1], cps,
+                                                plan->d_poly_levels[ell], pps, nparents,
+                                                1.0 / (double)lp.fft_n,
+                                                plan->stream_compute);
+    if (!ok) {
+        ok = launch_cufftdx_build_dispatch(lp.fft_n,
+                                           plan->d_poly_levels[ell - 1], cps,
+                                           plan->d_poly_levels[ell], pps, nparents,
+                                           1.0 / (double)lp.fft_n,
+                                           plan->stream_compute);
+    }
     if (!ok) return run_build_level_fft(plan, ell);
     if (lp.build_wrap_m > 0) {
         k_wrap_build<<<nparents, 1, 0, plan->stream_compute>>>(
@@ -2545,12 +2803,21 @@ static bool run_prop_level_fused(GpuPlan *plan, int ell) {
     int len_P = lp.p_eff;
     int len_out = lp.out_needed;
     if (nparents <= 0 || len_out <= 0 || len_g <= 0 || len_P <= 0) return true;
-    bool ok = launch_cufftdx_corr_dispatch(lp.fft_n,
-                                           plan->d_g_levels[ell], parent_gsz, len_g,
-                                           plan->d_poly_levels[ell - 1], cps, len_P,
-                                           plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
-                                           1.0 / (double)lp.fft_n,
-                                           plan->stream_compute);
+    /* Try R2C first (half FFT work for real polynomials), fall back to C2C, then cuFFT */
+    bool ok = launch_cufftdx_corr_r2c_dispatch(lp.fft_n,
+                                               plan->d_g_levels[ell], parent_gsz, len_g,
+                                               plan->d_poly_levels[ell - 1], cps, len_P,
+                                               plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
+                                               1.0 / (double)lp.fft_n,
+                                               plan->stream_compute);
+    if (!ok) {
+        ok = launch_cufftdx_corr_dispatch(lp.fft_n,
+                                          plan->d_g_levels[ell], parent_gsz, len_g,
+                                          plan->d_poly_levels[ell - 1], cps, len_P,
+                                          plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
+                                          1.0 / (double)lp.fft_n,
+                                          plan->stream_compute);
+    }
     if (!ok) return run_prop_level_fft(plan, ell);
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents, 1, 0, plan->stream_compute>>>(
@@ -2736,11 +3003,19 @@ static bool run_build_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     int cps = plan->psz[ell - 1];
     int pps = plan->psz[ell];
     if (nparents_total <= 0 || cps <= 0 || pps <= 0) return true;
-    bool ok = launch_cufftdx_build_dispatch(lp.fft_n,
+    /* Try R2C first (half FFT work for real polynomials), fall back to C2C, then cuFFT */
+    bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n,
+                                                plan->d_poly_levels[ell - 1], cps,
+                                                plan->d_poly_levels[ell], pps, nparents_total,
+                                                1.0 / (double)lp.fft_n,
+                                                plan->stream_compute);
+    if (!ok) {
+        ok = launch_cufftdx_build_dispatch(lp.fft_n,
                                             plan->d_poly_levels[ell - 1], cps,
                                             plan->d_poly_levels[ell], pps, nparents_total,
                                             1.0 / (double)lp.fft_n,
                                             plan->stream_compute);
+    }
     if (!ok) return run_build_level_fft_qb(plan, ell, qb);
     if (lp.build_wrap_m > 0) {
         k_wrap_build<<<nparents_total, 1, 0, plan->stream_compute>>>(
@@ -2887,12 +3162,21 @@ static bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     int len_P = lp.p_eff;
     int len_out = lp.out_needed;
     if (nparents_total <= 0 || len_out <= 0 || len_g <= 0 || len_P <= 0) return true;
-    bool ok = launch_cufftdx_corr_dispatch(lp.fft_n,
+    /* Try R2C first (half FFT work for real polynomials), fall back to C2C, then cuFFT */
+    bool ok = launch_cufftdx_corr_r2c_dispatch(lp.fft_n,
+                                               plan->d_g_levels[ell], parent_gsz, len_g,
+                                               plan->d_poly_levels[ell - 1], cps, len_P,
+                                               plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total,
+                                               1.0 / (double)lp.fft_n,
+                                               plan->stream_compute);
+    if (!ok) {
+        ok = launch_cufftdx_corr_dispatch(lp.fft_n,
                                            plan->d_g_levels[ell], parent_gsz, len_g,
                                            plan->d_poly_levels[ell - 1], cps, len_P,
                                            plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total,
                                            1.0 / (double)lp.fft_n,
                                            plan->stream_compute);
+    }
     if (!ok) return run_prop_level_fft_qb(plan, ell, qb);
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents_total, 1, 0, plan->stream_compute>>>(
