@@ -107,6 +107,9 @@ int main(int argc, char **argv) {
             if (!plan) {
                 fprintf(f, "%d,%d,nan,nan,error,0,0,nan,0,0,0,error\n", n, k);
                 printf("ERR(%s)\n", icm_gpu_last_error());
+                /* Reset device after OOM to clear error state */
+                cudaDeviceReset();
+                icm_gpu_init(0);
                 continue;
             }
             IcmGpuPlanSummary ps{};
@@ -118,6 +121,8 @@ int main(int argc, char **argv) {
                 icm_gpu_plan_destroy(plan);
                 fprintf(f, "%d,%d,nan,nan,error,0,0,nan,0,0,0,error\n", n, k);
                 printf("ERR(%s)\n", icm_gpu_last_error());
+                cudaDeviceReset();
+                icm_gpu_init(0);
                 continue;
             }
 
