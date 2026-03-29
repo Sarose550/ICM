@@ -55,13 +55,34 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
     if (nthreads > n_batches) nthreads = (n_batches > 0) ? n_batches : 1;
 
     size_t gstride = (size_t)k * BQ_IMPL;
-    double **t_gstore = (double **)malloc(nthreads * sizeof(double *));
-    double **t_R      = (double **)malloc(nthreads * sizeof(double *));
-    double **t_abatch = (double **)malloc(nthreads * sizeof(double *));
-    double **t_ibatch = (double **)malloc(nthreads * sizeof(double *));
-    double **t_equity = (double **)malloc(nthreads * sizeof(double *));
+    int use_ckpt = ((size_t)n * k * BQ_IMPL * sizeof(double) > L2_CACHE_SIZE);
+    int C = use_ckpt ? PASTE(ckpt_interval_batched, SUFFIX)(n, k) : 0;
+
+    /* Per-thread buffer arrays */
+    double **t_gstore  = (double **)malloc(nthreads * sizeof(double *));
+    double **t_ckpt    = (double **)malloc(nthreads * sizeof(double *));
+    double **t_localg  = (double **)malloc(nthreads * sizeof(double *));
+    double **t_fbuf0   = (double **)malloc(nthreads * sizeof(double *));
+    double **t_fbuf1   = (double **)malloc(nthreads * sizeof(double *));
+    double **t_R       = (double **)malloc(nthreads * sizeof(double *));
+    double **t_abatch  = (double **)malloc(nthreads * sizeof(double *));
+    double **t_ibatch  = (double **)malloc(nthreads * sizeof(double *));
+    double **t_equity  = (double **)malloc(nthreads * sizeof(double *));
     for (int t = 0; t < nthreads; t++) {
-        t_gstore[t] = (double *)malloc((size_t)n * gstride * sizeof(double));
+        if (use_ckpt) {
+            int n_ckpt = n / C;
+            t_gstore[t] = NULL;
+            t_ckpt[t]   = (double *)malloc((size_t)n_ckpt * gstride * sizeof(double));
+            t_localg[t] = (double *)malloc((size_t)C * gstride * sizeof(double));
+            t_fbuf0[t]  = (double *)malloc(gstride * sizeof(double));
+            t_fbuf1[t]  = (double *)malloc(gstride * sizeof(double));
+        } else {
+            t_gstore[t] = (double *)malloc((size_t)n * gstride * sizeof(double));
+            t_ckpt[t]   = NULL;
+            t_localg[t] = NULL;
+            t_fbuf0[t]  = NULL;
+            t_fbuf1[t]  = NULL;
+        }
         t_R[t]      = (double *)malloc(k * BQ_IMPL * sizeof(double));
         t_abatch[t] = (double *)malloc((size_t)BQ_IMPL * n * sizeof(double));
         t_ibatch[t] = (double *)malloc((size_t)BQ_IMPL * n * sizeof(double));
@@ -78,6 +99,10 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
 
         int tid = omp_get_thread_num();
         double *g_store = t_gstore[tid];
+        double *ckpt_buf = t_ckpt[tid];
+        double *local_g = t_localg[tid];
+        double *fbuf0 = t_fbuf0[tid];
+        double *fbuf1 = t_fbuf1[tid];
         double *R = t_R[tid];
         double *a_batch = t_abatch[tid];
         double *inner_batch = t_ibatch[tid];
@@ -95,39 +120,103 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
                 }
         }
 
-        const double *g_prev = payout_il;
-        for (int j = 0; j < n; j++) {
-            double ab[BQ_IMPL], bb[BQ_IMPL];
-            for (int qi = 0; qi < BQ_IMPL; qi++) {
-                ab[qi] = a_batch[(size_t)j * BQ_IMPL + qi];
-                bb[qi] = 1.0 - ab[qi];
-            }
-            double *g_cur = g_store + (size_t)j * gstride;
-            for (int m = 0; m < k - 1; m++)
-                for (int qi = 0; qi < BQ_IMPL; qi++)
-                    g_cur[m * BQ_IMPL + qi] = ab[qi] * g_prev[m * BQ_IMPL + qi] + bb[qi] * g_prev[(m+1) * BQ_IMPL + qi];
-            for (int qi = 0; qi < BQ_IMPL; qi++)
-                g_cur[(k-1) * BQ_IMPL + qi] = ab[qi] * g_prev[(k-1) * BQ_IMPL + qi];
-            g_prev = g_cur;
-        }
-
-        memset(R, 0, k * BQ_IMPL * sizeof(double));
-        for (int qi = 0; qi < BQ_IMPL; qi++) R[qi] = 1.0;
-        for (int j = n - 1; j >= 0; j--) {
-            const double *gb = (j > 0) ? (g_store + (size_t)(j-1) * gstride) : payout_il;
-            double ab[BQ_IMPL], bb[BQ_IMPL], eq[BQ_IMPL];
-            for (int qi = 0; qi < BQ_IMPL; qi++) {
-                ab[qi] = a_batch[(size_t)j * BQ_IMPL + qi];
-                bb[qi] = 1.0 - ab[qi];
-                eq[qi] = gb[qi] * R[qi];
-            }
-            for (int m = k - 1; m >= 1; m--)
+        if (use_ckpt) {
+            /* Checkpointed forward: ping-pong buffers, save every C players */
+            const double *g_prev = payout_il;
+            for (int j = 0; j < n; j++) {
+                double ab[BQ_IMPL], bb[BQ_IMPL];
                 for (int qi = 0; qi < BQ_IMPL; qi++) {
-                    eq[qi] += gb[m * BQ_IMPL + qi] * R[m * BQ_IMPL + qi];
-                    R[m * BQ_IMPL + qi] = ab[qi] * R[m * BQ_IMPL + qi] + bb[qi] * R[(m-1) * BQ_IMPL + qi];
+                    ab[qi] = a_batch[(size_t)j * BQ_IMPL + qi];
+                    bb[qi] = 1.0 - ab[qi];
                 }
-            for (int qi = 0; qi < BQ_IMPL; qi++) R[qi] = ab[qi] * R[qi];
-            for (int qi = 0; qi < BQ_IMPL; qi++) inner_batch[(size_t)j * BQ_IMPL + qi] = eq[qi];
+                double *g_cur = (j & 1) ? fbuf1 : fbuf0;
+                PASTE(apply_factor_bq, SUFFIX)(g_prev, g_cur, ab, bb, k);
+                if ((j + 1) % C == 0)
+                    memcpy(ckpt_buf + (size_t)((j+1)/C - 1) * gstride, g_cur, gstride * sizeof(double));
+                g_prev = g_cur;
+            }
+
+            /* Checkpointed backward: recompute within each segment */
+            memset(R, 0, k * BQ_IMPL * sizeof(double));
+            for (int qi = 0; qi < BQ_IMPL; qi++) R[qi] = 1.0;
+            int n_seg = (n + C - 1) / C;
+            for (int s = n_seg - 1; s >= 0; s--) {
+                int ss = s * C, se = ss + C;
+                if (se > n) se = n;
+                const double *prefix = (s == 0) ? payout_il : (ckpt_buf + (size_t)(s-1) * gstride);
+
+                /* Recompute local forward chain within segment */
+                const double *lp = prefix;
+                for (int j = 0; j < se - ss; j++) {
+                    double ab[BQ_IMPL], bb[BQ_IMPL];
+                    for (int qi = 0; qi < BQ_IMPL; qi++) {
+                        ab[qi] = a_batch[(size_t)(ss+j) * BQ_IMPL + qi];
+                        bb[qi] = 1.0 - ab[qi];
+                    }
+                    double *g_cur = local_g + (size_t)j * gstride;
+                    PASTE(apply_factor_bq, SUFFIX)(lp, g_cur, ab, bb, k);
+                    lp = g_cur;
+                }
+
+                /* Backward fused within segment */
+                for (int j = se - ss - 1; j >= 0; j--) {
+                    double ab[BQ_IMPL], bb[BQ_IMPL];
+                    for (int qi = 0; qi < BQ_IMPL; qi++) {
+                        ab[qi] = a_batch[(size_t)(ss+j) * BQ_IMPL + qi];
+                        bb[qi] = 1.0 - ab[qi];
+                    }
+                    if (!active || active[ss+j]) {
+                        const double *gb = (j == 0) ? prefix : (local_g + (size_t)(j-1) * gstride);
+                        double eq[BQ_IMPL];
+                        for (int qi = 0; qi < BQ_IMPL; qi++) eq[qi] = gb[qi] * R[qi];
+                        for (int m = k - 1; m >= 1; m--)
+                            for (int qi = 0; qi < BQ_IMPL; qi++) {
+                                eq[qi] += gb[m * BQ_IMPL + qi] * R[m * BQ_IMPL + qi];
+                                R[m * BQ_IMPL + qi] = ab[qi] * R[m * BQ_IMPL + qi] + bb[qi] * R[(m-1) * BQ_IMPL + qi];
+                            }
+                        for (int qi = 0; qi < BQ_IMPL; qi++) R[qi] = ab[qi] * R[qi];
+                        for (int qi = 0; qi < BQ_IMPL; qi++) inner_batch[(size_t)(ss+j) * BQ_IMPL + qi] = eq[qi];
+                    } else {
+                        for (int m = k - 1; m >= 1; m--)
+                            for (int qi = 0; qi < BQ_IMPL; qi++)
+                                R[m * BQ_IMPL + qi] = ab[qi] * R[m * BQ_IMPL + qi] + bb[qi] * R[(m-1) * BQ_IMPL + qi];
+                        for (int qi = 0; qi < BQ_IMPL; qi++) R[qi] = ab[qi] * R[qi];
+                    }
+                }
+            }
+        } else {
+            /* Flat forward: store all n rows */
+            const double *g_prev = payout_il;
+            for (int j = 0; j < n; j++) {
+                double ab[BQ_IMPL], bb[BQ_IMPL];
+                for (int qi = 0; qi < BQ_IMPL; qi++) {
+                    ab[qi] = a_batch[(size_t)j * BQ_IMPL + qi];
+                    bb[qi] = 1.0 - ab[qi];
+                }
+                double *g_cur = g_store + (size_t)j * gstride;
+                PASTE(apply_factor_bq, SUFFIX)(g_prev, g_cur, ab, bb, k);
+                g_prev = g_cur;
+            }
+
+            /* Flat backward: fused dot + suffix update */
+            memset(R, 0, k * BQ_IMPL * sizeof(double));
+            for (int qi = 0; qi < BQ_IMPL; qi++) R[qi] = 1.0;
+            for (int j = n - 1; j >= 0; j--) {
+                const double *gb = (j > 0) ? (g_store + (size_t)(j-1) * gstride) : payout_il;
+                double ab[BQ_IMPL], bb[BQ_IMPL], eq[BQ_IMPL];
+                for (int qi = 0; qi < BQ_IMPL; qi++) {
+                    ab[qi] = a_batch[(size_t)j * BQ_IMPL + qi];
+                    bb[qi] = 1.0 - ab[qi];
+                    eq[qi] = gb[qi] * R[qi];
+                }
+                for (int m = k - 1; m >= 1; m--)
+                    for (int qi = 0; qi < BQ_IMPL; qi++) {
+                        eq[qi] += gb[m * BQ_IMPL + qi] * R[m * BQ_IMPL + qi];
+                        R[m * BQ_IMPL + qi] = ab[qi] * R[m * BQ_IMPL + qi] + bb[qi] * R[(m-1) * BQ_IMPL + qi];
+                    }
+                for (int qi = 0; qi < BQ_IMPL; qi++) R[qi] = ab[qi] * R[qi];
+                for (int qi = 0; qi < BQ_IMPL; qi++) inner_batch[(size_t)j * BQ_IMPL + qi] = eq[qi];
+            }
         }
 
         double wq_b[BQ_IMPL], iv_b[BQ_IMPL];
@@ -177,11 +266,14 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
 
     double elapsed = now_ns() - t0;
     for (int t = 0; t < nthreads; t++) {
-        free(t_gstore[t]); free(t_R[t]);
+        free(t_gstore[t]); free(t_ckpt[t]); free(t_localg[t]);
+        free(t_fbuf0[t]); free(t_fbuf1[t]);
+        free(t_R[t]);
         free(t_abatch[t]); free(t_ibatch[t]);
         free(t_equity[t]);
     }
-    free(t_gstore); free(t_R); free(t_abatch); free(t_ibatch); free(t_equity);
+    free(t_gstore); free(t_ckpt); free(t_localg); free(t_fbuf0); free(t_fbuf1);
+    free(t_R); free(t_abatch); free(t_ibatch); free(t_equity);
 
 #else  /* No OpenMP — serial fallback */
     size_t gstride = (size_t)k * BQ_IMPL;

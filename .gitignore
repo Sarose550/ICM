@@ -24,6 +24,12 @@ planner_validation.csv
 gpu_limit_frontier.csv
 results_b200_instance_*/
 results_b200_local/
+contour_*.csv
+results_*.csv
+gpu_heatmap.csv
+
+# Claude Code
+.claude/
 
 # OS
 .DS_Store

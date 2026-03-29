@@ -2661,7 +2661,6 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     #undef A
 
     char *arena = nullptr;
-    fprintf(stderr, "arena: allocating %zu bytes (%.1f MB)\n", arena_sz, (double)arena_sz / (1024.0 * 1024.0));
     if (arena_sz == 0) { set_last_errorf("Arena size is 0"); return false; }
     if (!CUDA_OK(cudaMalloc(&arena, arena_sz))) return false;
     if (!CUDA_OK(cudaMemset(arena, 0, arena_sz))) return false;
@@ -2723,13 +2722,9 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     /* callback info slots removed (callbacks disabled) */
     #undef P
     plan->use_async_pool = false;
-    fprintf(stderr, "arena: pointers assigned, off=%zu/%zu\n", off, arena_sz);
-
     for (int ell = 1; ell < plan->L; ++ell) {
-        fprintf(stderr, "arena: creating cuFFT plans for level %d\n", ell);
         if (!allocate_level_buffers(plan, ell, {})) return false;
     }
-    fprintf(stderr, "arena: all cuFFT plans created\n");
 
     /* Share cuFFT workspace across all plans */
     {
@@ -2758,7 +2753,6 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
         }
     }
 
-    fprintf(stderr, "arena: workspace done, starting H->D copies\n");
     if (!CUDA_OK(cudaMemcpyAsync(plan->d_S_sorted, plan->S_sorted.data(),
                                  (size_t)plan->n * sizeof(double), cudaMemcpyHostToDevice,
                                  plan->stream_compute))) return false;
@@ -2769,7 +2763,6 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
                                  (size_t)plan->n * sizeof(int), cudaMemcpyHostToDevice,
                                  plan->stream_compute))) return false;
     if (!CUDA_OK(cudaStreamSynchronize(plan->stream_compute))) return false;
-    fprintf(stderr, "arena: allocate_plan_device_memory done\n");
     return true;
 }
 

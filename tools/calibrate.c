@@ -90,6 +90,51 @@ static void generate_wisdom(void) {
 
 static double calib_times[800];
 
+/* ── Phase 2.5: Measure streaming bandwidth at each cache level ── */
+
+static double bw_l2_gbs, bw_l3_gbs, bw_dram_gbs;
+
+static double measure_bw(size_t bytes) {
+    size_t n = bytes / sizeof(double);
+    double *a = (double *)malloc(bytes);
+    double *b = (double *)malloc(bytes);
+    double *c = (double *)malloc(bytes);
+    if (!a || !b || !c) { fprintf(stderr, "malloc failed in measure_bw\n"); exit(1); }
+
+    for (size_t i = 0; i < n; i++) { a[i] = 0; b[i] = 1.0 + 0.001*i; c[i] = 2.0 - 0.001*i; }
+    double s = 0.42;
+
+    for (int r = 0; r < 3; r++)
+        for (size_t i = 0; i < n; i++) a[i] = b[i] * s + c[i];
+
+    int reps = (int)(2e8 / (double)(n + 1));
+    if (reps < 10) reps = 10;
+    if (reps > 100000) reps = 100000;
+
+    double t0 = now_ns();
+    for (int r = 0; r < reps; r++)
+        for (size_t i = 0; i < n; i++) a[i] = b[i] * s + c[i];
+    double elapsed_ns = now_ns() - t0;
+
+    volatile double sink = a[n/2];
+    (void)sink;
+    free(a); free(b); free(c);
+
+    /* 24 bytes per element: read b (8) + read c (8) + write a (8) */
+    double total_bytes = 24.0 * (double)n * reps;
+    return total_bytes / elapsed_ns;  /* GB/s (bytes/ns = GB/s) */
+}
+
+static void benchmark_bandwidth(void) {
+    printf("Phase 2.5: Measuring streaming bandwidth at each cache level...\n");
+    bw_l2_gbs = measure_bw(512 * 1024);
+    printf("  L2 (512KB):   %.1f GB/s\n", bw_l2_gbs);
+    bw_l3_gbs = measure_bw(16 * 1024 * 1024);
+    printf("  L3 (16MB):    %.1f GB/s\n", bw_l3_gbs);
+    bw_dram_gbs = measure_bw(256 * 1024 * 1024);
+    printf("  DRAM (256MB):  %.1f GB/s\n\n", bw_dram_gbs);
+}
+
 static void benchmark_sizes(int quick) {
     printf("Phase 2: Benchmarking FFT pipeline at each size...\n");
     fftw_import_wisdom_from_filename(WISDOM_FILE);
@@ -192,6 +237,23 @@ static void write_config(const char *filename) {
     }
     fprintf(f, "\n};\n\n");
 
+    /* Bandwidth constants for roofline cost model in select_engine() */
+    fprintf(f,
+"/* ── Streaming bandwidth at each cache level (measured by calibrate) ── */\n"
+"#ifndef L2_BW_GBS\n"
+"#define L2_BW_GBS %.1f\n"
+"#endif\n"
+"#ifndef L3_BW_GBS\n"
+"#define L3_BW_GBS %.1f\n"
+"#endif\n"
+"#ifndef DRAM_BW_GBS\n"
+"#define DRAM_BW_GBS %.1f\n"
+"#endif\n"
+"#ifndef L3_CACHE_SIZE\n"
+"#define L3_CACHE_SIZE 33554432  /* 32MB — update for this hardware */\n"
+"#endif\n\n",
+        bw_l2_gbs, bw_l3_gbs, bw_dram_gbs);
+
     /* best_fft_config_joint() — NOTE: constants below must be tuned per-device.
      * Run ./bench_grid profile (measure_phase_split) to get the paired correlate
      * cost ratio. On M3 Max this is 1.03. On other hardware, re-measure. */
@@ -287,6 +349,7 @@ int main(int argc, char **argv) {
     if (wisdom_only) { printf("Done (wisdom only).\n"); return 0; }
 
     benchmark_sizes(quick);
+    benchmark_bandwidth();
     write_config("fft_config.h");
 
     printf("Done. Next steps:\n");
