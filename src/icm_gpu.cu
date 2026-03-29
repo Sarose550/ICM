@@ -332,18 +332,18 @@ static int fused_max_conv_len_runtime() {
 }
 
 #if ICM_HAVE_CUFFTDX
-template<int FFT_N>
+template<int FFT_N, int FPB = 1>
 using cufftdx_fft_fwd_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
                                    cufftdx::Type<cufftdx::fft_type::c2c>() +
                                    cufftdx::Direction<cufftdx::fft_direction::forward>() +
-                                   cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<1>() +
+                                   cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>() +
                                    cufftdx::SM<1000>());
 
-template<int FFT_N>
+template<int FFT_N, int FPB = 1>
 using cufftdx_fft_inv_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
                                    cufftdx::Type<cufftdx::fft_type::c2c>() +
                                    cufftdx::Direction<cufftdx::fft_direction::inverse>() +
-                                   cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<1>() +
+                                   cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>() +
                                    cufftdx::SM<1000>());
 
 #if ICM_HAVE_CUFFTDX_R2C
@@ -469,20 +469,22 @@ __device__ inline void cufftdx_store_real_c2r(const typename C2R_FFT::value_type
 }
 #endif /* ICM_HAVE_CUFFTDX_R2C */
 
-template<int FFT_N>
-__launch_bounds__(cufftdx_fft_fwd_t<FFT_N>::max_threads_per_block)
+template<int FFT_N, int FPB = 1>
+__launch_bounds__(cufftdx_fft_fwd_t<FFT_N, FPB>::max_threads_per_block)
 __global__ static void k_cufftdx_build_parent(const double *child, int cps,
                                               double *parent, int pps,
                                               int nparents, double inv_fft_n) {
-    if (blockIdx.x >= (unsigned)nparents) return;
-    using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
-    using FFTInv = cufftdx_fft_inv_t<FFT_N>;
+    using FFTFwd = cufftdx_fft_fwd_t<FFT_N, FPB>;
+    using FFTInv = cufftdx_fft_inv_t<FFT_N, FPB>;
     using complex_t = typename FFTFwd::value_type;
+    /* With FFTsPerBlock>1, threadIdx.y selects which FFT instance in the block */
+    int p = (int)blockIdx.x * FPB + (int)threadIdx.y;
+    if (p >= nparents) return;
+
     complex_t a[FFTFwd::storage_size];
     complex_t b[FFTFwd::storage_size];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
-    int p = (int)blockIdx.x;
     const double *L = child + (size_t)(2 * p) * (size_t)cps;
     const double *R = child + (size_t)(2 * p + 1) * (size_t)cps;
     double *out = parent + (size_t)p * (size_t)pps;
@@ -496,22 +498,23 @@ __global__ static void k_cufftdx_build_parent(const double *child, int cps,
     cufftdx_store_real<FFTInv>(a, out, pps, inv_fft_n);
 }
 
-template<int FFT_N>
-__launch_bounds__(cufftdx_fft_fwd_t<FFT_N>::max_threads_per_block)
+template<int FFT_N, int FPB = 1>
+__launch_bounds__(cufftdx_fft_fwd_t<FFT_N, FPB>::max_threads_per_block)
 __global__ static void k_cufftdx_corr_pair_parent(const double *g_parent, int parent_gsz, int len_g,
                                                   const double *child_poly, int cps, int len_P,
                                                   double *g_child, int child_gsz, int len_out,
                                                   int nparents, double inv_fft_n) {
-    if (blockIdx.x >= (unsigned)nparents) return;
-    using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
-    using FFTInv = cufftdx_fft_inv_t<FFT_N>;
+    using FFTFwd = cufftdx_fft_fwd_t<FFT_N, FPB>;
+    using FFTInv = cufftdx_fft_inv_t<FFT_N, FPB>;
     using complex_t = typename FFTFwd::value_type;
+    int p = (int)blockIdx.x * FPB + (int)threadIdx.y;
+    if (p >= nparents) return;
+
     complex_t gbuf[FFTFwd::storage_size];
     complex_t pbuf[FFTFwd::storage_size];
     complex_t gspec_saved[FFTFwd::elements_per_thread];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
-    int p = (int)blockIdx.x;
     const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
     const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
     const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
@@ -544,10 +547,24 @@ template<int FFT_N>
 static bool launch_cufftdx_build_t(const double *child, int cps,
                                    double *parent, int pps, int nparents,
                                    double inv_fft_n, cudaStream_t stream) {
+    /* Try FPB=2 for better occupancy when there are enough parents */
+    constexpr int FPB2 = 2;
+    using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
+    using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
+    size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
+    if (nparents >= 4 && shmem2 <= 200 * 1024) {
+        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent<FFT_N, FPB2>,
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          (int)shmem2))) {
+            int grid = (nparents + FPB2 - 1) / FPB2;
+            k_cufftdx_build_parent<FFT_N, FPB2><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
+                child, cps, parent, pps, nparents, inv_fft_n);
+            if (CUDA_OK(cudaGetLastError())) return true;
+        }
+    }
+    /* Fallback: FPB=1 */
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
     using FFTInv = cufftdx_fft_inv_t<FFT_N>;
-    static_assert(FFTFwd::ffts_per_block == 1, "Expected one FFT per block");
-    static_assert(FFTFwd::block_dim.y == 1, "Unexpected cuFFTDx block_dim.y");
     size_t shmem = std::max((size_t)FFTFwd::shared_memory_size, (size_t)FFTInv::shared_memory_size);
     if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent<FFT_N>,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -562,10 +579,23 @@ static bool launch_cufftdx_corr_t(const double *g_parent, int parent_gsz, int le
                                   const double *child_poly, int cps, int len_P,
                                   double *g_child, int child_gsz, int len_out, int nparents,
                                   double inv_fft_n, cudaStream_t stream) {
+    constexpr int FPB2 = 2;
+    using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
+    using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
+    size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
+    if (nparents >= 4 && shmem2 <= 200 * 1024) {
+        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent<FFT_N, FPB2>,
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          (int)shmem2))) {
+            int grid = (nparents + FPB2 - 1) / FPB2;
+            k_cufftdx_corr_pair_parent<FFT_N, FPB2><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
+                g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                g_child, child_gsz, len_out, nparents, inv_fft_n);
+            if (CUDA_OK(cudaGetLastError())) return true;
+        }
+    }
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
     using FFTInv = cufftdx_fft_inv_t<FFT_N>;
-    static_assert(FFTFwd::ffts_per_block == 1, "Expected one FFT per block");
-    static_assert(FFTFwd::block_dim.y == 1, "Unexpected cuFFTDx block_dim.y");
     size_t shmem = std::max((size_t)FFTFwd::shared_memory_size, (size_t)FFTInv::shared_memory_size);
     if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent<FFT_N>,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize,
