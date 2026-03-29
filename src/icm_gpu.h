@@ -75,6 +75,8 @@ int icm_gpu_write_config_header(const char *output_path);
 int icm_gpu_measure_hbm_bandwidth_gbps(double *gbps_out);
 int icm_gpu_measure_fused_pair_ns(int fft_n, int batch, int quick,
                                   double *build_ns_out, double *corr_ns_out);
+int icm_gpu_measure_fused_r2c_pair_ns(int fft_n, int batch, int quick,
+                                       double *build_ns_out, double *corr_ns_out);
 
 #ifdef __cplusplus
 }

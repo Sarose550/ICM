@@ -608,6 +608,9 @@ static int write_header(const char *path,
                         const std::vector<double> &cufft_build_ns,
                         const std::vector<double> &dx_build_ns,
                         const std::vector<double> &dx_corr_ns,
+                        const std::vector<double> &dx_r2c_build_ns,
+                        const std::vector<double> &dx_r2c_corr_ns,
+                        bool has_r2c_calib,
                         double school_ns,
                         double fft_overhead_ns,
                         double hbm_gbps,
@@ -642,6 +645,11 @@ static int write_header(const char *path,
     write_arr("gpu_calib_cufft_ns", cufft_build_ns);
     write_arr("gpu_calib_cufftdx_build_ns", dx_build_ns);
     write_arr("gpu_calib_cufftdx_corr_ns", dx_corr_ns);
+    if (has_r2c_calib) {
+        write_arr("gpu_calib_cufftdx_r2c_build_ns", dx_r2c_build_ns);
+        write_arr("gpu_calib_cufftdx_r2c_corr_ns", dx_r2c_corr_ns);
+        fprintf(f, "#define GPU_HAS_R2C_CALIB 1\n\n");
+    }
 
     fprintf(f, "#define GPU_SCHOOL_FMA_NS %.8f\n", school_ns);
     fprintf(f, "#define GPU_FFT_OVERHEAD_NS %.8f\n", fft_overhead_ns);
@@ -696,7 +704,10 @@ int main(int argc, char **argv) {
     std::vector<double> cufft_ns(smooth.size(), 0.0);
     std::vector<double> dx_build_ns(smooth.size(), 0.0);
     std::vector<double> dx_corr_ns(smooth.size(), 0.0);
+    std::vector<double> dx_r2c_build_ns(smooth.size(), 0.0);
+    std::vector<double> dx_r2c_corr_ns(smooth.size(), 0.0);
     int fused_max = 0;
+    bool has_r2c_calib = false;
     std::vector<double> paired_ratios;
     std::vector<double> indep_ratios;
 
@@ -718,6 +729,13 @@ int main(int argc, char **argv) {
             dx_build_ns[i] = t_dx_build;
             dx_corr_ns[i] = t_dx_corr;
             if (n > fused_max) fused_max = n;
+        }
+        /* Measure R2C fused kernels (separate calibration for accurate cost model) */
+        double t_r2c_build = 0.0, t_r2c_corr = 0.0;
+        if (icm_gpu_measure_fused_r2c_pair_ns(n, batch, quick, &t_r2c_build, &t_r2c_corr)) {
+            dx_r2c_build_ns[i] = t_r2c_build;
+            dx_r2c_corr_ns[i] = t_r2c_corr;
+            has_r2c_calib = true;
         }
         if (std::isfinite(t_corr) && std::isfinite(t_build) && t_build > 0.0) paired_ratios.push_back(t_corr / t_build);
         if (std::isfinite(t_indep) && std::isfinite(t_build) && t_build > 0.0) indep_ratios.push_back(t_indep / t_build);
@@ -752,6 +770,7 @@ int main(int argc, char **argv) {
            (unsigned long long)prop.totalGlobalMem, prop.multiProcessorCount);
 
     if (!write_header(out_path, smooth, cufft_ns, dx_build_ns, dx_corr_ns,
+                      dx_r2c_build_ns, dx_r2c_corr_ns, has_r2c_calib,
                       school_ns, overhead_ns, hbm, fused_max, paired_ratio, indep_ratio,
                       block_ns, leaf_ns,
                       (unsigned long long)prop.totalGlobalMem, prop.multiProcessorCount)) {

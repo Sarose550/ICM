@@ -306,6 +306,11 @@ static double best_fft_config_joint_gpu(int build_conv, int corr_conv, int p_eff
 static double estimate_fused_build_ns(int fft_n) {
     int idx = find_calib_index(fft_n);
     if (idx < 0) return std::numeric_limits<double>::infinity();
+    /* Use R2C calibration data when available, fall back to C2C */
+#ifdef GPU_HAS_R2C_CALIB
+    if (gpu_calib_cufftdx_r2c_build_ns[idx] > 0.0)
+        return gpu_calib_cufftdx_r2c_build_ns[idx];
+#endif
     if (gpu_calib_cufftdx_build_ns[idx] <= 0.0) return std::numeric_limits<double>::infinity();
     return gpu_calib_cufftdx_build_ns[idx];
 }
@@ -313,6 +318,10 @@ static double estimate_fused_build_ns(int fft_n) {
 static double estimate_fused_corr_ns(int fft_n) {
     int idx = find_calib_index(fft_n);
     if (idx < 0) return std::numeric_limits<double>::infinity();
+#ifdef GPU_HAS_R2C_CALIB
+    if (gpu_calib_cufftdx_r2c_corr_ns[idx] > 0.0)
+        return gpu_calib_cufftdx_r2c_corr_ns[idx];
+#endif
     if (gpu_calib_cufftdx_corr_ns[idx] <= 0.0) return std::numeric_limits<double>::infinity();
     return gpu_calib_cufftdx_corr_ns[idx];
 }
@@ -4530,6 +4539,95 @@ fail:
     if (stream) cudaStreamDestroy(stream);
     *build_ns_out = 0.0;
     *corr_ns_out = 0.0;
+    return 0;
+#endif
+}
+
+int icm_gpu_measure_fused_r2c_pair_ns(int fft_n, int batch, int quick,
+                                      double *build_ns_out, double *corr_ns_out) {
+    if (!build_ns_out || !corr_ns_out || fft_n <= 0 || batch <= 0) return 0;
+    *build_ns_out = 0.0;
+    *corr_ns_out = 0.0;
+    if (g_cuda_device < 0) { if (!icm_gpu_init(0)) return 0; }
+    if (!CUDA_OK(cudaSetDevice(g_cuda_device))) return 0;
+#if !ICM_HAVE_CUFFTDX || !ICM_HAVE_CUFFTDX_R2C
+    (void)fft_n; (void)batch; (void)quick;
+    return 0;
+#else
+    if (!is_cufftdx_supported_fft_n(fft_n)) return 0;
+    int nparents = batch;
+    int cps = fft_n, pps = fft_n, len_g = fft_n, len_P = fft_n, len_out = fft_n;
+    double *d_child=0, *d_parent=0, *d_g_parent=0, *d_child_poly=0, *d_g_child=0;
+    cudaStream_t stream=0; cudaEvent_t e0=0, e1=0;
+    int warmup = quick ? 1 : 3, reps = quick ? 4 : 12;
+    std::vector<double> bsamp, csamp;
+
+    size_t cb = (size_t)(2*nparents)*cps*sizeof(double);
+    size_t pb = (size_t)nparents*pps*sizeof(double);
+    size_t gb = (size_t)nparents*fft_n*sizeof(double);
+    size_t gcb = (size_t)(2*nparents)*fft_n*sizeof(double);
+    if (!CUDA_OK(cudaStreamCreate(&stream))) goto r2c_fail;
+    if (!CUDA_OK(cudaMalloc(&d_child, cb))) goto r2c_fail;
+    if (!CUDA_OK(cudaMalloc(&d_parent, pb))) goto r2c_fail;
+    if (!CUDA_OK(cudaMalloc(&d_g_parent, gb))) goto r2c_fail;
+    if (!CUDA_OK(cudaMalloc(&d_child_poly, cb))) goto r2c_fail;
+    if (!CUDA_OK(cudaMalloc(&d_g_child, gcb))) goto r2c_fail;
+    cudaMemsetAsync(d_child, 1, cb, stream);
+    cudaMemsetAsync(d_parent, 0, pb, stream);
+    cudaMemsetAsync(d_g_parent, 1, gb, stream);
+    cudaMemsetAsync(d_child_poly, 2, cb, stream);
+    cudaMemsetAsync(d_g_child, 0, gcb, stream);
+    cudaStreamSynchronize(stream);
+    if (!CUDA_OK(cudaEventCreate(&e0))) goto r2c_fail;
+    if (!CUDA_OK(cudaEventCreate(&e1))) goto r2c_fail;
+
+    for (int i = 0; i < warmup; ++i)
+        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents,
+                                                1.0/(double)fft_n, stream)) goto r2c_fail;
+    cudaStreamSynchronize(stream);
+    for (int i = 0; i < reps; ++i) {
+        cudaEventRecord(e0, stream);
+        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents,
+                                                1.0/(double)fft_n, stream)) goto r2c_fail;
+        cudaEventRecord(e1, stream);
+        cudaEventSynchronize(e1);
+        float ms; cudaEventElapsedTime(&ms, e0, e1);
+        bsamp.push_back((double)ms * 1e6);
+    }
+
+    for (int i = 0; i < warmup; ++i)
+        if (!launch_cufftdx_corr_r2c_dispatch(fft_n, d_g_parent, fft_n, len_g,
+                                               d_child_poly, cps, len_P,
+                                               d_g_child, fft_n, len_out, nparents,
+                                               1.0/(double)fft_n, stream)) goto r2c_fail;
+    cudaStreamSynchronize(stream);
+    for (int i = 0; i < reps; ++i) {
+        cudaEventRecord(e0, stream);
+        if (!launch_cufftdx_corr_r2c_dispatch(fft_n, d_g_parent, fft_n, len_g,
+                                               d_child_poly, cps, len_P,
+                                               d_g_child, fft_n, len_out, nparents,
+                                               1.0/(double)fft_n, stream)) goto r2c_fail;
+        cudaEventRecord(e1, stream);
+        cudaEventSynchronize(e1);
+        float ms; cudaEventElapsedTime(&ms, e0, e1);
+        csamp.push_back((double)ms * 1e6);
+    }
+
+    std::sort(bsamp.begin(), bsamp.end());
+    std::sort(csamp.begin(), csamp.end());
+    if (bsamp.empty() || csamp.empty()) goto r2c_fail;
+    *build_ns_out = bsamp[bsamp.size()/2] / (double)nparents;
+    *corr_ns_out = csamp[csamp.size()/2] / (double)nparents;
+    cudaEventDestroy(e0); cudaEventDestroy(e1);
+    cudaFree(d_g_child); cudaFree(d_child_poly); cudaFree(d_g_parent);
+    cudaFree(d_parent); cudaFree(d_child); cudaStreamDestroy(stream);
+    return 1;
+r2c_fail:
+    if (e0) cudaEventDestroy(e0); if (e1) cudaEventDestroy(e1);
+    if (d_g_child) cudaFree(d_g_child); if (d_child_poly) cudaFree(d_child_poly);
+    if (d_g_parent) cudaFree(d_g_parent); if (d_parent) cudaFree(d_parent);
+    if (d_child) cudaFree(d_child); if (stream) cudaStreamDestroy(stream);
+    *build_ns_out = 0.0; *corr_ns_out = 0.0;
     return 0;
 #endif
 }
