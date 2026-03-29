@@ -64,7 +64,7 @@ constexpr int GPU_SCHOOL_WARPS_PER_BLOCK = 4;
 constexpr size_t GPU_SCHOOL_SMEM_SAFE_BYTES = 48u * 1024u;
 
 constexpr int Q_BATCH_MAX = 8;   /* Maximum supported Q-batch width */
-constexpr int Q_BATCH_DEFAULT = 4; /* Default Q-batch width */
+/* Q_BATCH_DEFAULT removed — Q-batch size now selected by cost model */
 
 enum {
     GPU_ENGINE_LINEAR = 0,
@@ -137,11 +137,7 @@ static void build_smooth_table(int max_n, std::vector<int> &smooth) {
     smooth.erase(std::unique(smooth.begin(), smooth.end()), smooth.end());
 }
 
-static int next_7smooth_ge(const std::vector<int> &smooth, int n) {
-    auto it = std::lower_bound(smooth.begin(), smooth.end(), n);
-    if (it != smooth.end()) return *it;
-    return next_pow2_int(n);
-}
+
 
 static int first_calib_ge(int n) {
     int lo = 0;
@@ -1041,14 +1037,6 @@ static void update_vram_alloc(GpuPlan *plan, size_t bytes) {
     }
 }
 
-static void update_vram_free(GpuPlan *plan, size_t bytes) {
-    if (bytes > plan->current_vram_bytes) {
-        plan->current_vram_bytes = 0;
-    } else {
-        plan->current_vram_bytes -= bytes;
-    }
-}
-
 static bool alloc_device(GpuPlan *plan, void **ptr, size_t bytes, cudaStream_t stream) {
     if (bytes == 0) {
         *ptr = nullptr;
@@ -1061,22 +1049,6 @@ static bool alloc_device(GpuPlan *plan, void **ptr, size_t bytes, cudaStream_t s
     }
     update_vram_alloc(plan, bytes);
     return true;
-}
-
-static bool free_device(GpuPlan *plan, void *ptr, size_t bytes, cudaStream_t stream) {
-    if (!ptr) return true;
-    if (plan->use_async_pool) {
-        if (!CUDA_OK(cudaFreeAsync(ptr, stream))) return false;
-    } else {
-        if (!CUDA_OK(cudaFree(ptr))) return false;
-    }
-    update_vram_free(plan, bytes);
-    return true;
-}
-
-static int pick_fft_size_for_conv(const std::vector<int> &smooth, int conv_len) {
-    (void)smooth;
-    return fastest_fft_ge_gpu(conv_len);
 }
 
 static double tree_school_ns_per_fma() {
@@ -1499,17 +1471,6 @@ __global__ static void k_schoolbook_build_warp_batch(const double *child, int cp
     }
 }
 
-__global__ static void k_pack_level_to_fft(const double *src, int src_stride, int batch,
-                                           double *dst, int fft_n, int copy_len) {
-    size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
-    size_t total = (size_t)batch * (size_t)fft_n;
-    if (idx >= total) return;
-    int b = (int)(idx / (size_t)fft_n);
-    int m = (int)(idx % (size_t)fft_n);
-    const double *s = src + (size_t)b * (size_t)src_stride;
-    dst[idx] = (m < copy_len) ? s[m] : 0.0;
-}
-
 __global__ static void k_pairwise_mul(const cufftDoubleComplex *child_spec, int cn,
                                       cufftDoubleComplex *parent_spec, int nparents) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
@@ -1523,17 +1484,6 @@ __global__ static void k_pairwise_mul(const cufftDoubleComplex *child_spec, int 
     o.x = a.x * b.x - a.y * b.y;
     o.y = a.x * b.y + a.y * b.x;
     parent_spec[idx] = o;
-}
-
-__global__ static void k_unpack_fft_to_level(const double *src, int fft_n, double inv_fft_n,
-                                             int pps, int batch, double *dst) {
-    size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
-    size_t total = (size_t)batch * (size_t)pps;
-    if (idx >= total) return;
-    int b = (int)(idx / (size_t)pps);
-    int m = (int)(idx % (size_t)pps);
-    const double *in = src + (size_t)b * (size_t)fft_n;
-    dst[idx] = (m < fft_n) ? in[m] * inv_fft_n : 0.0;
 }
 
 /* In-place scale + zero-pad kernel for FFT-stride layout.
@@ -1609,17 +1559,6 @@ __global__ static void k_paired_corr_freq(const cufftDoubleComplex *g_hat,
 
     child_out_spec[(size_t)(2 * p) * (size_t)cn + (size_t)f] = out_left;
     child_out_spec[(size_t)(2 * p + 1) * (size_t)cn + (size_t)f] = out_right;
-}
-
-__global__ static void k_unpack_corr_children(const double *ifft_out, int fft_n, double inv_fft_n,
-                                              int child_gsz, int len_out, int nparents, double *g_child) {
-    size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
-    size_t total = (size_t)(2 * nparents) * (size_t)len_out;
-    if (idx >= total) return;
-    int c = (int)(idx / (size_t)len_out);
-    int m = (int)(idx % (size_t)len_out);
-    const double *in = ifft_out + (size_t)c * (size_t)fft_n;
-    g_child[(size_t)c * (size_t)child_gsz + (size_t)m] = (m < fft_n) ? in[m] * inv_fft_n : 0.0;
 }
 
 __global__ static void k_wrap_corr_pair(double *g_child, int child_gsz, int nparents,
@@ -2636,38 +2575,6 @@ static bool device_sort_players(GpuPlan *plan) {
     return ok;
 }
 
-static bool allocate_shared_fft_buffers(GpuPlan *plan) {
-    size_t mb_si = 0, mb_sm = 0;
-    size_t mc_si = 0, mc_sm = 0;
-    int qb = plan->q_batch;
-    for (int ell = 1; ell < plan->L; ++ell) {
-        auto &lp = plan->levels[ell];
-        /* Include ALL FFT-using levels (cuFFT AND fused, since fused falls back to cuFFT) */
-        if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
-        int cn = lp.cn;
-        int cb = plan->nn[ell - 1], pb = plan->nn[ell];
-        /* With FFT-stride layout, real_in/real_out are no longer needed.
-         * Only spectral buffers remain shared. */
-        mb_si = std::max(mb_si, (size_t)qb * (size_t)cb * cn * sizeof(cufftDoubleComplex));
-        mb_sm = std::max(mb_sm, (size_t)qb * (size_t)pb * cn * sizeof(cufftDoubleComplex));
-        mc_si = std::max(mc_si, (size_t)qb * (size_t)pb * cn * sizeof(cufftDoubleComplex));
-        mc_sm = std::max(mc_sm, (size_t)qb * (size_t)(2 * pb) * cn * sizeof(cufftDoubleComplex));
-    }
-    auto &sb = plan->shared_build_work;
-    sb.real_in_bytes = 0; sb.spec_in_bytes = mb_si;
-    sb.spec_mid_bytes = mb_sm; sb.real_out_bytes = 0;
-    sb.real_in = nullptr; sb.real_out = nullptr;
-    auto &sc = plan->shared_corr_work;
-    sc.real_in_bytes = 0; sc.spec_in_bytes = mc_si;
-    sc.spec_mid_bytes = mc_sm; sc.real_out_bytes = 0;
-    sc.real_in = nullptr; sc.real_out = nullptr;
-    if (!alloc_device(plan, (void **)&sb.spec_in, mb_si, plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&sb.spec_mid, mb_sm, plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&sc.spec_in, mc_si, plan->stream_compute)) return false;
-    if (!alloc_device(plan, (void **)&sc.spec_mid, mc_sm, plan->stream_compute)) return false;
-    return true;
-}
-
 static bool allocate_plan_device_memory(GpuPlan *plan) {
     if (!CUDA_OK(cudaStreamCreate(&plan->stream_compute))) return false;
     if (!CUDA_OK(cudaStreamCreate(&plan->stream_aux))) return false;
@@ -2691,7 +2598,7 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
      * so real_in and real_out are no longer needed.  Only the spectral buffers
      * (spec_in for forward output / cache source, spec_mid for pairwise multiply
      * output / inverse input) are still required. */
-    size_t mb_ri=0, mb_si=0, mb_sm=0, mb_ro=0, mc_ri=0, mc_si=0, mc_sm=0, mc_ro=0;
+    size_t mb_si=0, mb_sm=0, mc_si=0, mc_sm=0;
     for (int ell = 1; ell < plan->L; ++ell) {
         auto &lp = plan->levels[ell];
         if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
