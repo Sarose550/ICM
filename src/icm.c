@@ -2328,74 +2328,19 @@ static int select_best_B(int n, int k);
 /* Batch width of the linear engine used by icm_equity (run_linear_batched_bq8). */
 #define LINEAR_BQ 8
 
-/* Effective streaming bandwidth for a working set of `bytes` total.
- * When data fits in a cache level, use that level's bandwidth.
- * When data spills across a boundary, blend using harmonic mean:
- *   eff_bw = 1 / (hit_frac / hit_bw + miss_frac / miss_bw)
- * This follows from: total_time = hit_bytes/hit_bw + miss_bytes/miss_bw. */
-static double blended_bw(double bytes) {
-    if (bytes <= (double)L2_CACHE_SIZE)
-        return L2_BW_GBS;
-    if (bytes <= (double)L3_CACHE_SIZE) {
-        double l2_frac = (double)L2_CACHE_SIZE / bytes;
-        return 1.0 / (l2_frac / L2_BW_GBS + (1.0 - l2_frac) / L3_BW_GBS);
-    }
-    double l3_frac = (double)L3_CACHE_SIZE / bytes;
-    return 1.0 / (l3_frac / L3_BW_GBS + (1.0 - l3_frac) / DRAM_BW_GBS);
-}
+/* Shared roofline cost model (blended_bw, linear_roofline_cost).
+ * Requires L2_CACHE_SIZE, L3_CACHE_SIZE, L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS
+ * to be defined above (from fft_config.h). */
+#include "cost_model.h"
 
 /* Engine dispatch: compare estimated linear vs hybrid cost for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.
- * Linear cost: roofline model — bytes streamed / bandwidth at the relevant cache level.
+ * Linear cost: roofline model from cost_model.h.
  * Hybrid cost: block build + FFT tree from the same model as select_best_B. */
 static int select_engine(int n, int k) {
     if (n < 16 || k < 4) return 0;
 
-    /* ── Roofline cost model for the batched linear engine ──
-     *
-     * The batched engine (BQ=8) is memory-bandwidth-limited: its arithmetic
-     * intensity (~0.15 FLOP/byte) is far below the machine balance point.
-     * Instead of a single POLYMUL_FMA_NS constant, we estimate the bytes
-     * streamed through each cache level and divide by measured bandwidth.
-     *
-     * Checkpoint interval C = L2_CACHE_SIZE / (k * BQ * sizeof(double)).
-     * All costs are per quadrature point (batch cost / BQ). */
-
-    int C = (int)((size_t)L2_CACHE_SIZE / ((size_t)k * LINEAR_BQ * sizeof(double)));
-    if (C < 1) C = 1;
-
-    double linear_per_qp;
-
-    if (C >= n) {
-        /* No checkpointing — g_store fits in L2.
-         * Forward + backward: 2 passes of n*k doubles (read+write).
-         * Per QP (amortized over BQ): 2 * n * k * 8 bytes. */
-        double bytes_per_qp = 2.0 * n * k * 8.0;
-        double bytes_per_batch = bytes_per_qp * LINEAR_BQ;
-        double bw = blended_bw(bytes_per_batch);
-        linear_per_qp = bytes_per_qp / bw;
-    } else {
-        /* Checkpointed: local_g fits in L2 (by design of C).
-         *
-         * Inner work (L2-resident): recompute forward + backward within each
-         * segment.  2 passes of n*k doubles, all hitting L2.
-         * Per QP: 2 * n * k * 8 / L2_BW. */
-        double inner_bytes = 2.0 * n * k * 8.0;
-        double inner_time = inner_bytes / L2_BW_GBS;
-
-        /* Outer I/O (L3 and/or DRAM):
-         *   Checkpoints: (n/C) × k×BQ×8 bytes, read+write → 2×(n/C)×k×BQ×8
-         *   a_batch: n×BQ×8 bytes, read 3 times → 3×n×BQ×8
-         * Per QP (÷BQ): 2*(n/C)*k*8 + 3*n*8 */
-        double ckpt_bytes = 2.0 * ((double)n / C) * k * 8.0;
-        double abatch_bytes = 3.0 * n * 8.0;
-        double outer_bytes = ckpt_bytes + abatch_bytes;
-        double outer_total = outer_bytes * LINEAR_BQ;
-        double outer_bw = blended_bw(outer_total);
-        double outer_time = outer_bytes / outer_bw;
-
-        linear_per_qp = inner_time + outer_time;
-    }
+    double linear_per_qp = linear_roofline_cost(n, k, LINEAR_BQ);
 
     int B = select_best_B(n, k);
     int nblocks = (n + B - 1) / B;
@@ -2755,6 +2700,9 @@ double icm_run_linear_batched(int n, const double *S, int Q,
                               double *equity, void *ctx) {
     return run_linear_batched(n, S, Q, payout, k, equity, ctx);
 }
+
+int icm_select_engine(int n, int k) { return select_engine(n, k); }
+int icm_select_best_B(int n, int k) { return select_best_B(n, k); }
 
 void icm_v1_exact(int n, const double *S, double *V1) { v1_exact(n, S, V1); }
 void icm_v2_exact(int n, const double *S, double *V2) { v2_exact(n, S, V2); }

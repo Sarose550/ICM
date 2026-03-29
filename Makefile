@@ -1,11 +1,14 @@
 # ICM Equity Computation — Makefile
 #
 # Usage:
-#   make                    # serial build for current device
-#   make parallel           # OpenMP build
+#   make                    # serial build (bench_grid)
+#   make parallel           # OpenMP build (bench_grid)
 #   make DEVICE=zen4        # build for a different device
 #   make test               # quick verify
 #   make bench              # full benchmark grid
+#   make libicm.a           # build the library
+#   make contour_1s         # contour sweep tool (serial)
+#   make contour_1s_par     # contour sweep tool (parallel)
 
 DEVICE ?= m3_max
 
@@ -29,7 +32,7 @@ BUILD_DIR = build
 UNAME := $(shell uname)
 
 ifeq ($(UNAME),Darwin)
-  # macOS: Homebrew paths + Accelerate (vvexp)
+  # macOS: Homebrew paths + Accelerate (vDSP, vvexp)
   INCLUDES += -I/opt/homebrew/include
   LDFLAGS  := -L/opt/homebrew/lib $(LDFLAGS) -framework Accelerate
   OMP_CFLAGS  = -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include
@@ -39,18 +42,48 @@ else
   LDFLAGS += -ldl
   OMP_CFLAGS  = -fopenmp
   OMP_LDFLAGS = -lfftw3_threads -lpthread
+  # Auto-detect AOCL-FFTW
+  ifneq ($(wildcard /usr/local/aocl-fftw/lib/libfftw3.so),)
+    INCLUDES += -I/usr/local/aocl-fftw/include
+    LDFLAGS  := -L/usr/local/aocl-fftw/lib -Wl,-rpath,/usr/local/aocl-fftw/lib $(LDFLAGS)
+  endif
 endif
 
-# Zen 4 override: use -march=znver4 instead of -march=native if preferred
+# Zen 4 override: use -march=znver4
 ifeq ($(DEVICE),zen4)
   CFLAGS := -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function
 endif
 
 SRC = bench/bench.c
 OUT = bench_grid
-CPU_REF_OBJ = $(BUILD_DIR)/icm_cpu_ref.o
 
-.PHONY: all parallel test bench calibrate bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu campaign_b200 clean
+# ── Library ─────────────────────────────────────────────────────
+
+LIBICM = $(BUILD_DIR)/libicm.a
+LIBICM_OBJ = $(BUILD_DIR)/icm.o
+LIBICM_OMP_OBJ = $(BUILD_DIR)/icm_omp.o
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+$(LIBICM_OBJ): src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+
+$(LIBICM): $(LIBICM_OBJ)
+	ar rcs $@ $^
+
+# OpenMP variant
+$(LIBICM_OMP_OBJ): src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+
+$(BUILD_DIR)/libicm_omp.a: $(LIBICM_OMP_OBJ)
+	ar rcs $@ $^
+
+libicm.a: $(LIBICM)
+
+# ── Bench grid (includes icm.c directly for profiling access) ──
+
+.PHONY: all parallel test bench calibrate clean libicm.a
 
 all:
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(OUT) $(SRC) $(LDFLAGS)
@@ -64,35 +97,55 @@ test: all
 bench: all
 	nice -20 ./$(OUT) quick
 
+# ── Tools (link against libicm.a) ──────────────────────────────
+
+contour_1s: $(LIBICM)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tools/contour_1s.c $(LIBICM) $(LDFLAGS)
+
+contour_1s_par: $(BUILD_DIR)/libicm_omp.a
+	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -o $@ tools/contour_1s.c $(BUILD_DIR)/libicm_omp.a $(LDFLAGS) $(OMP_LDFLAGS)
+
 calibrate:
 	$(CC) $(CFLAGS) $(INCLUDES) -o calibrate tools/calibrate.c $(LDFLAGS)
 	@echo "Run: ./calibrate (then copy fft_config.h + fftw_wisdom.dat to devices/$(DEVICE)/)"
 
-$(CPU_REF_OBJ): src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h
-	mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -c src/icm.c -o $(CPU_REF_OBJ)
+# ── GPU targets ─────────────────────────────────────────────────
+
+# CPU reference object for GPU benchmarks (cross-check against CPU results)
+CPU_REF_OBJ = $(BUILD_DIR)/icm_cpu_ref.o
+
+$(CPU_REF_OBJ): src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+
+CUFFTDX_FLAGS = $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY
+GPU_INCLUDES = $(INCLUDES) -Idevices/b200
 
 bench_gpu: bench/bench_gpu.cu src/icm_gpu.cu src/icm_gpu.h devices/b200/gpu_fft_config.h $(CPU_REF_OBJ)
-	$(NVCC) $(CUDA_FLAGS) $(INCLUDES) -Idevices/b200 -o $@ bench/bench_gpu.cu src/icm_gpu.cu $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -o $@ bench/bench_gpu.cu src/icm_gpu.cu $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
 
 bench_gpu_fused: bench/bench_gpu.cu src/icm_gpu.cu src/icm_gpu.h devices/b200/gpu_fft_config.h $(CPU_REF_OBJ)
-	$(NVCC) $(CUDA_FLAGS) $(INCLUDES) -Idevices/b200 $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY -o $@ bench/bench_gpu.cu src/icm_gpu.cu $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) $(CUFFTDX_FLAGS) -o $@ bench/bench_gpu.cu src/icm_gpu.cu $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
 
 calibrate_gpu: tools/calibrate_gpu.cu src/icm_gpu.cu src/icm_gpu.h devices/b200/gpu_fft_config.h
-	$(NVCC) $(CUDA_FLAGS) $(INCLUDES) -Idevices/b200 $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY -o $@ tools/calibrate_gpu.cu src/icm_gpu.cu $(CUDA_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) $(CUFFTDX_FLAGS) -o $@ tools/calibrate_gpu.cu src/icm_gpu.cu $(CUDA_LIBS)
 
 heatmap_gpu: tools/heatmap_gpu.cu src/icm_gpu.cu src/icm_gpu.h devices/b200/gpu_fft_config.h
-	$(NVCC) $(CUDA_FLAGS) $(INCLUDES) -Idevices/b200 $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY -o $@ tools/heatmap_gpu.cu src/icm_gpu.cu $(CUDA_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) $(CUFFTDX_FLAGS) -o $@ tools/heatmap_gpu.cu src/icm_gpu.cu $(CUDA_LIBS)
 
 push_limit_gpu: tools/push_limit_gpu.cu src/icm_gpu.cu src/icm_gpu.h devices/b200/gpu_fft_config.h
-	$(NVCC) $(CUDA_FLAGS) $(INCLUDES) -Idevices/b200 $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY -o $@ tools/push_limit_gpu.cu src/icm_gpu.cu $(CUDA_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) $(CUFFTDX_FLAGS) -o $@ tools/push_limit_gpu.cu src/icm_gpu.cu $(CUDA_LIBS)
 
 validate_planner_gpu: tools/validate_planner_gpu.cu src/icm_gpu.cu src/icm_gpu.h devices/b200/gpu_fft_config.h
-	$(NVCC) $(CUDA_FLAGS) $(INCLUDES) -Idevices/b200 $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY -o $@ tools/validate_planner_gpu.cu src/icm_gpu.cu $(CUDA_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) $(CUFFTDX_FLAGS) -o $@ tools/validate_planner_gpu.cu src/icm_gpu.cu $(CUDA_LIBS)
+
+.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu campaign_b200
 
 campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	bash tools/run_b200_campaign.sh
 
+# ── Clean ───────────────────────────────────────────────────────
+
 clean:
-	rm -f $(OUT) calibrate bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
+	rm -f $(OUT) calibrate contour_1s contour_1s_par
+	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	rm -rf $(BUILD_DIR)

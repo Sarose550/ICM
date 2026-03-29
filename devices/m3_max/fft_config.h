@@ -153,14 +153,6 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 /* L2_CACHE_SIZE: per-core L2 in bytes. Used for batched linear checkpointing.
  * M3 Max has 32MB shared L2 per cluster — streaming at 400GB/s is fast enough
  * that checkpointing adds overhead without cache benefit. Set high to disable. */
-/* K_CROSS: linear→hybrid crossover. Measured via ./bench_grid crossover. */
-#ifndef K_CROSS_BATCHED
-#define K_CROSS_BATCHED 120  /* for n >= 2048 (batched linear BQ=8 + vDSP) */
-#endif
-#ifndef K_CROSS_PLAIN
-#define K_CROSS_PLAIN 70     /* for n < 2048 (non-batched linear) */
-#endif
-
 #ifndef L2_CACHE_SIZE
 #define L2_CACHE_SIZE 33554432  /* 32MB — effectively disables batched checkpointing */
 #endif

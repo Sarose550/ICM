@@ -5,6 +5,8 @@ bench_avx512
 bench_topk
 calibrate
 calibrate_B
+contour_1s
+contour_1s_par
 bench_gpu
 bench_gpu_fused
 calibrate_gpu

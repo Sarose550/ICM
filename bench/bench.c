@@ -2,8 +2,9 @@
  * bench.c — ICM benchmark harness, correctness verification, and tuning tools
  *
  * This file includes icm.c directly (single compilation unit) so it can
- * access internal types (TreeCtx, HybridCtx, etc.) for per-engine benchmarking.
- * External users should link against icm.c and use only the icm.h API.
+ * access internal types (TreeCtx, HybridCtx, FFTCache, etc.) for per-engine
+ * benchmarking and FFT profiling. This is the only file that does this —
+ * all other tools link against libicm.a and use only the icm.h public API.
  *
  * Compile (serial, macOS / Apple Silicon):
  *   gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \

@@ -237,9 +237,41 @@ static void write_config(const char *filename) {
     }
     fprintf(f, "\n};\n\n");
 
-    /* Bandwidth constants for roofline cost model in select_engine() */
+    /* ── Device constants (all #ifndef guarded for manual override) ── */
     fprintf(f,
-"/* ── Streaming bandwidth at each cache level (measured by calibrate) ── */\n"
+"/* ── Device constants ── */\n"
+"/* Measure via: ./bench_grid profile (schoolbook row for FMA_NS,\n"
+" *   paired correlate for PAIRED_CACHED_CORR_RATIO and INDEP_PAIR_RATIO,\n"
+" *   overhead table for FFT_OVERHEAD_NS) */\n"
+"#ifndef FMA_NS\n"
+"#define FMA_NS 0.25  /* ns per scalar FMA — re-measure via ./bench_grid profile */\n"
+"#endif\n"
+"#ifndef FFT_OVERHEAD_NS\n"
+"#define FFT_OVERHEAD_NS 40.0  /* per-call FFT overhead — re-measure via ./bench_grid profile */\n"
+"#endif\n"
+"#ifndef PAIRED_CACHED_CORR_RATIO\n"
+"#define PAIRED_CACHED_CORR_RATIO 1.03  /* paired cached correlate / full pipeline */\n"
+"#endif\n"
+"#ifndef INDEP_PAIR_RATIO\n"
+"#define INDEP_PAIR_RATIO 1.25  /* correlate_fft_pair / full pipeline */\n"
+"#endif\n"
+"#ifndef POLYMUL_FMA_NS\n"
+"#define POLYMUL_FMA_NS 0.13  /* effective polymul FMA cost (memory-bound) */\n"
+"#endif\n\n");
+
+    /* Cache and bandwidth constants */
+    fprintf(f,
+"/* ── Cache hierarchy ── */\n"
+"#ifndef L2_CACHE_SIZE\n"
+"#define L2_CACHE_SIZE 1048576  /* per-core L2 in bytes — update for this hardware */\n"
+"#endif\n"
+"#ifndef L3_CACHE_SIZE\n"
+"#define L3_CACHE_SIZE 33554432  /* shared L3 in bytes — update for this hardware */\n"
+"#endif\n\n");
+
+    /* Bandwidth constants from measurement */
+    fprintf(f,
+"/* ── Streaming bandwidth (measured by calibrate) ── */\n"
 "#ifndef L2_BW_GBS\n"
 "#define L2_BW_GBS %.1f\n"
 "#endif\n"
@@ -248,32 +280,15 @@ static void write_config(const char *filename) {
 "#endif\n"
 "#ifndef DRAM_BW_GBS\n"
 "#define DRAM_BW_GBS %.1f\n"
-"#endif\n"
-"#ifndef L3_CACHE_SIZE\n"
-"#define L3_CACHE_SIZE 33554432  /* 32MB — update for this hardware */\n"
 "#endif\n\n",
         bw_l2_gbs, bw_l3_gbs, bw_dram_gbs);
 
-    /* best_fft_config_joint() — NOTE: constants below must be tuned per-device.
-     * Run ./bench_grid profile (measure_phase_split) to get the paired correlate
-     * cost ratio. On M3 Max this is 1.03. On other hardware, re-measure. */
+    /* best_fft_config_joint() — 6-arg version with p_eff for input-wrap cost */
     fprintf(f,
+"/* ── Cost model functions ── */\n\n"
 "/* Joint optimization of build + paired cached correlate at one shared FFT size.\n"
-" * Constants derived from measure_phase_split() — re-run on this hardware.\n"
-" * PAIRED_CACHED_CORR_RATIO: cost of paired cached correlate relative to one full\n"
-" *   FFT pipeline. Measured as fwd + 2×(pw+ifft) relative to 2×fwd+pw+ifft.\n"
-" *   On M3 Max: (0.30 + 2×0.365) / 1.0 = 1.03.\n"
-" * FMA_NS: nanoseconds per scalar FMA. Schoolbook and correction loops use this.\n"
-" *   On M3 Max (NEON, 2-wide): 0.25. On Zen 4 (AVX-512, 8-wide): measure. */\n"
-"#ifndef PAIRED_CACHED_CORR_RATIO\n"
-"#define PAIRED_CACHED_CORR_RATIO 1.03  /* re-measure via ./bench_grid profile */\n"
-"#endif\n"
-"#ifndef FMA_NS\n"
-"#define FMA_NS 0.25  /* re-measure via schoolbook benchmark */\n"
-"#endif\n\n");
-
-    fprintf(f,
-"static double best_fft_config_joint(int build_conv, int corr_conv,\n"
+" * p_eff = build_conv/2 + 1 (polynomial size at this level) for input-wrap cost. */\n"
+"static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,\n"
 "                                     int *out_size, int *out_build_m, int *out_corr_m) {\n"
 "    int max_conv = (build_conv > corr_conv) ? build_conv : corr_conv;\n"
 "    int min_size = max_conv / 2 + 1;\n"
@@ -291,10 +306,11 @@ static void write_config(const char *filename) {
 "        if (S < min_size) continue;\n"
 "        int mb = (S >= build_conv) ? 0 : build_conv - S;\n"
 "        int mc = (S >= corr_conv) ? 0 : corr_conv - S;\n"
+"        int corr_input_wrap = mc * p_eff;\n"
 "        double cost = calib_times_ns[i]\n"
 "                    + (double)(mb+1)*(mb+1) * FMA_NS\n"
 "                    + calib_times_ns[i] * PAIRED_CACHED_CORR_RATIO\n"
-"                    + 2.0 * (double)(mc+1)*(mc+1) * FMA_NS;\n"
+"                    + 2.0 * ((double)(mc+1)*(mc+1) + corr_input_wrap) * FMA_NS;\n"
 "        if (cost < best_cost) {\n"
 "            best_cost = cost;\n"
 "            *out_size = S;\n"
@@ -305,9 +321,11 @@ static void write_config(const char *filename) {
 "    return best_cost;\n"
 "}\n\n");
 
-    /* best_fft_config() */
+    /* best_fft_config() — 4-arg version with len_P for input-wrap cost */
     fprintf(f,
-"static void best_fft_config(int L, int *out_size, int *out_wrap_m) {\n"
+"/* For a needed convolution length L, find the fastest FFT size.\n"
+" * len_P: polynomial size for input-wrap cost (pass 0 for pure convolution). */\n"
+"static void best_fft_config(int L, int *out_size, int *out_wrap_m, int len_P) {\n"
 "    int lo = 0, hi = N_CALIBRATED_SIZES - 1;\n"
 "    int half_L = L > 1 ? L / 2 : 1;\n"
 "    while (lo < hi) { int mid = (lo+hi)>>1; if (calib_sizes[mid] < half_L) lo = mid+1; else hi = mid; }\n"
@@ -321,7 +339,7 @@ static void write_config(const char *filename) {
 "        if (S > 2 * L) break;\n"
 "        if (S < min_size) continue;\n"
 "        int m = (S >= L) ? 0 : L - S;\n"
-"        double correction = (double)(m+1) * (m+1) * FMA_NS;\n"
+"        double correction = ((double)(m+1) * (m+1) + (double)m * len_P) * FMA_NS;\n"
 "        double cost = calib_times_ns[i] + correction;\n"
 "        if (cost < best_cost) {\n"
 "            best_cost = cost;\n"
@@ -355,11 +373,11 @@ int main(int argc, char **argv) {
     printf("Done. Next steps:\n");
     printf("  1. cp fft_config.h devices/<DEVICE>/fft_config.h\n");
     printf("  2. cp fftw_wisdom.dat devices/<DEVICE>/fftw_wisdom.dat\n");
-    printf("  3. make DEVICE=<DEVICE>\n");
-    printf("  4. ./bench_grid profile   # measure FFT overhead + phase split\n");
-    printf("  5. Update FMA_NS and PAIRED_CACHED_CORR_RATIO in fft_config.h\n");
-    printf("  6. ./bench_grid crossover # find linear→hybrid crossover\n");
-    printf("  7. ./bench_grid verify    # confirm correctness\n");
-    printf("  8. ./bench_grid           # full benchmark\n");
+    printf("  3. make DEVICE=<DEVICE> && ./bench_grid verify\n");
+    printf("  4. ./bench_grid profile   # measure device constants\n");
+    printf("  5. Update #defines in fft_config.h with measured values:\n");
+    printf("     FMA_NS, FFT_OVERHEAD_NS, PAIRED_CACHED_CORR_RATIO,\n");
+    printf("     INDEP_PAIR_RATIO, L2_CACHE_SIZE, L3_CACHE_SIZE\n");
+    printf("  6. ./bench_grid verify && ./bench_grid\n");
     return 0;
 }

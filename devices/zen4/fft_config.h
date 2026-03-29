@@ -129,14 +129,6 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
  *   On M3 Max: (0.30 + 2×0.365) / 1.0 = 1.03.
  * FMA_NS: nanoseconds per scalar FMA. Schoolbook and correction loops use this.
  *   On M3 Max (NEON, 2-wide): 0.25. On Zen 4 (AVX-512, 8-wide): measure. */
-/* K_CROSS: linear→hybrid crossover. Measured via ./bench_grid crossover. */
-#ifndef K_CROSS_BATCHED
-#define K_CROSS_BATCHED 150  /* for n >= 2048 (batched linear with BQ=8 AVX-512) */
-#endif
-#ifndef K_CROSS_PLAIN
-#define K_CROSS_PLAIN 95     /* for n < 2048 (non-batched linear) */
-#endif
-
 /* L2_CACHE_SIZE: per-core L2 in bytes. Zen 4 has 1MB/core.
  * Used for batched linear checkpointing — segment must fit in L2. */
 #ifndef L2_CACHE_SIZE

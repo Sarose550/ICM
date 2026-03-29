@@ -7,21 +7,16 @@
  *
  * Outputs CSV to stdout. Progress to stderr.
  *
- * Build (serial):
- *   gcc -O3 -march=znver4 -Isrc -Idevices/zen4 \
- *       -I/usr/local/aocl-fftw/include -L/usr/local/aocl-fftw/lib \
- *       -Wl,-rpath,/usr/local/aocl-fftw/lib \
- *       -o contour_1s tools/contour_1s.c -lfftw3 -lm -ldl
- *
- * Build (parallel):
- *   gcc -O3 -march=znver4 -fopenmp -Isrc -Idevices/zen4 \
- *       -I/usr/local/aocl-fftw/include -L/usr/local/aocl-fftw/lib \
- *       -Wl,-rpath,/usr/local/aocl-fftw/lib \
- *       -o contour_1s_par tools/contour_1s.c -lfftw3 -lfftw3_threads -lm -ldl
- *   OMP_NUM_THREADS=16 ./contour_1s_par
+ * Build: make contour_1s (serial) or make contour_1s_par (parallel)
+ * Links against libicm.a — does not #include icm.c.
  */
 
-#include "icm.c"
+#include "icm.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
 
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -191,7 +186,7 @@ static void run_heatmap(int measure_mem) {
             make_random_stacks(n, S, 42);
 
             /* Determine engine via select_engine */
-            int B = select_engine(n, k);
+            int B = icm_select_engine(n, k);
             const char *engine = (B > 0) ? "hybrid" : "linear";
 
             /* Adaptive reps: more reps for fast points */
@@ -313,7 +308,7 @@ static void run_contour(void) {
         int eff_max = max_n < alloc_n ? max_n : alloc_n;
         int n_max = find_n_max(k, target_sec, &time_sec, S, payout, equity, eff_max);
 
-        int B = select_engine(n_max, k);
+        int B = icm_select_engine(n_max, k);
         const char *engine = (B > 0) ? "hybrid" : "linear";
 
         printf("%d,%d,%.0f,%s,%d\n", k, n_max, time_sec * 1000.0, engine, B);

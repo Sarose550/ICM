@@ -75,6 +75,15 @@ double icm_run_linear_batched(int n, const double *S, int Q,
 #define ICM_ENGINE_LINEAR 1
 #define ICM_ENGINE_HYBRID 2
 
+/* ── Dispatch ────────────────────────────────────────────────── */
+
+/* Engine dispatch: returns optimal block size B if hybrid wins, 0 if linear wins.
+ * Callers can use this to display which engine will be selected for a given (n,k). */
+int icm_select_engine(int n, int k);
+
+/* Select optimal hybrid block size for (n, k). */
+int icm_select_best_B(int n, int k);
+
 /* ── Diagnostic / profiling ──────────────────────────────────── */
 
 /* Measure per-call FFT overhead (prints to stdout). */
