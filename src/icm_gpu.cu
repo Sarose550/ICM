@@ -49,8 +49,9 @@
 
 namespace {
 
-constexpr int MAX_B_CANDIDATES = 45;
+constexpr int MAX_B_CANDIDATES = 48;
 constexpr int kBCandidates[MAX_B_CANDIDATES] = {
+    1, 2, 4,
     8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192,
     208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512,
     576, 640, 704, 768, 832, 896, 960, 1024, 1152, 1280, 1536, 1792,
@@ -788,11 +789,18 @@ static int pick_fft_size_for_conv(const std::vector<int> &smooth, int conv_len) 
 }
 
 static double tree_school_ns_per_fma() {
-    /* GPU_SCHOOL_FMA_NS is measured from a pure FMA stream and can materially
-     * under-estimate full polynomial schoolbook kernels (register pressure,
-     * indexing, and memory traffic). Clamp by the measured block-build FMA cost
-     * so tier assignment does not over-predict schoolbook. */
-    return std::max(GPU_SCHOOL_FMA_NS, GPU_BLOCK_BUILD_NS_PER_FMA);
+    /* Use calibrated parallel schoolbook rate if available, otherwise fall back
+     * to GPU_SCHOOL_FMA_NS (pure FMA stream, lower bound).
+     * NOTE: Do NOT clamp by GPU_BLOCK_BUILD_NS_PER_FMA — the block build is a
+     * serial recurrence (latency-limited), while the schoolbook kernel is
+     * embarrassingly parallel (throughput-limited). Using the serial rate here
+     * over-penalizes schoolbook levels by ~6x, preventing the cost model from
+     * selecting small B values (B=1,2,4) that eliminate the serial bottleneck. */
+#ifdef GPU_TREE_SCHOOL_NS_PER_FMA
+    return GPU_TREE_SCHOOL_NS_PER_FMA;
+#else
+    return GPU_SCHOOL_FMA_NS;
+#endif
 }
 
 static double model_ns_per_fma_override(const char *env_name, double fallback) {
@@ -1025,6 +1033,32 @@ __global__ static void k_set_root_g(double *g_root, int root_gsz, const double *
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= root_gsz) return;
     g_root[i] = (i < k) ? payout[i] : 0.0;
+}
+
+/* B=1 leaf setup: each player is a leaf polynomial [a[i], 1-a[i]] */
+__global__ static void k_set_leaves_b1(const double *a_sorted, int n, int N_tree,
+                                       int leaf_psz, double *leaves) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N_tree) return;
+    double *leaf = leaves + (size_t)i * (size_t)leaf_psz;
+    if (i < n) {
+        double ai = a_sorted[i];
+        leaf[0] = ai;
+        if (leaf_psz > 1) leaf[1] = 1.0 - ai;
+        for (int m = 2; m < leaf_psz; ++m) leaf[m] = 0.0;
+    } else {
+        /* Padding leaf = 1 (identity for multiplication) */
+        leaf[0] = 1.0;
+        for (int m = 1; m < leaf_psz; ++m) leaf[m] = 0.0;
+    }
+}
+
+/* B=1 leaf extract: inner[i] = g_leaf[i][0] (no synthetic division needed) */
+__global__ static void k_leaf_extract_b1(int n, const double *g_leaf,
+                                         int leaf_psz, double *inner_sorted) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    inner_sorted[i] = g_leaf[(size_t)i * (size_t)leaf_psz];
 }
 
 __global__ static void k_block_build(const double *a_sorted, int n, int B,
@@ -2133,9 +2167,11 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     if (!alloc_device(plan, (void **)&plan->d_equity, (size_t)plan->n * sizeof(double), plan->stream_compute)) return false;
     if (!alloc_device(plan, (void **)&plan->d_payout, (size_t)plan->k * sizeof(double), plan->stream_compute)) return false;
 
-    /* Legacy single-Q block_prods */
-    size_t block_prod_bytes = (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double);
-    if (!alloc_device(plan, (void **)&plan->d_block_prods, block_prod_bytes, plan->stream_compute)) return false;
+    /* Legacy single-Q block_prods (not needed for B=1) */
+    size_t block_prod_bytes = (plan->B > 1) ? (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double) : 0;
+    if (block_prod_bytes > 0) {
+        if (!alloc_device(plan, (void **)&plan->d_block_prods, block_prod_bytes, plan->stream_compute)) return false;
+    }
 
     /* Q-batch buffers */
     if (qb > 1) {
@@ -3001,12 +3037,21 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
             k_compute_a<<<blocks_n, threads, 0, plan->stream_compute>>>(
                 plan->d_S_sorted, plan->d_a_sorted[curr], plan->n, logv);
         }
-        int threads_block = 256;
-        size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-        k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
-            plan->d_a_sorted[curr], plan->n, plan->B,
-            plan->nblocks, plan->N_tree, plan->psz[0],
-            plan->d_poly_levels[0], plan->d_block_prods);
+
+        /* Block build (or B=1 leaf setup) */
+        if (plan->B <= 1) {
+            int bl = (plan->N_tree + 255) / 256;
+            k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
+                plan->d_a_sorted[curr], plan->n, plan->N_tree,
+                plan->psz[0], plan->d_poly_levels[0]);
+        } else {
+            int threads_block = 256;
+            size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
+            k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
+                plan->d_a_sorted[curr], plan->n, plan->B,
+                plan->nblocks, plan->N_tree, plan->psz[0],
+                plan->d_poly_levels[0], plan->d_block_prods);
+        }
 
         for (int ell = 1; ell < plan->L - 1; ++ell) {
             auto &lp = plan->levels[ell];
@@ -3028,12 +3073,19 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
             else { if (!run_prop_level_fft(plan, ell)) return false; }
         }
 
-        int threads_leaf = plan->B;
-        if (threads_leaf > 1024) threads_leaf = 1024;
-        k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
-            plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
-            plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
-            plan->g_needed[0], plan->k, plan->d_inner_sorted);
+        /* Leaf extract (or B=1 direct read) */
+        if (plan->B <= 1) {
+            int bl = (plan->n + 255) / 256;
+            k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
+                plan->n, plan->d_g_levels[0], plan->psz[0], plan->d_inner_sorted);
+        } else {
+            int threads_leaf = plan->B;
+            if (threads_leaf > 1024) threads_leaf = 1024;
+            k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
+                plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
+                plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
+                plan->g_needed[0], plan->k, plan->d_inner_sorted);
+        }
 
         double inv_v = exp(-logv);
         k_accumulate_equity<<<blocks_n, threads, 0, plan->stream_compute>>>(
@@ -3050,14 +3102,23 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
 
+    /* Block build (or B=1 leaf setup) */
     double t0 = now_ns_host();
-    int threads_block = 256;
-    size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-    k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
-        plan->d_a_sorted[curr], plan->n, plan->B,
-        plan->nblocks, plan->N_tree, plan->psz[0],
-        plan->d_poly_levels[0], plan->d_block_prods);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    if (plan->B <= 1) {
+        int bl = (plan->N_tree + 255) / 256;
+        k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
+            plan->d_a_sorted[curr], plan->n, plan->N_tree,
+            plan->psz[0], plan->d_poly_levels[0]);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    } else {
+        int threads_block = 256;
+        size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
+        k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
+            plan->d_a_sorted[curr], plan->n, plan->B,
+            plan->nblocks, plan->N_tree, plan->psz[0],
+            plan->d_poly_levels[0], plan->d_block_prods);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
     if (!CUDA_OK(cudaStreamSynchronize(plan->stream_compute))) return false;
     *block_ns += (now_ns_host() - t0);
 
@@ -3095,14 +3156,22 @@ static bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
         else *tree_prop_cached_ns += dt;
     }
 
+    /* Leaf extract (or B=1 direct read) */
     t0 = now_ns_host();
-    int threads_leaf = plan->B;
-    if (threads_leaf > 1024) threads_leaf = 1024;
-    k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
-        plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
-        plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
-        plan->g_needed[0], plan->k, plan->d_inner_sorted);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    if (plan->B <= 1) {
+        int bl = (plan->n + 255) / 256;
+        k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
+            plan->n, plan->d_g_levels[0], plan->psz[0], plan->d_inner_sorted);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    } else {
+        int threads_leaf = plan->B;
+        if (threads_leaf > 1024) threads_leaf = 1024;
+        k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
+            plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
+            plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
+            plan->g_needed[0], plan->k, plan->d_inner_sorted);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
     if (!CUDA_OK(cudaStreamSynchronize(plan->stream_compute))) return false;
     *leaf_ns += (now_ns_host() - t0);
 
@@ -3144,10 +3213,17 @@ static bool create_graph_stub(GpuPlan *plan) {
             plan->d_S_sorted, plan->d_a_sorted[curr], plan->n, plan->d_graph_logv[curr]);
         if (!CUDA_OK(cudaGetLastError())) return false;
 
-        k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
-            plan->d_a_sorted[curr], plan->n, plan->B,
-            plan->nblocks, plan->N_tree, plan->psz[0],
-            plan->d_poly_levels[0], plan->d_block_prods);
+        if (plan->B <= 1) {
+            int bl = (plan->N_tree + 255) / 256;
+            k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
+                plan->d_a_sorted[curr], plan->n, plan->N_tree,
+                plan->psz[0], plan->d_poly_levels[0]);
+        } else {
+            k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
+                plan->d_a_sorted[curr], plan->n, plan->B,
+                plan->nblocks, plan->N_tree, plan->psz[0],
+                plan->d_poly_levels[0], plan->d_block_prods);
+        }
         if (!CUDA_OK(cudaGetLastError())) return false;
 
         for (int ell = 1; ell < plan->L - 1; ++ell) {
@@ -3172,10 +3248,16 @@ static bool create_graph_stub(GpuPlan *plan) {
             if (!ok) return false;
         }
 
-        k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
-            plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
-            plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
-            plan->g_needed[0], plan->k, plan->d_inner_sorted);
+        if (plan->B <= 1) {
+            int bl = (plan->n + 255) / 256;
+            k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
+                plan->n, plan->d_g_levels[0], plan->psz[0], plan->d_inner_sorted);
+        } else {
+            k_leaf_extract<<<plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
+                plan->d_a_sorted[curr], plan->n, plan->B, plan->nblocks,
+                plan->d_block_prods, plan->d_g_levels[0], plan->psz[0],
+                plan->g_needed[0], plan->k, plan->d_inner_sorted);
+        }
         if (!CUDA_OK(cudaGetLastError())) return false;
 
         k_accumulate_equity_scaled<<<blocks_n, threads, 0, plan->stream_compute>>>(
