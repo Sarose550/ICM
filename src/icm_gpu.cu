@@ -3366,29 +3366,47 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         return nullptr;
     }
 
-    /* Determine q_batch: default Q_BATCH_DEFAULT, capped by available VRAM estimate.
-     * Disable for graph mode (graphs use the single-Q path). */
+    /* Determine q_batch via cost model: pick QB that minimizes total time
+     * subject to VRAM constraint. QB helps at upper tree levels where
+     * nn[ell] is small (wider cuFFT batches improve GPU utilization).
+     * At large n, nn[ell] is already large, so QB>1 adds VRAM cost
+     * without proportional benefit. */
     {
-        int qb = Q_BATCH_DEFAULT;
         const char *qb_env = getenv("ICM_GPU_Q_BATCH");
+        int qb_override = 0;
         if (qb_env && qb_env[0]) {
             int v = atoi(qb_env);
-            if (v >= 1 && v <= Q_BATCH_MAX) qb = v;
+            if (v >= 1 && v <= Q_BATCH_MAX) qb_override = v;
         }
-        /* VRAM budget check: estimate per-Q-point overhead */
-        if (qb > 1) {
-            size_t per_q_bytes = 0;
-            for (int ell = 0; ell < plan->L; ++ell) {
-                per_q_bytes += 2 * (size_t)plan->nn[ell] * (size_t)plan->psz[ell] * sizeof(double);
+
+        /* Compute per-Q-point VRAM overhead */
+        size_t per_q_bytes = 0;
+        for (int ell = 0; ell < plan->L; ++ell)
+            per_q_bytes += 2 * (size_t)plan->nn[ell] * plan->psz[ell] * sizeof(double);
+        per_q_bytes += (size_t)plan->N_tree * (plan->B + 1) * sizeof(double);
+        per_q_bytes += 2 * (size_t)plan->n * sizeof(double); /* a + inner */
+        size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.60);
+
+        int best_qb = 1;
+        if (!plan->opts.enable_graphs && !qb_override) {
+            /* Evaluate QB candidates: the benefit is proportional to how many
+             * tree levels have nn[ell] < GPU_SM_COUNT (underutilized). */
+            int underutil_levels = 0;
+            for (int ell = 1; ell < plan->L - 1; ++ell) {
+                if (plan->levels[ell].use_fft && plan->nn[ell] < GPU_SM_COUNT)
+                    underutil_levels++;
             }
-            per_q_bytes += (size_t)plan->N_tree * (size_t)(plan->B + 1) * sizeof(double);
-            per_q_bytes += (size_t)plan->n * sizeof(double); /* a_sorted */
-            per_q_bytes += (size_t)plan->n * sizeof(double); /* inner_sorted */
-            /* Cap so total q_batch overhead does not exceed 60% of VRAM */
-            size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.60);
-            while (qb > 1 && (size_t)qb * per_q_bytes > budget) --qb;
+            /* If most levels already have enough parallelism, QB=1 is optimal */
+            if (underutil_levels >= 2) {
+                for (int qb_try = Q_BATCH_MAX; qb_try >= 2; qb_try /= 2) {
+                    if ((size_t)qb_try * per_q_bytes <= budget) {
+                        best_qb = qb_try;
+                        break;
+                    }
+                }
+            }
         }
-        /* Graphs use single-Q path; disable batching */
+        int qb = qb_override ? qb_override : best_qb;
         if (plan->opts.enable_graphs) qb = 1;
         plan->q_batch = qb;
     }
