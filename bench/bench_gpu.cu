@@ -123,7 +123,7 @@ static int run_verify(int extended) {
                 IcmGpuOptions opts{};
                 opts.device_id = 0;
                 opts.use_cufftdx = 1;
-                opts.enable_graphs = 1;
+                opts.enable_graphs = 0;
                 opts.enable_q_pipeline = 1;
                 opts.memory_strategy = 0;
                 opts.force_uncached_fused_levels = -1;
@@ -206,7 +206,7 @@ static int run_single_bench(int argc, char **argv) {
     IcmGpuOptions opts{};
     opts.device_id = 0;
     opts.use_cufftdx = 1;
-    opts.enable_graphs = 1;
+    opts.enable_graphs = 0;
     opts.enable_q_pipeline = 1;
     opts.memory_strategy = 0;
     opts.force_uncached_fused_levels = -1;
@@ -255,7 +255,7 @@ static int run_quick_grid() {
             IcmGpuOptions opts{};
             opts.device_id = 0;
             opts.use_cufftdx = 1;
-            opts.enable_graphs = 1;
+            opts.enable_graphs = 0;
             opts.enable_q_pipeline = 1;
             opts.memory_strategy = 0;
             opts.force_uncached_fused_levels = -1;

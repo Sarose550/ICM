@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
                     IcmGpuOptions opts{};
                     opts.device_id = 0;
                     opts.use_cufftdx = 1;
-                    opts.enable_graphs = 1;
+                    opts.enable_graphs = 0;
                     opts.enable_q_pipeline = 1;
                     opts.memory_strategy = 3;
                     opts.force_uncached_fused_levels = M;
