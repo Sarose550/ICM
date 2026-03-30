@@ -125,11 +125,31 @@ def plot_contour(serial_path, parallel_path, out_path):
     if p_hyb:
         ax.plot(*zip(*p_hyb), 's', color=PARALLEL_COLOR, markersize=6, zorder=5)
 
-    # n = k reference line
-    k_range = np.logspace(np.log10(min(ks)), np.log10(max(ks)), 100)
-    ax.plot(k_range, k_range, '--', color='gray', alpha=0.4, linewidth=1, zorder=2)
-    ax.text(max(ks) * 0.7, max(ks) * 0.5, 'n = k', fontsize=9, color='gray',
-            alpha=0.6, rotation=35)
+    # n = k reference line (prominent, full range)
+    all_vals = np.concatenate([ks, ns, kp, np_])
+    lo, hi = min(all_vals) * 0.5, max(all_vals) * 2
+    k_diag = np.logspace(np.log10(lo), np.log10(hi), 200)
+    ax.plot(k_diag, k_diag, '--', color='#666666', alpha=0.6, linewidth=1.5, zorder=2)
+    # Label near the middle of visible range
+    mid = np.sqrt(lo * hi)
+    ax.text(mid * 0.8, mid * 0.55, 'n = k', fontsize=10, color='#666666',
+            alpha=0.7, rotation=38)
+
+    # Mark intersection of n=k line with contours (1-second k=n threshold)
+    for label, k_arr, n_arr, color in [('serial', ks, ns, SERIAL_COLOR),
+                                        ('parallel', kp, np_, PARALLEL_COLOR)]:
+        # Find where contour crosses n=k (interpolate)
+        for i in range(len(k_arr) - 1):
+            # contour: n_arr[i] at k_arr[i]. n=k line: n=k.
+            # crossing when n_arr goes from > k to < k
+            if n_arr[i] >= k_arr[i] and n_arr[i+1] < k_arr[i+1]:
+                # Linear interp in log space
+                frac = (np.log(k_arr[i]) - np.log(n_arr[i])) / \
+                       ((np.log(n_arr[i+1]) - np.log(n_arr[i])) - (np.log(k_arr[i+1]) - np.log(k_arr[i])))
+                k_cross = np.exp(np.log(k_arr[i]) + frac * (np.log(k_arr[i+1]) - np.log(k_arr[i])))
+                ax.plot(k_cross, k_cross, '*', color=color, markersize=12, zorder=10,
+                        markeredgecolor='white', markeredgewidth=0.8)
+                break
 
     # Engine crossover vertical line (serial)
     for i in range(len(es) - 1):
@@ -380,11 +400,24 @@ def plot_gpu_contour(heatmap_path, out_path):
     ax.plot(contour_k, contour_n, 'o-', color=GPU_COLOR, markersize=6, linewidth=2)
     ax.fill_between(contour_k, contour_n, alpha=0.08, color=GPU_COLOR)
 
-    # n = k reference
-    k_range = np.logspace(np.log10(min(contour_k)), np.log10(max(contour_k)), 100)
-    ax.plot(k_range, k_range, '--', color='gray', alpha=0.4, linewidth=1, zorder=2)
-    ax.text(max(contour_k) * 0.5, max(contour_k) * 0.35, 'n = k',
-            fontsize=9, color='gray', alpha=0.6, rotation=35)
+    # n = k reference line (prominent)
+    lo = min(min(contour_k), min(contour_n)) * 0.5
+    hi = max(max(contour_k), max(contour_n)) * 2
+    k_diag = np.logspace(np.log10(lo), np.log10(hi), 200)
+    ax.plot(k_diag, k_diag, '--', color='#666666', alpha=0.6, linewidth=1.5, zorder=2)
+    mid = np.sqrt(lo * hi)
+    ax.text(mid * 0.8, mid * 0.55, 'n = k', fontsize=10, color='#666666',
+            alpha=0.7, rotation=38)
+
+    # Mark intersection (1-second k=n threshold)
+    for i in range(len(contour_k) - 1):
+        if contour_n[i] >= contour_k[i] and contour_n[i+1] < contour_k[i+1]:
+            frac = (np.log(contour_k[i]) - np.log(contour_n[i])) / \
+                   ((np.log(contour_n[i+1]) - np.log(contour_n[i])) - (np.log(contour_k[i+1]) - np.log(contour_k[i])))
+            k_cross = np.exp(np.log(contour_k[i]) + frac * (np.log(contour_k[i+1]) - np.log(contour_k[i])))
+            ax.plot(k_cross, k_cross, '*', color=GPU_COLOR, markersize=14, zorder=10,
+                    markeredgecolor='white', markeredgewidth=0.8)
+            break
 
     ax.set_xscale('log')
     ax.set_yscale('log')
