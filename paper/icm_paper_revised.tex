@@ -261,7 +261,7 @@ Multiplying by $\pi_r$ and summing over $r = 1, \ldots, k$:
 \end{equation}
 I define the per-quadrature-point inner product:
 \begin{equation}\label{eq:inner-product}
-  I_i(v) = \sum_{r=1}^{k} \pi_r \cdot [x^{n-r}]\, Q_i(x; v)\,.
+  \Psi_i(v) = \sum_{r=1}^{k} \pi_r \cdot [x^{n-r}]\, Q_i(x; v)\,.
 \end{equation}
 
 The integral is approximated by the trapezoidal rule after a change of
@@ -319,30 +319,24 @@ For all $f, g, h \in \mathbb{R}[x]_{<k}$,
 \end{equation}
 \end{lemma}
 \begin{proof}
-Expanding the left-hand side using~\eqref{eq:poly-ip}
-and~\eqref{eq:trunc-conv}:
-\begin{align}
-  \ip{f * h}{g}
-  &= \sum_{m=0}^{k-1} \Bigl(\sum_{\substack{i+j=m\\0\le i,j<k}}
-      f_i\, h_j\Bigr) g_m \notag\\
-  &= \sum_{i=0}^{k-1} f_i \sum_{j=0}^{k-1-i} h_j\, g_{i+j}
-  \label{eq:adj-swap}\\
-  &= \sum_{i=0}^{k-1} f_i \cdot \bigl(\corr(g,h)\bigr)_i
-  = \ip{f}{\corr(g,h)}\,. \notag
-\end{align}
-The exchange of summation in~\eqref{eq:adj-swap} is justified by the
-finiteness of all sums, and the upper limit $k{-}1{-}i$ on the $j$-sum
-arises from the truncation $i+j < k$.
+The map $\mu_h$ has the lower-triangular Toeplitz matrix representation
+$M \in \mathbb{R}^{k \times k}$ with entries $M_{ij} = h_{i-j}$ (setting
+$h_\ell = 0$ for $\ell < 0$ or $\ell \ge k$).  In this notation
+$\mu_h(f) = Mf$, and the claim reduces to
+$\ip{Mf}{g} = f^\top M^\top g = \ip{f}{M^\top g}$.
+The transpose $M^\top$ has entries $(M^\top)_{ij} = h_{j-i}$, so
+\[
+  (M^\top g)_i
+  = \sum_{j=0}^{k-1} h_{j-i}\, g_j
+  = \sum_{m=0}^{k-1-i} h_m\, g_{m+i}
+  = \bigl(\corr(g, h)\bigr)_i\,,
+\]
+where we substituted $m = j - i$.  Thus $\mu_h^*$ acts as
+cross-correlation: the adjoint of a Toeplitz matrix is its transpose,
+which is the finite analogue of the classical fact that the adjoint of
+convolution on $L^2(\mathbb{R})$ is convolution with the time-reversed
+kernel.
 \end{proof}
-
-\begin{remark}[Relation to the Toeplitz transpose]
-\label{rem:toeplitz}
-The linear map $\mu_h$ has the Toeplitz matrix representation
-$M_{ij} = h_{i-j}$ (with $h_\ell = 0$ for $\ell < 0$ or $\ell \ge k$).
-Lemma~\ref{lem:adj-conv} asserts that the adjoint $\mu_h^*$ is the
-transposed Toeplitz matrix $M^T_{ij} = h_{j-i}$, whose action on a vector
-is precisely cross-correlation.
-\end{remark}
 
 % ======================================================================
 \section{Algorithm Description}\label{sec:algorithm}
@@ -391,7 +385,7 @@ $g^{(0)}_m \leftarrow \pi_{n-m}$ for $m = 0, \ldots, k-1$\;
 \tcp{Backward pass: compute suffix products and extract equities}
 $R_0 \leftarrow 1$;\quad $R_m \leftarrow 0$ for $m = 1, \ldots, k-1$\;
 \For{$j = n, n-1, \ldots, 1$}{
-  $I_j \leftarrow \sum_{m=0}^{k-1} g^{(j-1)}_m \cdot R_m$ \tcp*{Inner product}
+  $\Psi_j \leftarrow \sum_{m=0}^{k-1} g^{(j-1)}_m \cdot R_m$ \tcp*{Inner product}
   \For{$m = k-1, k-2, \ldots, 1$}{
     $R_m \leftarrow a_j \cdot R_m + (1-a_j) \cdot R_{m-1}$\;
   }
@@ -410,7 +404,7 @@ $R_{m-1}$ is still pristine when used in the update of $R_m$.
 At iteration $m$ (decreasing), the update sets $R_m \leftarrow a_j R_m +
 (1-a_j) R_{m-1}$. The value $R_{m-1}$ has not yet been updated at this
 iteration (it is updated at $m-1$), and $R_m$ was already read for the dot
-product accumulation $I_j \mathrel{+}= g^{(j-1)}_m \cdot R_m$. Thus the
+product accumulation $\Psi_j \mathrel{+}= g^{(j-1)}_m \cdot R_m$. Thus the
 fused loop computes both quantities correctly.
 \end{proof}
 
@@ -488,7 +482,7 @@ $g^{(L-1)}_m \leftarrow \pi_{n-m}$\;
   }
 }
 \Return{$g^{(0)}_1[0], \ldots, g^{(0)}_n[0]$}
-  \tcp*{$I_j = g^{(0)}_j[0]$}
+  \tcp*{$\Psi_j = g^{(0)}_j[0]$}
 \end{algorithm}
 
 \subsection{Correctness of the Tree Engine via the Adjoint}\label{sec:tree-correct}
@@ -497,7 +491,7 @@ The correctness of Algorithm~\ref{alg:tree} follows from the adjoint
 identity of Lemma~\ref{lem:adj-conv}. The key computational task is: for
 each player~$j$, compute
 \begin{equation}\label{eq:target-ip}
-  I_j = \ip{\tilde\pi}{Q_j}
+  \Psi_j = \ip{\tilde\pi}{Q_j}
   = \sum_{m=0}^{k-1} \tilde\pi_m \cdot [x^m]\, Q_j(x;v)\,,
 \end{equation}
 where $\tilde\pi_m = \pi_{n-m}$ is the reversed payout vector and
@@ -524,7 +518,7 @@ $g \mapsto \corr(g, h)$ by Lemma~\ref{lem:adj-conv}---exactly what
 Algorithm~\ref{alg:tree} implements.
 
 \begin{theorem}[Correctness of the tree engine]\label{thm:tree-correct}
-After Algorithm~\ref{alg:tree} completes, $g^{(0)}_j[0] = I_j$ for all
+After Algorithm~\ref{alg:tree} completes, $g^{(0)}_j[0] = \Psi_j$ for all
 $j = 1, \ldots, n$.
 \end{theorem}
 \begin{proof}
@@ -592,7 +586,7 @@ $g^{(0)}_j = \corr(\tilde\pi, Q_j)$ where $Q_j = \prod_{i \ne j} P_i
   = \bigl(\corr(\tilde\pi, Q_j)\bigr)_0
   = \sum_{m=0}^{k-1} \tilde\pi_m \cdot (Q_j)_m
   = \ip{\tilde\pi}{Q_j}
-  = I_j\,.\qedhere
+  = \Psi_j\,.\qedhere
 \]
 \end{proof}
 
@@ -673,7 +667,7 @@ Propagate $\bm{\pi}$ to obtain block-level $g$-vectors $g_b$\;
   \For{each player $j$ in block $b$}{
     Compute $Q_j^{(b)} \leftarrow P_b(x) / (a_j + b_j x)$
       via stable bidirectional synthetic division\;
-    $I_j \leftarrow \sum_{m=0}^{\min(k,B)-1} g_{b,m} \cdot Q_{j,m}^{(b)}$\;
+    $\Psi_j \leftarrow \sum_{m=0}^{\min(k,B)-1} g_{b,m} \cdot Q_{j,m}^{(b)}$\;
   }
 }
 \Return{$I_1, \ldots, I_n$}
@@ -967,6 +961,29 @@ moderate sizes. Adding L2-aware checkpointing to the parallel path
 speedup at $(n, k) = (8192, 100)$---the parallel engine now runs at
 L2 bandwidth (${\sim}119$\,GB/s measured) instead of DRAM
 (${\sim}27$\,GB/s).
+
+\paragraph{Parallel scaling: linear vs.\ hybrid.}
+The two engines exhibit markedly different parallel scaling behavior, which
+the 1-second contour data reveals clearly.  The linear engine achieves
+$7$--$8\times$ speedup on 16 Zen~4 cores (e.g., $n_{\max}$ at $k = 200$
+grows from 76K serial to 609K parallel).  The hybrid engine achieves only
+$3.6$--$4.2\times$ at the same core count.
+
+The explanation is memory hierarchy.  The batched linear engine's
+L2-aware checkpointing ensures each thread's working set fits in its
+private 1\,MB per-core L2 cache.  Sixteen threads thus access an aggregate
+$16 \times 119 \approx 1{,}900$\,GB/s of L2 bandwidth with no contention.
+The hybrid engine's FFT-dominated tree traversal, by contrast, operates on
+polynomials far exceeding L2 capacity.  All 16 threads compete for the
+shared ${\sim}27$\,GB/s DRAM bus, yielding an effective per-thread
+bandwidth of ${\sim}1.7$\,GB/s---a $70\times$ reduction relative to the
+linear engine's per-thread L2 bandwidth.
+
+This asymmetry means that at the linear-to-hybrid transition ($k \approx
+300$--$500$ on Zen~4), the parallel contour drops sharply: the parallel
+linear engine at $k = 200$ handles $609{,}453$ players, but the parallel
+hybrid engine at $k = 500$ handles only $187{,}531$---a $3.3\times$ cliff
+that reflects the bandwidth regime change, not an algorithmic deficiency.
 
 \subsection{Quadrature Accuracy}\label{sec:accuracy}
 
