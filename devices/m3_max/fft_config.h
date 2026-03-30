@@ -156,6 +156,20 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef L2_CACHE_SIZE
 #define L2_CACHE_SIZE 33554432  /* 32MB — effectively disables batched checkpointing */
 #endif
+#ifndef L3_CACHE_SIZE
+#define L3_CACHE_SIZE 33554432  /* M3 Max: L2=L3 (32MB shared cluster cache) */
+#endif
+
+/* Streaming bandwidth (M3 Max unified memory, ~400 GB/s peak) */
+#ifndef L2_BW_GBS
+#define L2_BW_GBS 350.0
+#endif
+#ifndef L3_BW_GBS
+#define L3_BW_GBS 350.0  /* Same as L2 on M3 Max (unified cache) */
+#endif
+#ifndef DRAM_BW_GBS
+#define DRAM_BW_GBS 350.0  /* Unified memory — no DRAM penalty */
+#endif
 
 /* AMX FP64 outer-product schoolbook cost model constants.
  * Measured via profile_costs on M3 Max (4.064 GHz P-core).

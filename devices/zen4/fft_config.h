@@ -132,7 +132,21 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 /* L2_CACHE_SIZE: per-core L2 in bytes. Zen 4 has 1MB/core.
  * Used for batched linear checkpointing — segment must fit in L2. */
 #ifndef L2_CACHE_SIZE
-#define L2_CACHE_SIZE 1048576  /* 1MB */
+#define L2_CACHE_SIZE 1048576  /* 1MB per core */
+#endif
+#ifndef L3_CACHE_SIZE
+#define L3_CACHE_SIZE 33554432  /* 32MB shared L3 */
+#endif
+
+/* Streaming bandwidth measured by calibrate (Zen 4 DDR5-5200) */
+#ifndef L2_BW_GBS
+#define L2_BW_GBS 118.9
+#endif
+#ifndef L3_BW_GBS
+#define L3_BW_GBS 50.3
+#endif
+#ifndef DRAM_BW_GBS
+#define DRAM_BW_GBS 26.5
 #endif
 
 #ifndef PAIRED_CACHED_CORR_RATIO

@@ -135,16 +135,60 @@ devices/
   zen4/                — AMD Ryzen 9 7950X calibration
     fft_config.h       — calibrated FFT times + cost model constants
     fftw_wisdom.dat    — FFTW PATIENT plans
-  h200/                — NVIDIA H200 GPU (CUDA port — not yet implemented)
+  b200/                — NVIDIA B200 GPU calibration
+    gpu_fft_config.h  — GPU FFT calibration data
+  h200/                — NVIDIA H200 GPU (placeholder)
 Makefile               — build system
 RESULTS.md             — performance grid and optimization history
 OPTIMIZATION_GUIDE.md  — detailed optimization notes + porting guide
-archive/               — historical prototypes
+python/                — Python ctypes bindings (pip install)
+paper/                 — LaTeX paper + BibTeX
 ```
 
 ## Correctness invariant
 
 After ANY change, run `./bench_grid quick` and confirm ALL TESTS PASSED.
+
+## M3 Max validation and benchmarking
+
+Run these steps on an Apple M3 Max to validate dispatch and collect benchmark data:
+
+```bash
+# Build
+make clean && make
+
+# Verify correctness
+./bench_grid verify
+
+# Validate cost model dispatch decisions (runs both engines, compares)
+./bench_grid crossover
+# Every cell should show the correct winner. If dispatch disagrees with
+# measured winner, the bandwidth constants in devices/m3_max/fft_config.h
+# need adjustment.
+
+# Recalibrate bandwidth (if dispatch is wrong)
+make calibrate && ./calibrate --quick
+# This measures L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS and writes them
+# to fft_config.h. Copy to devices/m3_max/fft_config.h, rebuild, re-verify.
+
+# Serial contour sweep (Q=256, 1-second boundary)
+make contour_1s
+./contour_1s --contour > contour_m3max_serial_q256.csv
+
+# Parallel contour sweep
+make contour_1s_par
+OMP_NUM_THREADS=16 ./contour_1s_par --contour > contour_m3max_parallel_q256.csv
+
+# Full performance grid
+./bench_grid > bench_grid_m3max_serial.txt
+OMP_NUM_THREADS=16 ./bench_grid > bench_grid_m3max_parallel.txt
+
+# Generate plots (requires matplotlib)
+python3 tools/plot_contour.py
+```
+
+Note: contour sweeps stall at k >= 200,000 (each binary search probe takes
+minutes). The sweep will timeout and produce partial data through ~k=100K.
 
 ## Porting to a new device
 
