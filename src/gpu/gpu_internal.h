@@ -304,7 +304,7 @@ bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_d
 
 #if ICM_HAVE_VKFFT
 /* VkFFT plan creation and dispatch helpers (gpu_plan.cu / gpu_exec.cu) */
-bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, cudaStream_t *stream_ptr);
+bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, int stride, cudaStream_t *stream_ptr);
 void destroy_vkfft_app(VkFFTApplication *app);
 bool should_use_vkfft(int fft_n);
 

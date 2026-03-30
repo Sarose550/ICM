@@ -843,13 +843,16 @@ bool should_use_vkfft(int fft_n) {
  * VkFFT stores the pointer, not a copy, so it must remain valid for the app's lifetime. */
 static int s_vkfft_cuda_init_done = 0;
 
-bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, cudaStream_t *stream_ptr) {
+bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, int stride, cudaStream_t *stream_ptr) {
     if (!s_vkfft_cuda_init_done) {
         cuInit(0);
         s_vkfft_cuda_init_done = 1;
     }
-    int cn = n / 2 + 1;
-    uint64_t buf_size = (uint64_t)cn * batch * sizeof(cufftDoubleComplex);
+    /* Buffer covers batch * stride doubles (real side). VkFFT reads/writes
+     * at stride spacing, matching our fft_stride polynomial layout — no
+     * gather/scatter needed. */
+    int real_stride = (stride > 0) ? stride : n;
+    uint64_t buf_size = (uint64_t)real_stride * batch * sizeof(double);
 
     VkFFTConfiguration config = {};
     config.FFTdim = 1;
@@ -859,6 +862,9 @@ bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, cudaStream_t
     config.performR2C = 1;
     config.bufferSize = &buf_size;
     config.bufferNum = 1;
+    /* Set stride to match our fft_stride layout so VkFFT operates
+     * directly on poly_levels/g_levels without gather/scatter. */
+    config.bufferStride[0] = (uint64_t)real_stride;
 
     CUdevice cuDevice;
     cuDeviceGet(&cuDevice, 0);
@@ -868,7 +874,8 @@ bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, cudaStream_t
 
     VkFFTResult res = initializeVkFFT(app, config);
     if (res != VKFFT_SUCCESS) {
-        fprintf(stderr, "VkFFT init failed for n=%d batch=%d: error %d\n", n, batch, (int)res);
+        fprintf(stderr, "VkFFT init failed for n=%d batch=%d stride=%d: error %d\n",
+                n, batch, real_stride, (int)res);
         return false;
     }
     return true;
@@ -965,13 +972,13 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
 
 #if ICM_HAVE_VKFFT
     /* Create VkFFT R2C plans if calibration says VkFFT wins for this size.
-     * VkFFT uses in-place R2C with contiguous layout (no stride support).
-     * We use gather/scatter kernels to handle strided poly_levels. */
+     * VkFFT reads/writes at bufferStride spacing, matching our fft_stride
+     * layout — no gather/scatter needed. */
     if (lp.tier == GPU_TIER_CUFFT && should_use_vkfft(fft_n)) {
-        /* Build: fwd = child_batch signals, inv = parent_batch signals */
-        if (create_vkfft_r2c_plan(&b.vkfft_app_fwd, fft_n, qb * child_batch, &plan->stream_compute)) {
+        /* Build: fwd reads children at child_stride, inv writes parents at parent_stride */
+        if (create_vkfft_r2c_plan(&b.vkfft_app_fwd, fft_n, qb * child_batch, child_stride, &plan->stream_compute)) {
             b.vkfft_fwd_initialized = 1;
-            if (create_vkfft_r2c_plan(&b.vkfft_app_inv, fft_n, qb * parent_batch, &plan->stream_compute)) {
+            if (create_vkfft_r2c_plan(&b.vkfft_app_inv, fft_n, qb * parent_batch, parent_stride, &plan->stream_compute)) {
                 b.vkfft_inv_initialized = 1;
                 b.use_vkfft = 1;
             } else {
@@ -1002,9 +1009,10 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     /* Create VkFFT plans for correlate if build also uses VkFFT */
     if (b.use_vkfft) {
         /* Corr: fwd = parent_batch signals, inv = 2*parent_batch signals */
-        if (create_vkfft_r2c_plan(&c.vkfft_app_fwd, fft_n, qb * parent_batch, &plan->stream_compute)) {
+        /* Corr: fwd reads g at parent_stride, inv writes children at child_stride */
+        if (create_vkfft_r2c_plan(&c.vkfft_app_fwd, fft_n, qb * parent_batch, parent_stride, &plan->stream_compute)) {
             c.vkfft_fwd_initialized = 1;
-            if (create_vkfft_r2c_plan(&c.vkfft_app_inv, fft_n, qb * 2 * parent_batch, &plan->stream_compute)) {
+            if (create_vkfft_r2c_plan(&c.vkfft_app_inv, fft_n, qb * 2 * parent_batch, child_stride, &plan->stream_compute)) {
                 c.vkfft_inv_initialized = 1;
                 c.use_vkfft = 1;
             } else {

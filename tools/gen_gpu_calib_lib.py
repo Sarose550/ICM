@@ -6,7 +6,8 @@ Reads vkfft_comparison.csv and gpu_fft_config.h to produce a C snippet:
   static const int gpu_calib_lib[GPU_N_CALIBRATED_SIZES] = { 0,0,1,... };
 
 Rules:
-  - Only mark VkFFT (1) for sizes where VkFFT was > 5% faster (speedup > 1.05)
+  - Only mark VkFFT (1) for sizes where VkFFT was > 40% faster (speedup > 1.40)
+    (gather/scatter overhead for strided→contiguous conversion costs ~40% of FFT time)
   - Only mark VkFFT for sizes > 4096 (cuFFTDx handles <= 4096)
   - All other sizes default to cuFFT (0)
 """
