@@ -1,0 +1,85 @@
+B200 Session Report — 2026-03-29 (cuFFT-only, focused session attempt)
+=====================================================================
+
+Instance: ssh2.vast.ai:17448 (machine 57672, 1x B200, 32 vCPUs, 2.3TB RAM)
+Build: cuFFTDx fused, cuFFT-only (no VkFFT)
+
+== SESSION OUTCOME ==
+1. Setup: OK (libfftw3-dev + nvidia-mathdx installed, code rsynced)
+2. Build: OK (bench_gpu_fused + heatmap_gpu compiled, sm_100)
+3. Verify: OK (all 36 tests PASSED, max error 8.112e-13)
+4. Heatmap: FAILED — instance crashed (exited) during heatmap_gpu run.
+   Likely OOM at large grid sizes (n up to 536M in grid).
+   Instance went offline, credits exhausted, cannot restart.
+5. Benchmarks: NOT RUN — instance dead before benchmarks could start.
+
+== VERIFICATION OUTPUT (this session) ==
+All 36 tests PASSED (n=64..65536, k={100,n}, dist=0/1/2, Q=256)
+Max error: 8.112e-13 (n=65536 k=100 dist=1)
+
+Key GPU times from verify (single run, not min-of-5):
+  n=4096    k=4096    gpu=1.1 ms    B=64
+  n=8192    k=8192    gpu=2.3 ms    B=64     (OOM noted at 2nd rep sometimes)
+  n=16384   k=16384   gpu=5.0 ms    B=128
+  n=65536   k=65536   gpu=25.0 ms   B=256
+  n=65536   k=100     gpu=6.9 ms    B=64
+
+These match the previous clean session data (b200_final_cufft_only.txt) to within
+0.1 ms, confirming no performance regression from the refactor or code changes.
+
+== EXISTING CLEAN DATA (from prior session on same machine 57672) ==
+File: b200_final_cufft_only.txt — comprehensive benchmarks from clean session
+File: results_b200_heatmap.csv — 253 rows, n=64 to 134M, Q=256
+
+Heatmap quality assessment:
+  - 253 total rows (22 n-values x varying k)
+  - Valid (non-nan) data: n=64 through n=33,554,432
+  - OOM (nan): n=67M at k>=4M, n=134M at k>=16K
+  - k=n diagonal: PERFECTLY MONOTONE (64 to 33M)
+  - Fixed-k slices (k=64,256,1024,4096): PERFECTLY MONOTONE in n
+  - Fixed-n slices: some non-monotonicity in k (expected — different B and
+    tier selections for different k values, not noise)
+  - CV values: <3.5% for all, mostly <0.1%
+  - Data collected from clean session with no competing processes
+  - No GPU code changes since collection (only refactor + VkFFT addition,
+    neither affects cuFFT-only path)
+
+CONCLUSION: results_b200_heatmap.csv IS the clean cuFFT-only heatmap data.
+No regeneration needed — the data is valid for the current codebase.
+
+== BENCHMARK SUMMARY (from b200_final_cufft_only.txt, prior clean session) ==
+
+k=n sweep (5 reps, best-of):
+  n=1024       71.16 ms  B=0    (linear fallback)
+  n=2048        2.90 ms  B=32
+  n=4096        1.08 ms  B=64
+  n=8192        2.28 ms  B=64
+  n=16384       5.03 ms  B=128
+  n=32768      11.01 ms  B=128
+  n=65536      24.92 ms  B=256
+  n=131072     65.00 ms  B=256
+  n=262144    118.58 ms  B=256
+
+n=65536 varying k (5 reps, best-of):
+  k=2          19.20 ms  B=2
+  k=10          8.19 ms  B=8
+  k=50          6.10 ms  B=32
+  k=100         6.87 ms  B=64
+  k=500        12.84 ms  B=160
+  k=1000       14.15 ms  B=256
+  k=16384      22.27 ms  B=256
+  k=32768      23.87 ms  B=256
+  k=65536      24.92 ms  B=256
+
+Large n, small k (k=100, 5 reps, best-of):
+  n=524288    116.64 ms  B=64
+  n=1048576   106.42 ms  B=64
+  n=2097152   212.71 ms  B=64
+  n=4194304   426.40 ms  B=64
+  n=6291456   632.20 ms  B=96
+  n=8388608  1251.80 ms  B=64
+
+Frontiers:
+  k=n in <1s:   n=1,572,864 (982 ms estimated from heatmap interpolation)
+  k=100 in <1s: n~6.3M (632 ms)
+  Max VRAM:     n=8,388,608 k=100 uses 109.7 GB of 192 GB
