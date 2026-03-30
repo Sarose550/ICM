@@ -25,7 +25,18 @@ gcc -O3 -march=native -o calibrate tools/calibrate.c -lfftw3 -lm
 # Dual-library calibration (FFTW vs MKL, Linux only — run after calibrate)
 gcc -O3 -march=native -o calibrate_dual tools/calibrate_dual.c -ldl -lm
 MKL_THREADING_LAYER=SEQUENTIAL ./calibrate_dual
+
+# GPU (NVIDIA, requires CUDA toolkit + cuFFTDx)
+make bench_gpu_fused CUDA_ARCH=sm_100    # B200/B100
+make bench_gpu_fused CUDA_ARCH=sm_90     # H100/H200
+
+# GPU with VkFFT dual-dispatch (optional — cuFFT + VkFFT per-size selection)
+make bench_gpu_fused CUDA_ARCH=sm_100 VKFFT_INC="-I/path/to/vkfft"
 ```
+
+Note: The GPU code lives in `src/gpu/` (split into 4 modules + internal header).
+The old monolithic `src/icm_gpu.cu` is kept for reference but the Makefile
+compiles from the split files via separate compilation + device linking.
 
 ## Test
 
@@ -69,6 +80,9 @@ FFT costs and hardware parameters.
 
 Shared helpers: `tree_build_levels()` and `tree_propagate_g()` are used by both the
 tree and hybrid engines to avoid code duplication.
+
+Note: `bench_grid` always uses the batched linear engine (BQ=8) for the linear
+path in benchmarks and verification, matching `icm_equity()` production behavior.
 
 ## Public API (icm.h)
 
@@ -123,11 +137,30 @@ src/
   icm.c                — library implementation (all engines, FFT infrastructure)
   amx.h                — Apple AMX FP64 outer-product primitives (validated, gated)
   linear_batched_impl.inc — BQ-parameterized batched linear engine template
+  icm_gpu.h            — GPU public API header
+  icm_gpu.cu           — GPU implementation (legacy monolithic, kept for reference)
+  gpu/                  — GPU implementation (split into modules)
+    gpu_internal.h     — shared GPU internal types and helpers
+    gpu_kernels.cu     — CUDA kernels (schoolbook, FFT, block build, propagate)
+    gpu_plan.cu        — GPU planner (cost model, memory strategy, tier selection)
+    gpu_exec.cu        — GPU execution engine (graph capture, q-pipeline)
+    gpu_api.cu         — GPU public API implementation (plan/execute/destroy)
 bench/
   bench.c              — benchmark harness, verification, tuning tools
+  bench_gpu.cu         — GPU benchmark + verification harness
 tools/
   calibrate.c          — FFTW calibration (generates fft_config.h + wisdom)
   calibrate_dual.c     — FFTW vs MKL dual calibration (generates calib_lib[])
+  accuracy_bench.c     — quadrature accuracy convergence benchmark
+  contour_1s.c         — 1-second contour sweep tool
+  calibrate_gpu.cu     — GPU FFT calibration tool
+  heatmap_gpu.cu       — GPU performance heatmap generator
+  push_limit_gpu.cu    — GPU frontier (max-n) benchmark
+  validate_planner_gpu.cu — GPU planner validation
+  bench_vkfft.cu       — VkFFT benchmark (optional dual-dispatch)
+  gen_gpu_calib_lib.py — generate GPU calibration library selection arrays
+  plot_contour.py      — matplotlib contour/heatmap plotting
+  plot_heatmap.py      — matplotlib GPU heatmap plotting
 devices/
   m3_max/              — Apple M3 Max calibration
     fft_config.h       — calibrated FFT times + cost model constants
@@ -136,13 +169,13 @@ devices/
     fft_config.h       — calibrated FFT times + cost model constants
     fftw_wisdom.dat    — FFTW PATIENT plans
   b200/                — NVIDIA B200 GPU calibration
-    gpu_fft_config.h  — GPU FFT calibration data
+    gpu_fft_config.h   — GPU FFT calibration data
   h200/                — NVIDIA H200 GPU (placeholder)
+python/                — Python ctypes bindings (pip install)
+paper/                 — LaTeX paper + BibTeX
 Makefile               — build system
 RESULTS.md             — performance grid and optimization history
 OPTIMIZATION_GUIDE.md  — detailed optimization notes + porting guide
-python/                — Python ctypes bindings (pip install)
-paper/                 — LaTeX paper + BibTeX
 ```
 
 ## Correctness invariant
@@ -151,44 +184,75 @@ After ANY change, run `./bench_grid quick` and confirm ALL TESTS PASSED.
 
 ## M3 Max validation and benchmarking
 
-Run these steps on an Apple M3 Max to validate dispatch and collect benchmark data:
+Run these steps on an Apple M3 Max to validate dispatch and collect benchmark data.
+
+### Step-by-step
 
 ```bash
-# Build
+# 1. Build (serial)
 make clean && make
 
-# Verify correctness
+# 2. Verify correctness (must see ALL TESTS PASSED)
 ./bench_grid verify
 
-# Validate cost model dispatch decisions (runs both engines, compares)
+# 3. Validate dispatch decisions — every cell should show the correct winner
 ./bench_grid crossover
-# Every cell should show the correct winner. If dispatch disagrees with
-# measured winner, the bandwidth constants in devices/m3_max/fft_config.h
-# need adjustment.
+# If any cell shows dispatch disagreeing with the measured winner,
+# recalibrate (step 4). Otherwise skip to step 5.
 
-# Recalibrate bandwidth (if dispatch is wrong)
+# 4. Recalibrate (only if dispatch is wrong)
 make calibrate && ./calibrate --quick
-# This measures L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS and writes them
-# to fft_config.h. Copy to devices/m3_max/fft_config.h, rebuild, re-verify.
+# Produces fft_config.h in the current directory.
+# Copy it to devices/m3_max/fft_config.h, then rebuild:
+#   cp fft_config.h devices/m3_max/fft_config.h
+#   make clean && make
+#   ./bench_grid verify          # re-verify after recalibration
+#   ./bench_grid crossover       # confirm dispatch is now correct
 
-# Serial contour sweep (Q=256, 1-second boundary)
+# 5. Profile: measure FMA_NS, FFT_OVERHEAD_NS, phase split ratios
+./bench_grid profile
+# Update devices/m3_max/fft_config.h with measured values if they differ.
+
+# 6. Serial performance grid
+./bench_grid > bench_grid_m3max_serial.txt
+
+# 7. Parallel performance grid (16 threads = 12P + 4E on M3 Max)
+make clean && make parallel
+OMP_NUM_THREADS=16 ./bench_grid > bench_grid_m3max_parallel.txt
+
+# 8. Serial contour sweep (Q=256, 1-second boundary)
 make contour_1s
 ./contour_1s --contour > contour_m3max_serial_q256.csv
 
-# Parallel contour sweep
+# 9. Parallel contour sweep
 make contour_1s_par
 OMP_NUM_THREADS=16 ./contour_1s_par --contour > contour_m3max_parallel_q256.csv
 
-# Full performance grid
-./bench_grid > bench_grid_m3max_serial.txt
-OMP_NUM_THREADS=16 ./bench_grid > bench_grid_m3max_parallel.txt
+# 10. Accuracy convergence (Q sweep for paper Table 3)
+gcc -O3 -march=native -Isrc -Idevices/m3_max -I/opt/homebrew/include \
+    -o accuracy_bench tools/accuracy_bench.c \
+    -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
+./accuracy_bench > accuracy_m3max.csv
 
-# Generate plots (requires matplotlib)
+# 11. Generate plots (requires matplotlib)
 python3 tools/plot_contour.py
 ```
 
-Note: contour sweeps stall at k >= 200,000 (each binary search probe takes
-minutes). The sweep will timeout and produce partial data through ~k=100K.
+### Notes
+
+- Contour sweeps stall at k >= 200,000 (each binary search probe takes
+  minutes). The sweep will produce partial data through ~k=100K and timeout.
+- bench_grid always uses the batched linear engine (BQ=8) for the linear path.
+
+### Paper data to collect
+
+After running the above, fill in:
+- **Table 1** (single-threaded performance): M3 Max column from `bench_grid_m3max_serial.txt`
+- **Table 2** (parallel performance): M3 Max column from `bench_grid_m3max_parallel.txt`
+- **Table 3** (bandwidth/hardware constants): FMA_NS, POLYMUL_FMA_NS,
+  FFT_OVERHEAD_NS from `./bench_grid profile` output; L2_CACHE_SIZE from
+  hardware spec (32MB for M3 Max)
+- **Contour figures**: from the CSV files generated in steps 8-9
 
 ## Porting to a new device
 
