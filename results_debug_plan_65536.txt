@@ -1,0 +1,28 @@
+gpu_plan n=65536 k=65536 k_pad=65536 B=256 L=9 nblocks=256 q_batch=1
+    build_choice ell=1 nparents=128 wrap_scale=1.16 bfn=625 bwm=0 fft_build=0.000ms school_build=0.000ms
+  ell=1 cps=512 pgsz=1024 p_eff=257 out=256 g_eff=512 build_conv=512 corr_conv=768 fft_n=1024 bwm=0 cwm=0 tier=2 cache=0 use_fft=1
+    build_choice ell=2 nparents=64 wrap_scale=2.31 bfn=1024 bwm=0 fft_build=0.000ms school_build=0.001ms
+  ell=2 cps=1024 pgsz=2048 p_eff=513 out=767 g_eff=1279 build_conv=1024 corr_conv=1791 fft_n=2000 bwm=0 cwm=0 tier=3 cache=1 use_fft=1
+    build_choice ell=3 nparents=32 wrap_scale=4.62 bfn=2048 bwm=0 fft_build=0.000ms school_build=0.004ms
+  ell=3 cps=2048 pgsz=4096 p_eff=1025 out=1790 g_eff=2814 build_conv=2048 corr_conv=3838 fft_n=4096 bwm=0 cwm=0 tier=2 cache=0 use_fft=1
+    build_choice ell=4 nparents=16 wrap_scale=9.25 bfn=4096 bwm=0 fft_build=0.000ms school_build=0.016ms
+  ell=4 cps=4096 pgsz=8192 p_eff=2049 out=3837 g_eff=5885 build_conv=4096 corr_conv=7933 fft_n=8192 bwm=0 cwm=0 tier=3 cache=1 use_fft=1
+    build_choice ell=5 nparents=8 wrap_scale=18.50 bfn=8192 bwm=0 fft_build=0.000ms school_build=0.063ms
+  ell=5 cps=8192 pgsz=16384 p_eff=4097 out=7932 g_eff=12028 build_conv=8192 corr_conv=16124 fft_n=16384 bwm=0 cwm=0 tier=3 cache=1 use_fft=1
+    build_choice ell=6 nparents=4 wrap_scale=37.00 bfn=16384 bwm=0 fft_build=0.001ms school_build=0.253ms
+  ell=6 cps=16384 pgsz=32768 p_eff=8193 out=16123 g_eff=24315 build_conv=16384 corr_conv=32507 fft_n=32768 bwm=0 cwm=0 tier=3 cache=1 use_fft=1
+    build_choice ell=7 nparents=2 wrap_scale=74.00 bfn=32768 bwm=0 fft_build=0.001ms school_build=1.014ms
+  ell=7 cps=32768 pgsz=65536 p_eff=16385 out=32506 g_eff=48890 build_conv=32768 corr_conv=65274 fft_n=65536 bwm=0 cwm=0 tier=3 cache=1 use_fft=1
+    build_choice ell=8 nparents=1 wrap_scale=148.00 bfn=131072 bwm=0 fft_build=0.006ms school_build=16.218ms
+  ell=8 cps=65536 pgsz=65536 p_eff=65536 out=65273 g_eff=65536 build_conv=131071 corr_conv=131071 fft_n=131072 bwm=0 cwm=0 tier=3 cache=0 use_fft=1
+  fft_stride[0] = 1024  (psz=512)
+  fft_stride[1] = 2000  (psz=1024)
+  fft_stride[2] = 4096  (psz=2048)
+  fft_stride[3] = 8192  (psz=4096)
+  fft_stride[4] = 16384  (psz=8192)
+  fft_stride[5] = 32768  (psz=16384)
+  fft_stride[6] = 65536  (psz=32768)
+  fft_stride[7] = 131072  (psz=65536)
+  fft_stride[8] = 131072  (psz=65536)
+run=1  total=26.24 ms  B=256  engine=1  peak_vram=13671.7 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=26.24 ms  (n=65536 k=65536 Q=256)
