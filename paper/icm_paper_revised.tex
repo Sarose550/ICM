@@ -632,11 +632,20 @@ $m$ high-degree terms wrap and are corrected by schoolbook.
 
 \paragraph{Paired cached correlate.}
 During propagation, both children at each node require correlating the same
-parent $g$-vector with their respective sibling polynomials. I share the
+parent $g$-vector with their respective sibling polynomials.  I share the
 forward FFT of $g$ across both correlates, saving one FFT per parent node.
-When build and correlate use the same FFT size, I cache the FFT of each
-child during the build phase and reuse it via conjugation during
-propagation.
+
+When build and correlate use the same FFT size, I cache each child's
+frequency-domain representation $\hat{P} = \mathcal{F}(P)$ during the
+build phase and reuse it during propagation.  The key observation is that
+cross-correlation in the time domain corresponds to conjugate multiplication
+in the frequency domain: $\mathcal{F}(\corr(g, P))_f = \hat{g}_f \cdot
+\overline{\hat{P}_f}$.  Since our polynomials have real coefficients,
+$\overline{\hat{P}_f} = \hat{P}_{N-f}$ (the spectrum is Hermitian), so
+the conjugate is obtained by reading the cached spectrum in reversed order
+---no additional FFT or storage is needed.  This eliminates one forward FFT
+per sibling pair during propagation, halving the FFT count at each tree
+level.
 
 \subsection{Engine 3: Hybrid Block-Divide}\label{sec:hybrid}
 
