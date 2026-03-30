@@ -296,16 +296,11 @@ static void run_profile(void) {
             hybrid_ctx_destroy(hctx);
         }
 
-        /* Linear (batched for large n, plain for small n) — skip if n*k too large */
+        /* Linear (always batched BQ=8 — matches icm_equity() behavior) */
         if ((double)n * k < 1e8) {
             LinearCtx *lc = linear_ctx_create(n, k);
             memset(eq, 0, n * sizeof(double));
-            double t;
-            if (n >= 2048)
-                t = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
-            else
-                t = run_engine_ctx(n, S, Q, payout, k, eq,
-                                   engine_linear_ctx, lc) / 1e6;
+            double t = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
             printf("  linear: %7.0f ms\n", t);
             linear_ctx_destroy(lc);
         }
@@ -419,16 +414,9 @@ int main(int argc, char **argv) {
                 for (int m = 0; m < k; m++) payout[m] = (double)(n - m);
                 double *eq = (double *)calloc(n, sizeof(double));
 
-                /* Linear */
+                /* Linear (always batched) */
                 LinearCtx *lc = linear_ctx_create(n, k);
-                double t_lin;
-                if (n >= 2048)
-                    t_lin = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
-                else {
-                    memset(eq, 0, n * sizeof(double));
-                    t_lin = run_engine_ctx(n, S, Q, payout, k, eq,
-                                           engine_linear_ctx, lc) / 1e6;
-                }
+                double t_lin = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
                 linear_ctx_destroy(lc);
 
                 /* Hybrid */
@@ -781,19 +769,12 @@ int main(int argc, char **argv) {
             if (k <= 200 || n <= 512) {
                 LinearCtx *lc = linear_ctx_create(n, k);
                 double samples[BENCH_REPS];
-                /* warmup */
+                /* warmup (always batched) */
                 memset(eq, 0, n * sizeof(double));
-                if (n >= 2048)
-                    run_linear_batched(n, S, Q, payout, k, eq, lc);
-                else
-                    run_engine_ctx(n, S, Q, payout, k, eq, engine_linear_ctx, lc);
+                run_linear_batched(n, S, Q, payout, k, eq, lc);
                 for (int r = 0; r < BENCH_REPS; r++) {
                     memset(eq, 0, n * sizeof(double));
-                    if (n >= 2048)
-                        samples[r] = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
-                    else
-                        samples[r] = run_engine_ctx(n, S, Q, payout, k, eq,
-                                                    engine_linear_ctx, lc) / 1e6;
+                    samples[r] = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
                 }
                 MEDIAN5(samples);
                 times[2] = samples[BENCH_REPS / 2];
