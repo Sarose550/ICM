@@ -3,19 +3,20 @@
 Generate publication plots for ICM benchmark data.
 
 Plots generated:
-  1. contour_1s.png         — Serial vs parallel 1-second boundary (CPU)
-  2. parallel_speedup.png   — Speedup bar chart
-  3. engine_dispatch.png    — Engine coloring on contour
-  4. runtime_vs_n_cpu.png   — Runtime(n) at fixed k values, log-log (CPU)
-  5. runtime_vs_n_gpu.png   — Runtime(n) at fixed k values, log-log (GPU)
-  6. gpu_contour.png        — GPU 1-second contour from heatmap data
+  1. contour_1s.png           — Serial vs parallel 1-second boundary (CPU)
+  2. parallel_speedup.png     — Speedup bar chart
+  3. engine_dispatch.png      — Engine coloring on contour
+  4. runtime_vs_n_cpu.png     — Runtime(n) at fixed k values, log-log (CPU)
+  5. runtime_vs_n_gpu.png     — Runtime(n) at fixed k values, log-log (GPU)
+  6. gpu_contour.png          — GPU 1-second contour from heatmap data
+  7. accuracy_convergence.png — Quadrature accuracy vs Q (log-log)
 
 Usage:
   python3 tools/plot_contour.py
 
 Reads from project root:
   contour_zen4_serial_q256.csv, contour_zen4_parallel_q256.csv,
-  bench_grid_full.txt, gpu_heatmap_new.csv
+  bench_grid_zen4_serial.txt, gpu_heatmap_new.csv, accuracy_zen4.csv
 """
 
 import matplotlib
@@ -162,7 +163,7 @@ def plot_contour(serial_path, parallel_path, out_path):
     ax.grid(True, which='both', alpha=0.2)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved {out_path}")
 
@@ -203,7 +204,7 @@ def plot_speedup(serial_path, parallel_path, out_path):
     ], loc='upper left', fontsize=9.5)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved {out_path}")
 
@@ -238,7 +239,7 @@ def plot_dispatch(serial_path, out_path):
     ax.grid(True, which='both', alpha=0.2)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved {out_path}")
 
@@ -266,17 +267,22 @@ def plot_runtime_vs_n(data, title, out_path, k_values=None):
         if k not in by_k:
             continue
         pts = sorted(by_k[k])
+        # Filter out zero/negative times (break log scale)
+        pts = [(n, t, e) for n, t, e in pts if t > 0]
+        if not pts:
+            continue
         ns = [p[0] for p in pts]
         ts = [p[1] for p in pts]
         label = f'k = {k}' if isinstance(k, int) else k
         ax.plot(ns, ts, 'o-', color=colors[i], markersize=5, linewidth=1.5, label=label)
 
-    # 1-second reference line
-    ax.axhline(y=1000, color='gray', linestyle='--', alpha=0.4, linewidth=1)
-    ax.text(ax.get_xlim()[0] * 1.5, 1100, '1 second', fontsize=9, color='gray', alpha=0.6)
-
     ax.set_xscale('log')
     ax.set_yscale('log')
+
+    # 1-second reference line
+    ax.axhline(y=1000, color='gray', linestyle='--', alpha=0.4, linewidth=1)
+    ax.text(ax.get_xlim()[0] * 1.3, 1150, '1 second', fontsize=9, color='gray', alpha=0.6)
+
     ax.set_xlabel('Players (n)', fontsize=13)
     ax.set_ylabel('Time (ms)', fontsize=13)
     ax.set_title(title, fontsize=14)
@@ -284,7 +290,7 @@ def plot_runtime_vs_n(data, title, out_path, k_values=None):
     ax.grid(True, which='both', alpha=0.2)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved {out_path}")
 
@@ -391,7 +397,88 @@ def plot_gpu_contour(heatmap_path, out_path):
     ax.set_ylim(min(contour_n) * 0.5, max(contour_n) * 2)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+# ─── Plot 7: Accuracy convergence ──────────────────────────
+
+def load_accuracy_csv(path):
+    """Load accuracy_zen4.csv into list of dicts."""
+    rows = []
+    with open(path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append({
+                'scheme': row['scheme'],
+                'n': int(row['n']),
+                'k': int(row['k']),
+                'Q': int(row['Q']),
+                'max_abs_err': float(row['max_abs_err']),
+                'max_rel_err': float(row['max_rel_err']),
+                'payout_type': row['payout_type'],
+                'distribution': row['distribution'],
+            })
+    return rows
+
+
+def plot_accuracy_convergence(accuracy_path, out_path):
+    """Plot max_rel_err vs Q for Gauss-Legendre at various n, plus tanh-sinh comparison."""
+    rows = load_accuracy_csv(accuracy_path)
+
+    # Gauss-Legendre, V1, uniform for selected n values
+    gauss_n_values = [4, 8, 12, 16, 20]
+    gauss_data = {}  # n -> [(Q, err), ...]
+    for r in rows:
+        if (r['scheme'] == 'gauss' and r['distribution'] == 'uniform'
+                and r['payout_type'] == 'V1' and r['n'] in gauss_n_values):
+            gauss_data.setdefault(r['n'], []).append((r['Q'], r['max_rel_err']))
+
+    # tanh-sinh, n=10, V1, uniform
+    tanh_data = []
+    for r in rows:
+        if (r['scheme'] == 'tanh_sinh' and r['distribution'] == 'uniform'
+                and r['payout_type'] == 'V1' and r['n'] == 10):
+            tanh_data.append((r['Q'], r['max_rel_err']))
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    # Color palette for Gauss lines
+    gauss_colors = ['#2563eb', '#7c3aed', '#059669', '#d97706', '#dc2626']
+
+    for i, n in enumerate(gauss_n_values):
+        if n not in gauss_data:
+            continue
+        pts = sorted(gauss_data[n])
+        qs = [p[0] for p in pts]
+        errs = [p[1] for p in pts]
+        ax.plot(qs, errs, 'o-', color=gauss_colors[i], markersize=5, linewidth=1.5,
+                label=f'Gauss n={n}')
+
+    # tanh-sinh comparison
+    if tanh_data:
+        pts = sorted(tanh_data)
+        qs = [p[0] for p in pts]
+        errs = [p[1] for p in pts]
+        ax.plot(qs, errs, 's--', color='#6b7280', markersize=5, linewidth=1.5,
+                label='tanh-sinh n=10')
+
+    # Machine epsilon practical floor
+    q_range = ax.get_xlim()
+    ax.axhline(y=1e-12, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+    ax.text(5, 1.5e-12, 'practical floor (~1e-12)', fontsize=8, color='gray', alpha=0.7)
+
+    ax.set_xscale('log', base=2)
+    ax.set_yscale('log')
+    ax.set_xlabel('Quadrature points (Q)', fontsize=13)
+    ax.set_ylabel('Max relative error', fontsize=13)
+    ax.set_title('Quadrature Convergence: Gauss-Legendre vs tanh-sinh', fontsize=14)
+    ax.legend(fontsize=9, loc='upper right', framealpha=0.9)
+    ax.grid(True, which='both', alpha=0.2)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved {out_path}")
 
@@ -401,7 +488,7 @@ def plot_gpu_contour(heatmap_path, out_path):
 if __name__ == '__main__':
     serial_csv = os.path.join(ROOT, 'contour_zen4_serial_q256.csv')
     parallel_csv = os.path.join(ROOT, 'contour_zen4_parallel_q256.csv')
-    bench_full = os.path.join(ROOT, 'bench_grid_full.txt')
+    bench_full = os.path.join(ROOT, 'bench_grid_zen4_serial.txt')
     gpu_heatmap = os.path.join(ROOT, 'gpu_heatmap_new.csv')
 
     # CPU contour plots
@@ -461,5 +548,12 @@ if __name__ == '__main__':
                               'Runtime vs n (NVIDIA B200, Q = 256)',
                               os.path.join(ROOT, 'runtime_vs_n_gpu.png'),
                               k_values=target_k)
+
+    # Accuracy convergence
+    accuracy_csv = os.path.join(ROOT, 'accuracy_zen4.csv')
+    if os.path.exists(accuracy_csv):
+        plot_accuracy_convergence(accuracy_csv, os.path.join(ROOT, 'accuracy_convergence.png'))
+    else:
+        print("Skipping accuracy_convergence.png (missing accuracy_zen4.csv)")
 
     print("\nDone.")

@@ -50,8 +50,9 @@ cost model with harmonic-mean bandwidth blending across cache levels
 dispatches automatically between a batched linear engine and a hybrid
 block-tree engine. Implementations tuned for Apple M3~Max,
 AMD Zen~4 (with AOCL-FFTW), and NVIDIA B200 GPU demonstrate the
-approach at scale: the GPU computes all 1,572,864 player equities with
-$k = n$ in under one second.
+approach at scale: the GPU computes 6.3 million player equities
+($k = 100$) in 626\,ms, and all 262{,}144 equities at $k = n$ in
+118\,ms.
 \end{abstract}
 
 \section{Introduction}\label{sec:intro}
@@ -105,9 +106,9 @@ My contributions are:
     prior FMA-counting model (Section~\ref{sec:dispatch}).
   \item Platform-specific implementations for ARM64 (Apple M3~Max),
     x86-64 (AMD Zen~4 with AOCL-FFTW), and CUDA (NVIDIA B200 GPU),
-    including a GPU implementation that computes $n = 1{,}572{,}864$
-    equities at $k = n$ in under one second (Sections~\ref{sec:experiments}
-    and~\ref{sec:gpu}).
+    including a GPU implementation that computes $n = 6{,}291{,}456$
+    equities at $k = 100$ in 626\,ms and $n = 262{,}144$ at $k = n$ in
+    118\,ms (Sections~\ref{sec:experiments} and~\ref{sec:gpu}).
 \end{enumerate}
 
 
@@ -882,8 +883,8 @@ I evaluate my implementation on three platforms:
     AVX-512 (8 FP64/vector), 2 FMA units per core,
     1\,MB per-core L2, 32\,MB shared L3. FFT: AOCL-FFTW (636 AVX-512
     codelets) + Intel MKL dual dispatch.
-  \item \textbf{NVIDIA B200 GPU:} [AUTHOR: fill in SM count and
-    memory bandwidth from spec sheet]. CUDA 12.8, cuFFT + cuFFTDx
+  \item \textbf{NVIDIA B200 GPU:} 160 SMs, 192\,GB HBM3e,
+    8\,TB/s memory bandwidth. CUDA 12.8, cuFFT + cuFFTDx
     fused R2C/C2R kernels.
 \end{itemize}
 
@@ -895,8 +896,8 @@ closed-form $V_1$ and $V_2$ equities and cross-checked between engines.
 
 \begin{table}[t]
 \centering
-\caption{Single-threaded execution time (ms), $Q = 256$.
-  [UPDATE: re-measure with final build including AOCL-FFTW and roofline dispatch.]}
+\caption{Single-threaded execution time (ms), $Q = 256$, uniform stacks.
+  Best engine per cell; L = linear, H = hybrid, T = tree.}
 \label{tab:serial}
 \begin{tabular}{@{}l rrrrrr rrrrrr@{}}
 \toprule
@@ -906,21 +907,27 @@ closed-form $V_1$ and $V_2$ equities and cross-checked between engines.
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-2048  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-4096  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-8192  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-16384 & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-32768 & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-65536 & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+1024  & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 5 & 9 & 16 & 21 & 25 & 26 \\
+2048  & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 4 & 7 & 14 & 53 & 59 & 63 \\
+4096  & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 8 & 16 & 31 & 125 & 138 & 149 \\
+8192  & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 15 & 29 & 61 & 288 & 330 & 357 \\
+16384 & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 31 & 59 & 112 & 696 & 802 & 849 \\
+32768 & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 62 & 139 & 225 & 1696 & 1862 & 2005 \\
+65536 & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 129 & 276 & 466 & 3967 & 4446 & 4699 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[t]
 \centering
-\caption{16-thread parallel execution time (ms), $Q = 256$.
-  [UPDATE: re-measure with parallel checkpointing fix and AOCL-FFTW.]}
+\caption{16-thread parallel execution time (ms), $Q = 256$, uniform stacks.}
 \label{tab:parallel}
 \begin{tabular}{@{}l rrrrrr rrrrrr@{}}
 \toprule
@@ -930,11 +937,16 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-4096  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-8192  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-16384 & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-65536 & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+1024  & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & ${<}1$ & 1 & 1 & 1 & 2 & 2 \\
+4096  & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 1 & 1 & 2 & 8 & 9 & 10 \\
+8192  & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 1 & 3 & 5 & 20 & 28 & 25 \\
+16384 & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 3 & 6 & 10 & 50 & 60 & 69 \\
+65536 & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE] & [UPDATE]
+      & 18 & 30 & 46 & 408 & 451 & 563 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -972,9 +984,32 @@ across four stack distributions:
     stress the quadrature.
 \end{itemize}
 
-[UPDATE: Insert convergence table or figure here showing relative error
-vs.\ $Q$ for both quadrature rules across all four distributions.
-Data from accuracy benchmarks.]
+Table~\ref{tab:accuracy} shows convergence of the maximum relative error
+for Gauss (erfc-trap) and tanh-sinh quadrature on uniform stacks, measured
+against closed-form $V_2$ equities.
+
+\begin{table}[t]
+\centering
+\caption{Maximum relative error vs.\ quadrature order $Q$, uniform stacks,
+  $k = n$. Gauss = erfc-trap; TS = tanh-sinh. Measured against closed-form
+  $V_2$ equities on Zen~4.}
+\label{tab:accuracy}
+\begin{tabular}{@{}r cc cc@{}}
+\toprule
+& \multicolumn{2}{c}{$n = 10$} & \multicolumn{2}{c}{$n = 20$} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+$Q$ & Gauss & TS & Gauss & TS \\
+\midrule
+4    & $3.9$                & $2.5 \times 10^{-1}$  & $3.9$                & $2.5 \times 10^{-1}$  \\
+8    & $6.2 \times 10^{-3}$ & $1.0$                 & $6.2 \times 10^{-3}$ & $1.0$                 \\
+16   & $1.6 \times 10^{-1}$ & $6.6 \times 10^{-1}$  & $1.6 \times 10^{-1}$ & $6.6 \times 10^{-1}$  \\
+32   & $4.3 \times 10^{-3}$ & $8.5 \times 10^{-4}$  & $4.3 \times 10^{-3}$ & $8.5 \times 10^{-4}$  \\
+64   & $3.0 \times 10^{-7}$ & $1.5 \times 10^{-4}$  & $3.0 \times 10^{-7}$ & $1.5 \times 10^{-4}$  \\
+128  & $1.3 \times 10^{-12}$& $1.5 \times 10^{-11}$ & $1.3 \times 10^{-12}$& $1.5 \times 10^{-11}$ \\
+256  & $1.7 \times 10^{-12}$& $3.6 \times 10^{-14}$ & $1.7 \times 10^{-12}$& $3.7 \times 10^{-14}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 The erfc-trap rule converges to ${\sim}10^{-12}$ relative error by
 $Q = 256$ uniformly across all distributions. Tanh-sinh achieves a lower
@@ -1096,30 +1131,39 @@ Two optimizations were tested and rejected after benchmarking:
 
 \begin{table}[t]
 \centering
-\caption{NVIDIA B200 GPU execution time (ms), $Q = 256$, $k = n$.}
+\caption{NVIDIA B200 GPU execution time (ms), $Q = 256$.
+  Top: $k = n$ (all players paid). Bottom: $k = 100$ (large-field frontier).}
 \label{tab:gpu}
-\begin{tabular}{@{}rrr@{}}
+\begin{tabular}{@{}rrrr@{}}
 \toprule
-$n$ & Time (ms) & vs.\ CPU serial \\
+$n$ & $k$ & Time (ms) & vs.\ Zen~4 serial \\
 \midrule
-8{,}192    & [UPDATE] & [UPDATE]$\times$ \\
-65{,}536   & [UPDATE] & [UPDATE]$\times$ \\
-262{,}144  & [UPDATE] & [UPDATE]$\times$ \\
-524{,}288  & [UPDATE] & [UPDATE]$\times$ \\
-1{,}048{,}576 & [UPDATE] & [UPDATE]$\times$ \\
-1{,}572{,}864 & 982 & [UPDATE]$\times$ \\
+\multicolumn{4}{@{}l}{\emph{$k = n$ (all players paid)}} \\
+4{,}096    & $n$ & 1.08  & $138\times$ \\
+8{,}192    & $n$ & 2.27  & $157\times$ \\
+16{,}384   & $n$ & 4.99  & $170\times$ \\
+65{,}536   & $n$ & 24.75 & $190\times$ \\
+262{,}144  & $n$ & 117.9 & --- \\
+\addlinespace
+\multicolumn{4}{@{}l}{\emph{$k = 100$ (large-field frontier)}} \\
+65{,}536   & 100 & 6.81  & $68\times$ \\
+524{,}288  & 100 & 52.95 & --- \\
+1{,}572{,}864 & 100 & 156.2 & --- \\
+6{,}291{,}456 & 100 & 626.3 & --- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The GPU frontier is $n = 1{,}572{,}864$ players at $k = n$ (all players
-paid) in 982\,ms with $Q = 256$---71\% beyond the pre-optimization
-baseline of $n = 917{,}504$ in 764\,ms. The frontier is limited not by
-compute or memory bandwidth but by \emph{tree-level cliffs}: each
-additional tree level increases compute by ${\sim}10\%$, creating
-discrete jumps in execution time. The cliff at $n \approx 1{,}573{,}000$
-is the first point where the tree's total work exceeds the one-second
-budget.
+At $k = n$, the GPU computes all 262{,}144 player equities in
+117.9\,ms---a $190\times$ speedup over Zen~4 serial at $n = 65{,}536$.
+Larger $k = n$ sizes exceed VRAM (64.9\,GB peak at $n = 262{,}144$).
+
+At $k = 100$, the GPU frontier reaches $n = 6{,}291{,}456$ players in
+626\,ms with $Q = 256$, with near-linear scaling in $n$ (the tree depth
+grows logarithmically). The frontier is limited by VRAM at large $k$ and
+by \emph{tree-level cliffs} at large $n$: each additional tree level
+increases compute by ${\sim}10\%$, creating discrete jumps in execution
+time.
 
 [AUTHOR: Consider adding a figure showing execution time vs.\ $n$ with
 the cliff structure visible, from the contour/heatmap data.]
@@ -1149,7 +1193,7 @@ timing, per-level cache bandwidths, and dual-library dispatch all exploit
 the fact that measuring is cheaper and more accurate than predicting.
 
 The GPU implementation on the NVIDIA B200 computes equities for
-1,572,864 players in under one second, enabling ICM analysis at
+6.3 million players ($k = 100$) in 626\,ms, enabling ICM analysis at
 field sizes that were previously intractable. Future work includes
 extending the algorithm to non-uniform chip stack distributions with
 adaptive quadrature, and exploring real-time tournament decision support
@@ -1179,7 +1223,8 @@ present in my implementation.
 %%    roadmap to B200 results. Covers FFT-stride layout, cuFFTDx fused
 %%    R2C/C2R, arena allocator, CUDA Graphs, Q-batch pipelining. Documents
 %%    rejected optimizations (cuFFT callbacks: 2.3x slower; B=1 tree:
-%%    20-56% slower). Frontier: n=1,572,864 at k=n in 982ms.
+%%    20-56% slower). Frontier: n=262,144 at k=n in 118ms; n=6.3M at
+%%    k=100 in 626ms.
 %%
 %% 3. Engine dispatch (Section 4.6) rewritten as roofline cost model.
 %%    Old Algorithm 5 (2nk * tau_poly * c_ckpt) replaced with
@@ -1218,12 +1263,18 @@ present in my implementation.
 %% 11. Added natbib package, \bibliography{references}, created
 %%     references.bib with all citations.
 %%
+%% PLACEHOLDERS FILLED (2026-03-29, automated):
+%% - Tables 1 and 2: Zen 4 serial + parallel data filled from bench_grid runs
+%% - GPU table: restructured with k=n and k=100 sections, B200 data filled
+%% - B200 SM count: 160 SMs, 192 GB HBM3e, 8 TB/s
+%% - Convergence table (Table 4): Gauss vs tanh-sinh, n=10/20, from accuracy_zen4.csv
+%% - Abstract/intro/conclusion GPU frontier updated to match measured data
+%%   (k=n frontier: n=262,144 in 118ms; k=100 frontier: n=6.3M in 626ms)
+%%
 %% PLACEHOLDERS REMAINING:
-%% - [UPDATE: re-measure ...] on Tables 1 and 2 (need final build numbers)
-%% - [UPDATE] on several GPU table entries (need full GPU benchmark grid)
+%% - [UPDATE] on M3 Max columns in Tables 1 and 2 (user to measure)
 %% - [UPDATE] on M3 Max bandwidth constants in Table 3
 %% - [AUTHOR: cite concrete MC-ICM paper] in Related Work
-%% - [AUTHOR: fill in B200 SM count] in Experimental Setup
 %% - [AUTHOR: Consider adding cliff figure] in GPU Results
 %% - [AUTHOR: verify Knuth reference] in references.bib
 %% - [AUTHOR: replace Chen 2010 placeholder] in references.bib
