@@ -4576,8 +4576,9 @@ double icm_gpu_equity_subset(int n, const double *S, int Q,
     }
 
     /* Create plan */
-    IcmGpuPlan *plan = icm_gpu_plan_create(n, S, k, opts);
-    if (!plan) return -1.0;
+    IcmGpuPlan *plan_opaque = icm_gpu_plan_create(n, S, k, opts);
+    if (!plan_opaque) return -1.0;
+    GpuPlan *plan = reinterpret_cast<GpuPlan *>(plan_opaque);
 
     /* Build active mask in sorted order: map original-index targets to sorted indices */
     std::vector<uint8_t> h_mask(n, 0);
@@ -4593,24 +4594,24 @@ double icm_gpu_equity_subset(int n, const double *S, int Q,
     /* Upload mask to device */
     uint8_t *d_mask = nullptr;
     if (!CUDA_OK(cudaMalloc(&d_mask, (size_t)n * sizeof(uint8_t)))) {
-        icm_gpu_plan_destroy(plan);
+        icm_gpu_plan_destroy(plan_opaque);
         return -1.0;
     }
     if (!CUDA_OK(cudaMemcpy(d_mask, h_mask.data(), (size_t)n * sizeof(uint8_t),
                             cudaMemcpyHostToDevice))) {
         cudaFree(d_mask);
-        icm_gpu_plan_destroy(plan);
+        icm_gpu_plan_destroy(plan_opaque);
         return -1.0;
     }
     plan->d_active_mask = d_mask;
 
     /* Execute with mask */
-    double t = icm_gpu_equity_with_plan(plan, Q, payout, equity, stats);
+    double t = icm_gpu_equity_with_plan(plan_opaque, Q, payout, equity, stats);
 
     /* Clean up */
     plan->d_active_mask = nullptr;  /* prevent double-free in plan_destroy */
     cudaFree(d_mask);
-    icm_gpu_plan_destroy(plan);
+    icm_gpu_plan_destroy(plan_opaque);
 
     /* Zero non-target entries in output */
     if (t >= 0) {
