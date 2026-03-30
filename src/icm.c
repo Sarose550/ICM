@@ -2335,12 +2335,20 @@ static int select_best_B(int n, int k);
 
 /* Engine dispatch: compare estimated linear vs hybrid cost for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.
- * Linear cost: roofline model from cost_model.h.
- * Hybrid cost: block build + FFT tree from the same model as select_best_B. */
-static int select_engine(int n, int k) {
+ * n_targets: number of target players for subset queries (0 or n = all players).
+ * When n_targets < n, the backward/leaf-extract phases scale with n_targets/n. */
+static int select_engine_ex(int n, int k, int n_targets) {
     if (n < 16 || k < 4) return 0;
 
-    double linear_per_qp = linear_roofline_cost(n, k, LINEAR_BQ);
+    /* target_frac: fraction of players needing equity extraction.
+     * Forward pass is always full-n; backward scales with target_frac. */
+    double target_frac = (n_targets > 0 && n_targets < n)
+                         ? (double)n_targets / (double)n : 1.0;
+
+    /* Linear cost: forward pass (full) + backward pass (scaled by target_frac).
+     * The roofline gives the combined fwd+bwd cost; approximate as 50/50 split. */
+    double linear_full = linear_roofline_cost(n, k, LINEAR_BQ);
+    double linear_per_qp = linear_full * (0.5 + 0.5 * target_frac);
 
     int B = select_best_B(n, k);
     int nblocks = (n + B - 1) / B;
@@ -2366,7 +2374,18 @@ static int select_engine(int n, int k) {
         }
     }
     tree_ctx_destroy(tc);
-    return (block + tree < linear_per_qp) ? B : 0;
+
+    /* For subset queries, hybrid leaf_extract (synthetic division) scales with
+     * n_targets. The block_build and tree phases are always full-n. */
+    double leaf_extract = (double)n * B * FMA_NS;
+    double hybrid_total = block + tree + leaf_extract * target_frac;
+
+    return (hybrid_total < linear_per_qp) ? B : 0;
+}
+
+/* Convenience wrapper for full-equity queries (all players). */
+static int select_engine(int n, int k) {
+    return select_engine_ex(n, k, 0);
 }
 
 static double compute_equity_subset(int n, const double *S, int Q,
@@ -2377,7 +2396,7 @@ static double compute_equity_subset(int n, const double *S, int Q,
     uint8_t *active = (uint8_t *)calloc(n, sizeof(uint8_t));
     for (int i = 0; i < n_targets; i++) active[targets[i]] = 1;
 
-    int B = select_engine(n, k);
+    int B = select_engine_ex(n, k, n_targets);
     if (B > 0) {
         HybridCtx *hc = hybrid_ctx_create(n, S, k, B);
         /* Build sorted-order active mask */
