@@ -63,8 +63,7 @@ constexpr int GPU_SCHOOL_WARP_MAX_CONV = 128;
 constexpr int GPU_SCHOOL_WARPS_PER_BLOCK = 4;
 constexpr size_t GPU_SCHOOL_SMEM_SAFE_BYTES = 48u * 1024u;
 
-constexpr int Q_BATCH_MAX = 8;   /* Maximum supported Q-batch width */
-/* Q_BATCH_DEFAULT removed — Q-batch size now selected by cost model */
+constexpr int Q_BATCH_MAX = 256;  /* Maximum supported Q-batch width (process all Q points in one tree traversal) */
 
 enum {
     GPU_ENGINE_LINEAR = 0,
@@ -1481,7 +1480,8 @@ __global__ static void k_schoolbook_build_warp_batch(const double *child, int cp
 }
 
 __global__ static void k_pairwise_mul(const cufftDoubleComplex *child_spec, int cn,
-                                      cufftDoubleComplex *parent_spec, int nparents) {
+                                      cufftDoubleComplex *parent_spec, int nparents,
+                                      double scale) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     size_t total = (size_t)nparents * (size_t)cn;
     if (idx >= total) return;
@@ -1490,8 +1490,8 @@ __global__ static void k_pairwise_mul(const cufftDoubleComplex *child_spec, int 
     cufftDoubleComplex a = child_spec[(size_t)(2 * p) * (size_t)cn + (size_t)f];
     cufftDoubleComplex b = child_spec[(size_t)(2 * p + 1) * (size_t)cn + (size_t)f];
     cufftDoubleComplex o;
-    o.x = a.x * b.x - a.y * b.y;
-    o.y = a.x * b.y + a.y * b.x;
+    o.x = (a.x * b.x - a.y * b.y) * scale;
+    o.y = (a.x * b.y + a.y * b.x) * scale;
     parent_spec[idx] = o;
 }
 
@@ -1507,14 +1507,21 @@ __global__ static void k_scale_zero_pad(double *data, int fft_stride, int valid_
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     size_t total = (size_t)batch * (size_t)fft_stride;
     if (idx >= total) return;
-    int b = (int)(idx / (size_t)fft_stride);
     int m = (int)(idx % (size_t)fft_stride);
-    (void)b;
     if (m < valid_len) {
         data[idx] *= inv_fft_n;
     } else {
         data[idx] = 0.0;
     }
+}
+
+/* Zero-pad only (no scaling). Used when inv_fft_n is pre-applied in k_pairwise_mul. */
+__global__ static void k_zero_pad(double *data, int fft_stride, int valid_len, int batch) {
+    size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
+    size_t total = (size_t)batch * (size_t)fft_stride;
+    if (idx >= total) return;
+    int m = (int)(idx % (size_t)fft_stride);
+    if (m >= valid_len) data[idx] = 0.0;
 }
 
 __global__ static void k_wrap_build(double *parent, int pps, int nparents,
@@ -1547,7 +1554,8 @@ __global__ static void k_wrap_build(double *parent, int pps, int nparents,
 __global__ static void k_paired_corr_freq(const cufftDoubleComplex *g_hat,
                                           const cufftDoubleComplex *cached_child_spec,
                                           int cn, int nparents,
-                                          cufftDoubleComplex *child_out_spec) {
+                                          cufftDoubleComplex *child_out_spec,
+                                          double scale) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     size_t total = (size_t)nparents * (size_t)cn;
     if (idx >= total) return;
@@ -1559,12 +1567,12 @@ __global__ static void k_paired_corr_freq(const cufftDoubleComplex *g_hat,
     cufftDoubleComplex specR = cached_child_spec[(size_t)(2 * p + 1) * (size_t)cn + (size_t)f];
 
     cufftDoubleComplex out_left;
-    out_left.x = g.x * specR.x + g.y * specR.y;
-    out_left.y = g.y * specR.x - g.x * specR.y;
+    out_left.x = (g.x * specR.x + g.y * specR.y) * scale;
+    out_left.y = (g.y * specR.x - g.x * specR.y) * scale;
 
     cufftDoubleComplex out_right;
-    out_right.x = g.x * specL.x + g.y * specL.y;
-    out_right.y = g.y * specL.x - g.x * specL.y;
+    out_right.x = (g.x * specL.x + g.y * specL.y) * scale;
+    out_right.y = (g.y * specL.x - g.x * specL.y) * scale;
 
     child_out_spec[(size_t)(2 * p) * (size_t)cn + (size_t)f] = out_left;
     child_out_spec[(size_t)(2 * p + 1) * (size_t)cn + (size_t)f] = out_right;
@@ -2838,20 +2846,22 @@ static bool run_build_level_fft(GpuPlan *plan, int ell) {
     cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
     size_t mul_total = (size_t)parent_batch * (size_t)b.cn;
     int blocks_mul = (int)((mul_total + threads - 1) / threads);
+    double inv_fft_n = 1.0 / (double)b.fft_n;
     k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(
-        fwd_out, b.cn, mul_out, parent_batch);
+        fwd_out, b.cn, mul_out, parent_batch, inv_fft_n);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
     /* Z2D: write directly to poly_levels[ell] at fft_stride[ell] */
     if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, mul_out, plan->d_poly_levels[ell]))) return false;
 
-    /* Scale valid coefficients by 1/fft_n and zero the padding region */
-    size_t szp_total = (size_t)parent_batch * (size_t)parent_stride;
-    int blocks_szp = (int)((szp_total + threads - 1) / threads);
-    k_scale_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
-        plan->d_poly_levels[ell], parent_stride, pps,
-        1.0 / (double)b.fft_n, parent_batch);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    /* Zero the padding region (1/fft_n scaling already applied in k_pairwise_mul) */
+    if (parent_stride > pps) {
+        size_t szp_total = (size_t)parent_batch * (size_t)parent_stride;
+        int blocks_szp = (int)((szp_total + threads - 1) / threads);
+        k_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
+            plan->d_poly_levels[ell], parent_stride, pps, parent_batch);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
 
     if (lp.build_wrap_m > 0) {
         int cps = plan->psz[ell - 1];
@@ -2977,21 +2987,23 @@ static bool run_prop_level_fft(GpuPlan *plan, int ell) {
 
     size_t corr_total = (size_t)nparents * (size_t)c.cn;
     int blocks_corr = (int)((corr_total + threads - 1) / threads);
+    double inv_fft_n_corr = 1.0 / (double)c.fft_n;
     k_paired_corr_freq<<<blocks_corr, threads, 0, plan->stream_compute>>>(
-        c.spec_in, child_spec, c.cn, nparents, c.spec_mid);
+        c.spec_in, child_spec, c.cn, nparents, c.spec_mid, inv_fft_n_corr);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
     /* Z2D: write directly to g_levels[ell-1] at fft_stride[ell-1] */
     if (!CUFFT_OK(cufftExecZ2D(c.plan_inv, c.spec_mid, plan->d_g_levels[ell - 1]))) return false;
 
-    /* Scale valid coefficients by 1/fft_n and zero the padding region */
+    /* Zero padding (1/fft_n scaling already applied in k_paired_corr_freq) */
     int n_children = 2 * nparents;
-    size_t szp_total = (size_t)n_children * (size_t)child_stride;
-    int blocks_szp = (int)((szp_total + threads - 1) / threads);
-    k_scale_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
-        plan->d_g_levels[ell - 1], child_stride, child_gsz,
-        1.0 / (double)c.fft_n, n_children);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    if (child_stride > child_gsz) {
+        size_t szp_total = (size_t)n_children * (size_t)child_stride;
+        int blocks_szp = (int)((szp_total + threads - 1) / threads);
+        k_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
+            plan->d_g_levels[ell - 1], child_stride, child_gsz, n_children);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
 
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents, 1, 0, plan->stream_compute>>>(
@@ -3200,20 +3212,22 @@ static bool run_build_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
     size_t mul_total = (size_t)parent_batch * (size_t)b.cn;
     int blocks_mul = (int)((mul_total + threads - 1) / threads);
+    double inv_fft_n_qb = 1.0 / (double)b.fft_n;
     k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(
-        fwd_out, b.cn, mul_out, parent_batch);
+        fwd_out, b.cn, mul_out, parent_batch, inv_fft_n_qb);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
     /* Z2D: write directly to poly_levels[ell] at fft_stride */
     if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, mul_out, plan->d_poly_levels[ell]))) return false;
 
-    /* Scale valid coefficients and zero padding */
-    size_t szp_total = (size_t)parent_batch * (size_t)parent_stride;
-    int blocks_szp = (int)((szp_total + threads - 1) / threads);
-    k_scale_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
-        plan->d_poly_levels[ell], parent_stride, pps,
-        1.0 / (double)b.fft_n, parent_batch);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    /* Zero padding (1/fft_n scaling already applied in k_pairwise_mul) */
+    if (parent_stride > pps) {
+        size_t szp_total = (size_t)parent_batch * (size_t)parent_stride;
+        int blocks_szp = (int)((szp_total + threads - 1) / threads);
+        k_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
+            plan->d_poly_levels[ell], parent_stride, pps, parent_batch);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
     if (lp.build_wrap_m > 0) {
         k_wrap_build<<<parent_batch, 1, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, parent_batch,
@@ -3346,21 +3360,23 @@ static bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
 
     size_t corr_total = (size_t)nparents_total * (size_t)c.cn;
     int blocks_corr = (int)((corr_total + threads - 1) / threads);
+    double inv_fft_n_cqb = 1.0 / (double)c.fft_n;
     k_paired_corr_freq<<<blocks_corr, threads, 0, plan->stream_compute>>>(
-        c.spec_in, child_spec, c.cn, nparents_total, c.spec_mid);
+        c.spec_in, child_spec, c.cn, nparents_total, c.spec_mid, inv_fft_n_cqb);
     if (!CUDA_OK(cudaGetLastError())) return false;
 
     /* Z2D: write directly to g_levels[ell-1] at fft_stride */
     if (!CUFFT_OK(cufftExecZ2D(c.plan_inv, c.spec_mid, plan->d_g_levels[ell - 1]))) return false;
 
-    /* Scale valid coefficients and zero padding */
+    /* Zero padding (1/fft_n scaling already applied in k_paired_corr_freq) */
     int n_children = 2 * nparents_total;
-    size_t szp_total = (size_t)n_children * (size_t)cs;
-    int blocks_szp = (int)((szp_total + threads - 1) / threads);
-    k_scale_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
-        plan->d_g_levels[ell - 1], cs, child_gsz,
-        1.0 / (double)c.fft_n, n_children);
-    if (!CUDA_OK(cudaGetLastError())) return false;
+    if (cs > child_gsz) {
+        size_t szp_total = (size_t)n_children * (size_t)cs;
+        int blocks_szp = (int)((szp_total + threads - 1) / threads);
+        k_zero_pad<<<blocks_szp, threads, 0, plan->stream_compute>>>(
+            plan->d_g_levels[ell - 1], cs, child_gsz, n_children);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
 
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents_total, 1, 0, plan->stream_compute>>>(
@@ -3927,20 +3943,13 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
 
         int best_qb = 1;
         if (!plan->opts.enable_graphs && !qb_override) {
-            /* Evaluate QB candidates: the benefit is proportional to how many
-             * tree levels have nn[ell] < GPU_SM_COUNT (underutilized). */
-            int underutil_levels = 0;
-            for (int ell = 1; ell < plan->L - 1; ++ell) {
-                if (plan->levels[ell].use_fft && plan->nn[ell] < GPU_SM_COUNT)
-                    underutil_levels++;
-            }
-            /* If most levels already have enough parallelism, QB=1 is optimal */
-            if (underutil_levels >= 2) {
-                for (int qb_try = Q_BATCH_MAX; qb_try >= 2; qb_try /= 2) {
-                    if ((size_t)qb_try * per_q_bytes <= budget) {
-                        best_qb = qb_try;
-                        break;
-                    }
+            /* Use the largest Q-batch that fits in VRAM. Larger batches
+             * always help: bigger cuFFT batches, fewer host loop iterations,
+             * reduced kernel launch overhead. */
+            for (int qb_try = Q_BATCH_MAX; qb_try >= 2; qb_try /= 2) {
+                if ((size_t)qb_try * per_q_bytes <= budget) {
+                    best_qb = qb_try;
+                    break;
                 }
             }
         }
@@ -4021,6 +4030,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
     bool fast = !plan->opts.verbose;
 
     int qb = plan->q_batch;
+    if (qb > Q) qb = Q;  /* Don't batch more Q-points than we have */
 
     double t0 = now_ns_host();
     if (plan->opts.enable_graphs && (plan->graph_ready[0] || plan->graph_ready[1])) {
