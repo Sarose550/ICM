@@ -44,7 +44,10 @@ def main():
     with open(csv_path) as f:
         reader = csv.DictReader(f)
         for row in reader:
-            sz = int(row['size'])
+            try:
+                sz = int(row['size'])
+            except (ValueError, KeyError):
+                continue  # skip malformed rows (VkFFT error output)
             total_compared += 1
             if sz <= 4096:
                 continue  # cuFFTDx handles these
