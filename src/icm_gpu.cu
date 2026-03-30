@@ -989,6 +989,9 @@ struct GpuPlan {
     double *d_qb_weights = nullptr;         /* q_batch doubles */
     double *d_qb_inv_vs = nullptr;          /* q_batch doubles */
 
+    /* Subset execution: active player mask (sorted order). nullptr = all active. */
+    uint8_t *d_active_mask = nullptr;       /* n bytes, 1=target, 0=skip */
+
     std::vector<double *> d_poly_levels;
     std::vector<double *> d_g_levels;
     std::vector<cufftDoubleComplex *> d_fft_cache;
@@ -2188,6 +2191,88 @@ __global__ static void k_accumulate_equity_qbatch(
     if (idx >= total) return;
     int qi = idx / n;
     int i = idx % n;
+    int orig = sort_perm[i];
+    double w = weights[qi];
+    double inv_v = inv_vs[qi];
+    double pw = w * S_sorted[i] * a_ptrs[qi][i] * inv_v;
+    if (!isfinite(pw)) pw = 0.0;
+    atomicAdd(&equity[orig], pw * inner_sorted[(size_t)qi * inner_stride + (size_t)i]);
+}
+
+/* Masked leaf extract: skip synthetic division for non-target players.
+ * active_mask[i] = 1 for target players (sorted index), 0 otherwise. */
+__global__ static void k_leaf_extract_qbatch_masked(
+        const double * const *a_ptrs, int n, int B, int nblocks,
+        const double *block_prods, size_t bp_stride,
+        const double *g_leaf, int leaf_psz, size_t leaf_g_stride,
+        int g_need, int k, int q_batch,
+        double *inner_sorted, size_t inner_stride,
+        const uint8_t *active_mask) {
+    int global_b = blockIdx.x;
+    int total_blocks = q_batch * nblocks;
+    if (global_b >= total_blocks) return;
+    int qi = global_b / nblocks;
+    int b = global_b % nblocks;
+
+    int start = b * B;
+    int end = start + B;
+    if (end > n) end = n;
+    int bsize = end - start;
+    const double *a_sorted = a_ptrs[qi];
+    const double *P_b = block_prods + (size_t)qi * bp_stride + (size_t)b * (size_t)(B + 1);
+    const double *g_b = g_leaf + (size_t)qi * leaf_g_stride + (size_t)b * (size_t)leaf_psz;
+    double *inner_out = inner_sorted + (size_t)qi * inner_stride;
+    int pk_g = g_need < bsize ? g_need : bsize;
+    if (pk_g > k) pk_g = k;
+
+    for (int t = threadIdx.x; t < bsize; t += blockDim.x) {
+        int j = start + t;
+        if (!active_mask[j]) { inner_out[j] = 0.0; continue; }
+
+        double aj = a_sorted[j];
+        double bj = 1.0 - aj;
+        double eq = 0.0;
+
+        if (aj > 0.5) {
+            double ia = 1.0 / aj;
+            double c = -bj / aj;
+            double q = P_b[0] * ia;
+            eq = g_b[0] * q;
+            for (int m = 1; m < pk_g; ++m) {
+                q = c * q + P_b[m] * ia;
+                eq += g_b[m] * q;
+            }
+        } else if (aj > 1e-15) {
+            double ib = 1.0 / bj;
+            double c = -aj / bj;
+            double q = P_b[bsize] * ib;
+            if (bsize - 1 < pk_g) eq += g_b[bsize - 1] * q;
+            for (int m = bsize - 2; m >= 0; --m) {
+                q = c * q + P_b[m + 1] * ib;
+                if (m < pk_g) eq += g_b[m] * q;
+            }
+        } else {
+            for (int m = 0; m < pk_g; ++m) eq += g_b[m] * P_b[m + 1];
+        }
+        inner_out[j] = eq;
+    }
+}
+
+/* Masked accumulate: only accumulate for target players. */
+__global__ static void k_accumulate_equity_qbatch_masked(
+        const double *inner_sorted, size_t inner_stride,
+        const double * const *a_ptrs,
+        const double *S_sorted,
+        const int *sort_perm,
+        int n, const double *weights, const double *inv_vs,
+        int q_batch, double *equity,
+        const uint8_t *active_mask) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = q_batch * n;
+    if (idx >= total) return;
+    int qi = idx / n;
+    int i = idx % n;
+    if (!active_mask[i]) return;
     int orig = sort_perm[i];
     double w = weights[qi];
     double inv_v = inv_vs[qi];
@@ -3572,16 +3657,28 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
         else { if (!run_prop_level_fft_qb(plan, ell, qb)) return false; }
     }
 
-    /* 6. Leaf extract for all Q-points */
+    /* 6. Leaf extract for all Q-points (masked if subset query) */
     size_t leaf_g_stride = (size_t)plan->nn[0] * (size_t)plan->fft_stride[0];
     size_t inner_stride = (size_t)plan->n;
     if (plan->B <= 1) {
-        /* B=1: batched leaf extract for all Q-points in single launch */
         int total_extract = qb * plan->n;
         int blocks_extract = (total_extract + 255) / 256;
         k_leaf_extract_b1_qbatch<<<blocks_extract, 256, 0, plan->stream_compute>>>(
             plan->n, plan->d_g_levels[0], plan->fft_stride[0], qb,
             leaf_g_stride, plan->d_inner_qbatch, inner_stride);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    } else if (plan->d_active_mask) {
+        /* Masked: skip synthetic division for non-target players */
+        size_t bp_stride_local = (size_t)plan->N_tree * (size_t)(plan->B + 1);
+        int threads_leaf = plan->B;
+        if (threads_leaf > 1024) threads_leaf = 1024;
+        k_leaf_extract_qbatch_masked<<<qb * plan->nblocks, threads_leaf, 0, plan->stream_compute>>>(
+            (const double * const *)d_a_ptrs, plan->n, plan->B, plan->nblocks,
+            plan->d_block_prods_qbatch, bp_stride_local,
+            plan->d_g_levels[0], plan->fft_stride[0], leaf_g_stride,
+            plan->g_needed[0], plan->k, qb,
+            plan->d_inner_qbatch, inner_stride,
+            plan->d_active_mask);
         if (!CUDA_OK(cudaGetLastError())) return false;
     } else {
         size_t bp_stride_local = (size_t)plan->N_tree * (size_t)(plan->B + 1);
@@ -3596,8 +3693,7 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
 
-    /* 7. Accumulate equity for all Q-points.
-     * Upload weights and inv_vs to pre-allocated device buffers. */
+    /* 7. Accumulate equity for all Q-points (masked if subset query) */
     double h_weights[Q_BATCH_MAX];
     double h_inv_vs[Q_BATCH_MAX];
     for (int qi = 0; qi < qb; ++qi) {
@@ -3611,12 +3707,21 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
 
     int accum_total = qb * plan->n;
     int blocks_accum = (accum_total + threads - 1) / threads;
-    k_accumulate_equity_qbatch<<<blocks_accum, threads, 0, plan->stream_compute>>>(
-        plan->d_inner_qbatch, inner_stride,
-        (const double * const *)d_a_ptrs,
-        plan->d_S_sorted, plan->d_sort_perm,
-        plan->n, plan->d_qb_weights, plan->d_qb_inv_vs,
-        qb, plan->d_equity);
+    if (plan->d_active_mask) {
+        k_accumulate_equity_qbatch_masked<<<blocks_accum, threads, 0, plan->stream_compute>>>(
+            plan->d_inner_qbatch, inner_stride,
+            (const double * const *)d_a_ptrs,
+            plan->d_S_sorted, plan->d_sort_perm,
+            plan->n, plan->d_qb_weights, plan->d_qb_inv_vs,
+            qb, plan->d_equity, plan->d_active_mask);
+    } else {
+        k_accumulate_equity_qbatch<<<blocks_accum, threads, 0, plan->stream_compute>>>(
+            plan->d_inner_qbatch, inner_stride,
+            (const double * const *)d_a_ptrs,
+            plan->d_S_sorted, plan->d_sort_perm,
+            plan->n, plan->d_qb_weights, plan->d_qb_inv_vs,
+            qb, plan->d_equity);
+    }
     if (!CUDA_OK(cudaGetLastError())) return false;
 
     return true;
@@ -3997,15 +4102,11 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
 
         int best_qb = 1;
         if (!plan->opts.enable_graphs && !qb_override) {
-            /* Use the largest Q-batch that fits in VRAM. Larger batches
-             * always help: bigger cuFFT batches, fewer host loop iterations,
-             * reduced kernel launch overhead. */
-            for (int qb_try = Q_BATCH_MAX; qb_try >= 2; qb_try /= 2) {
-                if ((size_t)qb_try * per_q_bytes <= budget) {
-                    best_qb = qb_try;
-                    break;
-                }
-            }
+            /* Use the exact largest Q-batch that fits in VRAM budget.
+             * No power-of-2 restriction — cuFFT batch counts don't need it. */
+            best_qb = (per_q_bytes > 0) ? (int)(budget / per_q_bytes) : Q_BATCH_MAX;
+            if (best_qb > Q_BATCH_MAX) best_qb = Q_BATCH_MAX;
+            if (best_qb < 1) best_qb = 1;
         }
         int qb = qb_override ? qb_override : best_qb;
         if (plan->opts.enable_graphs) qb = 1;
@@ -4470,17 +4571,56 @@ double icm_gpu_equity_subset(int n, const double *S, int Q,
                              const IcmGpuOptions *opts,
                              IcmGpuRunStats *stats) {
     if (n <= 0 || k <= 0 || n_targets <= 0 || !targets) return -1.0;
+    if (g_cuda_device < 0) {
+        if (!icm_gpu_init(0)) return -1.0;
+    }
 
-    /* Compute all equities, then extract the subset */
-    std::vector<double> full_equity(n, 0.0);
-    double t = icm_gpu_equity(n, S, Q, payout, k, full_equity.data(), opts, stats);
-    if (t < 0) return t;
+    /* Create plan */
+    IcmGpuPlan *plan = icm_gpu_plan_create(n, S, k, opts);
+    if (!plan) return -1.0;
 
-    memset(equity, 0, n * sizeof(double));
+    /* Build active mask in sorted order: map original-index targets to sorted indices */
+    std::vector<uint8_t> h_mask(n, 0);
     for (int i = 0; i < n_targets; ++i) {
-        int idx = targets[i];
-        if (idx >= 0 && idx < n)
-            equity[idx] = full_equity[idx];
+        int orig = targets[i];
+        if (orig >= 0 && orig < n) {
+            /* inv_perm[sorted_idx] = orig_idx, so we need sort_perm[orig] */
+            /* sort_perm maps sorted->original, inv_perm maps original->sorted */
+            h_mask[plan->inv_perm[orig]] = 1;
+        }
+    }
+
+    /* Upload mask to device */
+    uint8_t *d_mask = nullptr;
+    if (!CUDA_OK(cudaMalloc(&d_mask, (size_t)n * sizeof(uint8_t)))) {
+        icm_gpu_plan_destroy(plan);
+        return -1.0;
+    }
+    if (!CUDA_OK(cudaMemcpy(d_mask, h_mask.data(), (size_t)n * sizeof(uint8_t),
+                            cudaMemcpyHostToDevice))) {
+        cudaFree(d_mask);
+        icm_gpu_plan_destroy(plan);
+        return -1.0;
+    }
+    plan->d_active_mask = d_mask;
+
+    /* Execute with mask */
+    double t = icm_gpu_equity_with_plan(plan, Q, payout, equity, stats);
+
+    /* Clean up */
+    plan->d_active_mask = nullptr;  /* prevent double-free in plan_destroy */
+    cudaFree(d_mask);
+    icm_gpu_plan_destroy(plan);
+
+    /* Zero non-target entries in output */
+    if (t >= 0) {
+        std::vector<bool> is_target(n, false);
+        for (int i = 0; i < n_targets; ++i) {
+            if (targets[i] >= 0 && targets[i] < n) is_target[targets[i]] = true;
+        }
+        for (int i = 0; i < n; ++i) {
+            if (!is_target[i]) equity[i] = 0.0;
+        }
     }
     return t;
 }
