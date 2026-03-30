@@ -182,7 +182,12 @@ int icm_gpu_plan_summary(const IcmGpuPlan *plan_opaque, IcmGpuPlanSummary *summa
     for (int ell = 1; ell < plan->L; ++ell) {
         if (!plan->levels[ell].use_fft) summary->n_tier1++;
         else if (plan->levels[ell].tier == GPU_TIER_FUSED) summary->n_tier2++;
-        else summary->n_tier3++;
+        else {
+            summary->n_tier3++;
+#if ICM_HAVE_VKFFT
+            if (plan->build_fft[ell].use_vkfft) summary->n_vkfft++;
+#endif
+        }
     }
     summary->q_batch = plan->q_batch;
     summary->planned_peak_vram_bytes = plan->planned_peak_vram_bytes;

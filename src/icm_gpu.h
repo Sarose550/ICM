@@ -46,6 +46,7 @@ typedef struct {
     int n_tier1;
     int n_tier2;
     int n_tier3;
+    int n_vkfft;                /* Tier-3 levels using VkFFT instead of cuFFT */
     int q_batch;                /* Q-points processed per tree traversal */
     size_t planned_peak_vram_bytes;
 } IcmGpuPlanSummary;

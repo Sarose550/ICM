@@ -60,6 +60,18 @@
 #define ICM_HAVE_CUFFTDX_R2C 0
 #endif
 
+/* ── VkFFT detection (dual-dispatch: cuFFT vs VkFFT per size) ──── */
+#if defined(HAS_GPU_CALIB_LIB) && defined(USE_VKFFT)
+#ifndef VKFFT_BACKEND
+#define VKFFT_BACKEND 1  /* CUDA backend */
+#endif
+#include "vkFFT.h"
+#include <cuda.h>        /* CUdevice for VkFFT config */
+#define ICM_HAVE_VKFFT 1
+#else
+#define ICM_HAVE_VKFFT 0
+#endif
+
 /* ── Named namespace for internal symbols ──────────────────────── */
 namespace icm_gpu_detail {
 
@@ -113,6 +125,13 @@ struct GpuFftBuffers {
     int batch_inv = 0;
     int fft_n = 0;
     int cn = 0;
+#if ICM_HAVE_VKFFT
+    VkFFTApplication vkfft_app_fwd = {};
+    VkFFTApplication vkfft_app_inv = {};
+    int use_vkfft = 0;             /* 1 if this buffer set uses VkFFT */
+    int vkfft_fwd_initialized = 0; /* track init state for cleanup */
+    int vkfft_inv_initialized = 0;
+#endif
 };
 
 struct SharedFftWork {
@@ -282,6 +301,19 @@ bool device_sort_players(GpuPlan *plan);
 bool allocate_plan_device_memory(GpuPlan *plan);
 bool choose_uncached_levels(GpuPlan *plan);
 bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist = 0);
+
+#if ICM_HAVE_VKFFT
+/* VkFFT plan creation and dispatch helpers (gpu_plan.cu / gpu_exec.cu) */
+bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, cudaStream_t *stream_ptr);
+void destroy_vkfft_app(VkFFTApplication *app);
+bool should_use_vkfft(int fft_n);
+
+/* Gather/scatter kernels for strided <-> contiguous conversion */
+__global__ void k_gather_strided(const double *src, int src_stride, double *dst,
+                                 int fft_n, int batch);
+__global__ void k_scatter_strided(const double *src, int fft_n, double *dst,
+                                  int dst_stride, int valid_len, int batch);
+#endif
 
 /* ── Kernel dispatch (gpu_kernels.cu) ───────────────────────────── */
 bool is_cufftdx_supported_fft_n(int fft_n);

@@ -37,6 +37,10 @@ int single_kernel_max_n(int k) {
 
 bool destroy_fft_buffers(GpuPlan *plan, GpuFftBuffers &b, cudaStream_t stream) {
     (void)plan; (void)stream;
+#if ICM_HAVE_VKFFT
+    if (b.vkfft_fwd_initialized) { destroy_vkfft_app(&b.vkfft_app_fwd); b.vkfft_fwd_initialized = 0; }
+    if (b.vkfft_inv_initialized) { destroy_vkfft_app(&b.vkfft_app_inv); b.vkfft_inv_initialized = 0; }
+#endif
     if (b.plan_fwd) { if (!CUFFT_OK(cufftDestroy(b.plan_fwd))) return false; b.plan_fwd = 0; }
     if (b.plan_inv) { if (!CUFFT_OK(cufftDestroy(b.plan_inv))) return false; b.plan_inv = 0; }
     b = GpuFftBuffers{};
@@ -136,7 +140,88 @@ bool run_build_level_fft(GpuPlan *plan, int ell) {
     auto &lp = plan->levels[ell];
     auto &b = plan->build_fft[ell];
     int threads = 256;
+    int qb = plan->q_batch;
+    int total_child = qb * child_batch;
+    int total_parent = qb * parent_batch;
 
+#if ICM_HAVE_VKFFT
+    if (b.use_vkfft) {
+        /* VkFFT path: gather -> R2C fwd in-place -> pairwise_mul -> C2R inv in-place -> scatter */
+        int fft_n = b.fft_n;
+        int cn = b.cn;
+
+        /* 1. Gather strided child poly into contiguous spec_in buffer (as doubles) */
+        {
+            int dst_stride = cn * 2;
+            int total_elems = total_child * dst_stride;
+            int blocks_g = (total_elems + threads - 1) / threads;
+            k_gather_strided<<<blocks_g, threads, 0, plan->stream_compute>>>(
+                plan->d_poly_levels[ell - 1], child_stride,
+                (double *)b.spec_in, fft_n, total_child);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+
+        /* 2. VkFFT R2C forward in-place on spec_in */
+        {
+            VkFFTLaunchParams lp_fwd = {};
+            lp_fwd.buffer = (void **)&b.spec_in;
+            VkFFTResult res = VkFFTAppend(&b.vkfft_app_fwd, -1, &lp_fwd);
+            if (res != VKFFT_SUCCESS) return false;
+        }
+
+        /* spec_in now holds complex spectra, same layout as cuFFT output */
+        cufftDoubleComplex *fwd_out = (lp.cache_fft && plan->d_fft_cache[ell]) ? plan->d_fft_cache[ell] : b.spec_in;
+        if (fwd_out != b.spec_in) {
+            /* Copy to cache */
+            size_t copy_bytes = (size_t)total_child * cn * sizeof(cufftDoubleComplex);
+            if (!CUDA_OK(cudaMemcpyAsync(fwd_out, b.spec_in, copy_bytes,
+                                          cudaMemcpyDeviceToDevice, plan->stream_compute))) return false;
+        }
+        if (lp.cache_fft && plan->d_fft_cache[ell]) {
+            if (ell < (int)plan->fft_cache_valid.size()) plan->fft_cache_valid[ell] = true;
+        }
+
+        /* 3. Pairwise multiply */
+        cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
+        size_t mul_total = (size_t)total_parent * (size_t)cn;
+        int blocks_mul = (int)((mul_total + threads - 1) / threads);
+        double inv_fft_n = 1.0 / (double)fft_n;
+        k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(
+            fwd_out, cn, mul_out, total_parent, inv_fft_n);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+
+        /* 4. VkFFT C2R inverse in-place on mul_out */
+        {
+            VkFFTLaunchParams lp_inv = {};
+            lp_inv.buffer = (void **)&mul_out;
+            VkFFTResult res = VkFFTAppend(&b.vkfft_app_inv, 1, &lp_inv);
+            if (res != VKFFT_SUCCESS) return false;
+        }
+
+        /* 5. Scatter contiguous result to strided parent poly_levels */
+        {
+            int total_elems = total_parent * parent_stride;
+            int blocks_s = (total_elems + threads - 1) / threads;
+            k_scatter_strided<<<blocks_s, threads, 0, plan->stream_compute>>>(
+                (const double *)mul_out, fft_n, plan->d_poly_levels[ell],
+                parent_stride, pps, total_parent);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+
+        if (lp.build_wrap_m > 0) {
+            int cps = plan->psz[ell - 1];
+            k_wrap_build<<<total_parent, 1, 0, plan->stream_compute>>>(
+                plan->d_poly_levels[ell], pps, total_parent,
+                plan->d_poly_levels[ell - 1], cps, lp.build_conv,
+                fft_n, lp.build_wrap_m,
+                parent_stride, child_stride);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+        return true;
+    }
+#endif /* ICM_HAVE_VKFFT */
+
+    /* cuFFT path (original) */
     cufftDoubleComplex *fwd_out = (lp.cache_fft && plan->d_fft_cache[ell]) ? plan->d_fft_cache[ell] : b.spec_in;
     if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, plan->d_poly_levels[ell - 1], fwd_out))) return false;
 
@@ -279,18 +364,113 @@ bool run_prop_level_fft(GpuPlan *plan, int ell) {
     int child_stride = plan->fft_stride[ell - 1];
     auto &lp = plan->levels[ell];
     auto &c = plan->corr_fft[ell];
+    auto &b_fft = plan->build_fft[ell];
     int len_g = lp.g_eff;
     int len_P = lp.p_eff;
     int len_out = lp.out_needed;
     int threads = 256;
+#if ICM_HAVE_VKFFT
+    if (c.use_vkfft) {
+        int fft_n = c.fft_n;
+        int cn = c.cn;
 
+        /* 1. Gather g_levels[ell] (strided) -> contiguous spec_in for VkFFT fwd */
+        {
+            int dst_stride = cn * 2;
+            int total_elems = nparents * dst_stride;
+            int blocks_g = (total_elems + threads - 1) / threads;
+            k_gather_strided<<<blocks_g, threads, 0, plan->stream_compute>>>(
+                plan->d_g_levels[ell], parent_stride,
+                (double *)c.spec_in, fft_n, nparents);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+
+        /* 2. VkFFT R2C forward in-place on spec_in */
+        {
+            VkFFTLaunchParams lp_fwd = {};
+            lp_fwd.buffer = (void **)&c.spec_in;
+            VkFFTResult res = VkFFTAppend(&c.vkfft_app_fwd, -1, &lp_fwd);
+            if (res != VKFFT_SUCCESS) return false;
+        }
+
+        /* 3. Get child spectra (from cache or recompute) */
+        const cufftDoubleComplex *child_spec = nullptr;
+        if (plan->d_fft_cache[ell] && ell < (int)plan->fft_cache_valid.size() && plan->fft_cache_valid[ell]) {
+            child_spec = plan->d_fft_cache[ell];
+        }
+        if (!child_spec) {
+            /* Recompute child spectra using VkFFT or cuFFT */
+            int child_batch = plan->nn[ell - 1];
+            if (b_fft.use_vkfft) {
+                int dst_stride = cn * 2;
+                int total_elems = child_batch * dst_stride;
+                int blocks_g = (total_elems + threads - 1) / threads;
+                k_gather_strided<<<blocks_g, threads, 0, plan->stream_compute>>>(
+                    plan->d_poly_levels[ell - 1], child_stride,
+                    (double *)b_fft.spec_in, fft_n, child_batch);
+                if (!CUDA_OK(cudaGetLastError())) return false;
+                VkFFTLaunchParams lp_bfwd = {};
+                lp_bfwd.buffer = (void **)&b_fft.spec_in;
+                VkFFTResult res = VkFFTAppend(&b_fft.vkfft_app_fwd, -1, &lp_bfwd);
+                if (res != VKFFT_SUCCESS) return false;
+            } else {
+                if (!CUFFT_OK(cufftExecD2Z(b_fft.plan_fwd, plan->d_poly_levels[ell - 1], b_fft.spec_in))) return false;
+            }
+            child_spec = b_fft.spec_in;
+        }
+
+        /* 4. Paired correlate in frequency domain */
+        size_t corr_total = (size_t)nparents * (size_t)cn;
+        int blocks_corr = (int)((corr_total + threads - 1) / threads);
+        double inv_fft_n_corr = 1.0 / (double)fft_n;
+        k_paired_corr_freq<<<blocks_corr, threads, 0, plan->stream_compute>>>(
+            c.spec_in, child_spec, cn, nparents, c.spec_mid, inv_fft_n_corr);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+
+        /* 5. VkFFT C2R inverse in-place on spec_mid */
+        {
+            VkFFTLaunchParams lp_inv = {};
+            lp_inv.buffer = (void **)&c.spec_mid;
+            VkFFTResult res = VkFFTAppend(&c.vkfft_app_inv, 1, &lp_inv);
+            if (res != VKFFT_SUCCESS) return false;
+        }
+
+        /* 6. Scatter contiguous result to strided g_levels[ell-1] */
+        {
+            int n_children = 2 * nparents;
+            int total_elems = n_children * child_stride;
+            int blocks_s = (total_elems + threads - 1) / threads;
+            k_scatter_strided<<<blocks_s, threads, 0, plan->stream_compute>>>(
+                (const double *)c.spec_mid, fft_n, plan->d_g_levels[ell - 1],
+                child_stride, child_gsz, n_children);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+
+        if (lp.corr_wrap_m > 0) {
+            k_wrap_corr_pair<<<nparents, 1, 0, plan->stream_compute>>>(
+                plan->d_g_levels[ell - 1], child_gsz, nparents,
+                plan->d_g_levels[ell], plan->psz[ell], len_g,
+                plan->d_poly_levels[ell - 1], plan->psz[ell - 1], len_P,
+                len_out,
+                fft_n, lp.corr_wrap_m,
+                child_stride, parent_stride, child_stride);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+
+        if (plan->opts.memory_strategy >= 2 && ell < (int)plan->fft_cache_valid.size()) {
+            plan->fft_cache_valid[ell] = false;
+        }
+        return true;
+    }
+#endif /* ICM_HAVE_VKFFT */
+
+    /* cuFFT path (original) */
     if (!CUFFT_OK(cufftExecD2Z(c.plan_fwd, plan->d_g_levels[ell], c.spec_in))) return false;
 
     const cufftDoubleComplex *child_spec = (plan->d_fft_cache[ell] && ell < (int)plan->fft_cache_valid.size() && plan->fft_cache_valid[ell]) ? plan->d_fft_cache[ell] : nullptr;
     if (!child_spec) {
-        auto &b = plan->build_fft[ell];
-        if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, plan->d_poly_levels[ell - 1], b.spec_in))) return false;
-        child_spec = b.spec_in;
+        if (!CUFFT_OK(cufftExecD2Z(b_fft.plan_fwd, plan->d_poly_levels[ell - 1], b_fft.spec_in))) return false;
+        child_spec = b_fft.spec_in;
     }
 
     size_t corr_total = (size_t)nparents * (size_t)c.cn;
@@ -421,6 +601,59 @@ bool run_build_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     auto &lp = plan->levels[ell]; auto &b = plan->build_fft[ell];
     int threads = 256;
 
+#if ICM_HAVE_VKFFT
+    if (b.use_vkfft) {
+        int fft_n = b.fft_n; int cn = b.cn;
+        /* Gather -> VkFFT R2C fwd -> pairwise_mul -> VkFFT C2R inv -> scatter */
+        {
+            int dst_stride = cn * 2;
+            int total_elems = child_batch * dst_stride;
+            int blocks_g = (total_elems + threads - 1) / threads;
+            k_gather_strided<<<blocks_g, threads, 0, plan->stream_compute>>>(
+                plan->d_poly_levels[ell - 1], child_stride,
+                (double *)b.spec_in, fft_n, child_batch);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+        { VkFFTLaunchParams lp_fwd = {}; lp_fwd.buffer = (void **)&b.spec_in;
+          if (VkFFTAppend(&b.vkfft_app_fwd, -1, &lp_fwd) != VKFFT_SUCCESS) return false; }
+
+        cufftDoubleComplex *fwd_out = (lp.cache_fft && plan->d_fft_cache[ell]) ? plan->d_fft_cache[ell] : b.spec_in;
+        if (fwd_out != b.spec_in) {
+            size_t copy_bytes = (size_t)child_batch * cn * sizeof(cufftDoubleComplex);
+            if (!CUDA_OK(cudaMemcpyAsync(fwd_out, b.spec_in, copy_bytes,
+                                          cudaMemcpyDeviceToDevice, plan->stream_compute))) return false;
+        }
+        if (lp.cache_fft && plan->d_fft_cache[ell]) {
+            if (ell < (int)plan->fft_cache_valid.size()) plan->fft_cache_valid[ell] = true;
+        }
+        cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
+        size_t mul_total = (size_t)parent_batch * (size_t)cn;
+        int blocks_mul = (int)((mul_total + threads - 1) / threads);
+        double inv_fft_n_qb = 1.0 / (double)fft_n;
+        k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(fwd_out, cn, mul_out, parent_batch, inv_fft_n_qb);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+
+        { VkFFTLaunchParams lp_inv = {}; lp_inv.buffer = (void **)&mul_out;
+          if (VkFFTAppend(&b.vkfft_app_inv, 1, &lp_inv) != VKFFT_SUCCESS) return false; }
+
+        {
+            int total_elems = parent_batch * parent_stride;
+            int blocks_s = (total_elems + threads - 1) / threads;
+            k_scatter_strided<<<blocks_s, threads, 0, plan->stream_compute>>>(
+                (const double *)mul_out, fft_n, plan->d_poly_levels[ell],
+                parent_stride, pps, parent_batch);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+        if (lp.build_wrap_m > 0) {
+            k_wrap_build<<<parent_batch, 1, 0, plan->stream_compute>>>(
+                plan->d_poly_levels[ell], pps, parent_batch,
+                plan->d_poly_levels[ell - 1], cps, lp.build_conv, fft_n, lp.build_wrap_m, parent_stride, child_stride);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+        return true;
+    }
+#endif
+
     cufftDoubleComplex *fwd_out = (lp.cache_fft && plan->d_fft_cache[ell]) ? plan->d_fft_cache[ell] : b.spec_in;
     if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, plan->d_poly_levels[ell - 1], fwd_out))) return false;
     if (lp.cache_fft && plan->d_fft_cache[ell]) {
@@ -528,15 +761,79 @@ bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     int nparents_total = qb * plan->nn[ell];
     int ps = plan->fft_stride[ell]; int cs = plan->fft_stride[ell - 1];
     auto &lp = plan->levels[ell]; auto &c = plan->corr_fft[ell];
+    auto &b_fft = plan->build_fft[ell];
     int len_g = lp.g_eff; int len_P = lp.p_eff; int len_out = lp.out_needed;
     int threads = 256;
+
+#if ICM_HAVE_VKFFT
+    if (c.use_vkfft) {
+        int fft_n = c.fft_n; int cn = c.cn;
+        int n_children = 2 * nparents_total;
+        /* Gather g_levels -> VkFFT fwd -> corr_freq -> VkFFT inv -> scatter */
+        {
+            int dst_stride = cn * 2;
+            int total_elems = nparents_total * dst_stride;
+            int blocks_g = (total_elems + threads - 1) / threads;
+            k_gather_strided<<<blocks_g, threads, 0, plan->stream_compute>>>(
+                plan->d_g_levels[ell], ps, (double *)c.spec_in, fft_n, nparents_total);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+        { VkFFTLaunchParams lp_fwd = {}; lp_fwd.buffer = (void **)&c.spec_in;
+          if (VkFFTAppend(&c.vkfft_app_fwd, -1, &lp_fwd) != VKFFT_SUCCESS) return false; }
+
+        const cufftDoubleComplex *child_spec = (plan->d_fft_cache[ell] && ell < (int)plan->fft_cache_valid.size() && plan->fft_cache_valid[ell]) ? plan->d_fft_cache[ell] : nullptr;
+        if (!child_spec) {
+            int child_batch = qb * plan->nn[ell - 1];
+            if (b_fft.use_vkfft) {
+                int dst_stride = cn * 2;
+                int total_elems = child_batch * dst_stride;
+                int blocks_g = (total_elems + threads - 1) / threads;
+                k_gather_strided<<<blocks_g, threads, 0, plan->stream_compute>>>(
+                    plan->d_poly_levels[ell - 1], cs, (double *)b_fft.spec_in, fft_n, child_batch);
+                if (!CUDA_OK(cudaGetLastError())) return false;
+                VkFFTLaunchParams lp_bfwd = {}; lp_bfwd.buffer = (void **)&b_fft.spec_in;
+                if (VkFFTAppend(&b_fft.vkfft_app_fwd, -1, &lp_bfwd) != VKFFT_SUCCESS) return false;
+            } else {
+                if (!CUFFT_OK(cufftExecD2Z(b_fft.plan_fwd, plan->d_poly_levels[ell - 1], b_fft.spec_in))) return false;
+            }
+            child_spec = b_fft.spec_in;
+        }
+        size_t corr_total = (size_t)nparents_total * (size_t)cn;
+        int blocks_corr = (int)((corr_total + threads - 1) / threads);
+        double inv_fft_n_cqb = 1.0 / (double)fft_n;
+        k_paired_corr_freq<<<blocks_corr, threads, 0, plan->stream_compute>>>(c.spec_in, child_spec, cn, nparents_total, c.spec_mid, inv_fft_n_cqb);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+
+        { VkFFTLaunchParams lp_inv = {}; lp_inv.buffer = (void **)&c.spec_mid;
+          if (VkFFTAppend(&c.vkfft_app_inv, 1, &lp_inv) != VKFFT_SUCCESS) return false; }
+
+        {
+            int total_elems = n_children * cs;
+            int blocks_s = (total_elems + threads - 1) / threads;
+            k_scatter_strided<<<blocks_s, threads, 0, plan->stream_compute>>>(
+                (const double *)c.spec_mid, fft_n, plan->d_g_levels[ell - 1], cs, child_gsz, n_children);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+        if (lp.corr_wrap_m > 0) {
+            k_wrap_corr_pair<<<nparents_total, 1, 0, plan->stream_compute>>>(
+                plan->d_g_levels[ell - 1], child_gsz, nparents_total,
+                plan->d_g_levels[ell], plan->psz[ell], len_g,
+                plan->d_poly_levels[ell - 1], plan->psz[ell - 1], len_P, len_out,
+                fft_n, lp.corr_wrap_m, cs, ps, cs);
+            if (!CUDA_OK(cudaGetLastError())) return false;
+        }
+        if (plan->opts.memory_strategy >= 2 && ell < (int)plan->fft_cache_valid.size()) {
+            plan->fft_cache_valid[ell] = false;
+        }
+        return true;
+    }
+#endif
 
     if (!CUFFT_OK(cufftExecD2Z(c.plan_fwd, plan->d_g_levels[ell], c.spec_in))) return false;
     const cufftDoubleComplex *child_spec = (plan->d_fft_cache[ell] && ell < (int)plan->fft_cache_valid.size() && plan->fft_cache_valid[ell]) ? plan->d_fft_cache[ell] : nullptr;
     if (!child_spec) {
-        auto &b = plan->build_fft[ell];
-        if (!CUFFT_OK(cufftExecD2Z(b.plan_fwd, plan->d_poly_levels[ell - 1], b.spec_in))) return false;
-        child_spec = b.spec_in;
+        if (!CUFFT_OK(cufftExecD2Z(b_fft.plan_fwd, plan->d_poly_levels[ell - 1], b_fft.spec_in))) return false;
+        child_spec = b_fft.spec_in;
     }
     size_t corr_total = (size_t)nparents_total * (size_t)c.cn;
     int blocks_corr = (int)((corr_total + threads - 1) / threads);

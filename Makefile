@@ -142,6 +142,7 @@ $(CPU_REF_OBJ): src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h | $(BUILD_DIR
 	$(CC) $(CFLAGS) $(INCLUDES) -c src/icm.c -o $@
 
 CUFFTDX_FLAGS = $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY
+VKFFT_FLAGS = $(if $(VKFFT_INC),$(VKFFT_INC) -DUSE_VKFFT)
 GPU_INCLUDES = $(INCLUDES) -Idevices/b200
 
 # ── Multi-file GPU compilation (separate compilation + device linking) ──
@@ -153,7 +154,7 @@ $(BUILD_DIR)/gpu_%.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu -dc -o $@ $<
 
 $(BUILD_DIR)/gpu_%_fused.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $@ $<
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $@ $<
 
 GPU_OBJS_PLAIN = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
 GPU_OBJS_FUSED = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%_fused.o,$(GPU_SRCS))
@@ -169,12 +170,12 @@ bench_gpu: bench/bench_gpu.cu $(GPU_OBJS_PLAIN) $(BUILD_DIR)/gpu_dlink.o $(CPU_R
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu.o $(GPU_OBJS_PLAIN) $(BUILD_DIR)/gpu_dlink.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
 
 bench_gpu_fused: bench/bench_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ)
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/bench_gpu_fused.o bench/bench_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu_fused.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/bench_gpu_fused.o bench/bench_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu_fused.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS) $(if $(VKFFT_INC),-lcuda)
 
 calibrate_gpu: tools/calibrate_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu.o tools/calibrate_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu.o tools/calibrate_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(if $(VKFFT_INC),-lcuda)
 
 heatmap_gpu: tools/heatmap_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/heatmap_gpu.o tools/heatmap_gpu.cu
