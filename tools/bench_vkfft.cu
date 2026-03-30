@@ -52,6 +52,31 @@ __global__ void pointwise_multiply(cufftDoubleComplex *data,
     }
 }
 
+/* Gather: copy from strided layout to contiguous (for VkFFT input) */
+__global__ void k_bench_gather(const double *src, int src_stride,
+                                double *dst, int fft_n, int batch) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch * fft_n;
+    if (idx >= total) return;
+    int b = idx / fft_n;
+    int m = idx % fft_n;
+    dst[idx] = src[(size_t)b * src_stride + m];
+}
+
+/* Scatter: copy from contiguous to strided layout (for VkFFT output) */
+__global__ void k_bench_scatter(const double *src, int fft_n,
+                                 double *dst, int dst_stride, int batch) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch * dst_stride;
+    if (idx >= total) return;
+    int b = idx / dst_stride;
+    int m = idx % dst_stride;
+    if (m < fft_n)
+        dst[idx] = src[(size_t)b * fft_n + m];
+    else
+        dst[idx] = 0.0;
+}
+
 /* Benchmark cuFFT R2C -> pointwise -> C2R pipeline */
 static double bench_cufft(int fft_size, double *d_real, cufftDoubleComplex *d_complex,
                           cufftDoubleComplex *d_filter, cudaStream_t stream) {
@@ -117,24 +142,45 @@ static double bench_cufft(int fft_size, double *d_real, cufftDoubleComplex *d_co
     return best_ns;
 }
 
-/* Benchmark VkFFT R2C -> pointwise -> C2R pipeline */
-static double bench_vkfft(int fft_size, double *d_real, cufftDoubleComplex *d_complex,
+/* Benchmark VkFFT R2C -> pointwise -> C2R pipeline.
+ * Uses out-of-place with strided real buffers (matching production code):
+ * - Forward: reads strided real from d_real_strided, writes contiguous complex to d_complex
+ * - Inverse: reads contiguous complex, writes strided real to d_real_strided
+ * This measures the true end-to-end cost including VkFFT's internal stride handling. */
+static double bench_vkfft(int fft_size, double *d_real_strided, cufftDoubleComplex *d_complex,
                           cufftDoubleComplex *d_filter, cudaStream_t stream) {
     int complex_size = fft_size / 2 + 1;
     int total_complex = complex_size * BATCH;
+    /* Use a stride 2x the FFT size (simulating typical fft_stride in production) */
+    int stride = fft_size * 2;
 
-    /* Buffer size — must be large enough for in-place R2C */
+    /* Main buffer: contiguous complex */
     uint64_t buf_size = (uint64_t)complex_size * BATCH * sizeof(cufftDoubleComplex);
+    /* I/O buffer: strided real */
+    uint64_t io_buf_size = (uint64_t)stride * BATCH * sizeof(double);
 
-    /* VkFFT configuration */
+    /* VkFFT configuration: out-of-place with strides */
     VkFFTConfiguration config = {};
     config.FFTdim = 1;
     config.size[0] = fft_size;
     config.numberBatches = BATCH;
     config.doublePrecision = 1;
     config.performR2C = 1;
+
+    /* Main buffer (complex, contiguous) */
     config.bufferSize = &buf_size;
     config.bufferNum = 1;
+    config.bufferStride[0] = (uint64_t)complex_size;
+
+    /* Input buffer (real, strided) */
+    config.isInputFormatted = 1;
+    config.inputBufferSize = &io_buf_size;
+    config.inputBufferStride[0] = (uint64_t)stride;
+
+    /* Output buffer (real, strided) */
+    config.isOutputFormatted = 1;
+    config.outputBufferSize = &io_buf_size;
+    config.outputBufferStride[0] = (uint64_t)stride;
 
     /* CUDA device/stream */
     CUdevice cuDevice;
@@ -153,16 +199,17 @@ static double bench_vkfft(int fft_size, double *d_real, cufftDoubleComplex *d_co
     int threads = 256;
     int blocks = (total_complex + threads - 1) / threads;
 
-    /* Launch params — for CUDA backend, only buffer pointer needed */
+    /* Launch params: buffer = complex (contiguous), inputBuffer/outputBuffer = real (strided) */
     VkFFTLaunchParams launchParams = {};
-    launchParams.buffer = (void**)&d_real;
+    launchParams.buffer = (void**)&d_complex;
+    launchParams.inputBuffer = (void**)&d_real_strided;
+    launchParams.outputBuffer = (void**)&d_real_strided;
 
     /* Warmup */
     for (int w = 0; w < WARMUP; w++) {
-        VkFFTAppend(&app, -1, &launchParams);  /* forward R2C */
-        pointwise_multiply<<<blocks, threads, 0, stream>>>(
-            (cufftDoubleComplex*)d_real, d_filter, total_complex);
-        VkFFTAppend(&app, 1, &launchParams);   /* inverse C2R */
+        VkFFTAppend(&app, -1, &launchParams);  /* forward R2C: strided real → contiguous complex */
+        pointwise_multiply<<<blocks, threads, 0, stream>>>(d_complex, d_filter, total_complex);
+        VkFFTAppend(&app, 1, &launchParams);   /* inverse C2R: contiguous complex → strided real */
     }
     cudaStreamSynchronize(stream);
 
@@ -174,10 +221,9 @@ static double bench_vkfft(int fft_size, double *d_real, cufftDoubleComplex *d_co
         cudaEventCreate(&stop);
         cudaEventRecord(start, stream);
 
-        VkFFTAppend(&app, -1, &launchParams);  /* forward R2C */
-        pointwise_multiply<<<blocks, threads, 0, stream>>>(
-            (cufftDoubleComplex*)d_real, d_filter, total_complex);
-        VkFFTAppend(&app, 1, &launchParams);   /* inverse C2R */
+        VkFFTAppend(&app, -1, &launchParams);
+        pointwise_multiply<<<blocks, threads, 0, stream>>>(d_complex, d_filter, total_complex);
+        VkFFTAppend(&app, 1, &launchParams);
 
         cudaEventRecord(stop, stream);
         cudaEventSynchronize(stop);
@@ -218,46 +264,53 @@ int main() {
         }
 
         int complex_size = fft_size / 2 + 1;
+        int stride = fft_size * 2;  /* Simulates typical fft_stride in production */
         size_t real_bytes = (size_t)fft_size * BATCH * sizeof(double);
-        /* For VkFFT R2C in-place, the buffer must be large enough for complex output */
-        size_t inplace_bytes = (size_t)complex_size * BATCH * sizeof(cufftDoubleComplex);
-        size_t alloc_bytes = (real_bytes > inplace_bytes) ? real_bytes : inplace_bytes;
+        size_t strided_bytes = (size_t)stride * BATCH * sizeof(double);
         size_t complex_bytes = (size_t)complex_size * BATCH * sizeof(cufftDoubleComplex);
 
-        double *d_real = nullptr;
+        double *d_real = nullptr;           /* contiguous real (for cuFFT) */
+        double *d_real_strided = nullptr;   /* strided real (for VkFFT) */
         cufftDoubleComplex *d_complex = nullptr;
         cufftDoubleComplex *d_filter = nullptr;
 
         cudaError_t err;
-        err = cudaMalloc(&d_real, alloc_bytes);
+        err = cudaMalloc(&d_real, real_bytes);
         if (err != cudaSuccess) {
-            fprintf(stderr, "OOM at size %d (real alloc %zu bytes)\n", fft_size, alloc_bytes);
+            fprintf(stderr, "OOM at size %d\n", fft_size);
+            break;
+        }
+        err = cudaMalloc(&d_real_strided, strided_bytes);
+        if (err != cudaSuccess) {
+            cudaFree(d_real);
+            fprintf(stderr, "OOM at size %d (strided alloc)\n", fft_size);
             break;
         }
         err = cudaMalloc(&d_complex, complex_bytes);
         if (err != cudaSuccess) {
-            cudaFree(d_real);
-            fprintf(stderr, "OOM at size %d (complex alloc %zu bytes)\n", fft_size, complex_bytes);
+            cudaFree(d_real); cudaFree(d_real_strided);
+            fprintf(stderr, "OOM at size %d (complex alloc)\n", fft_size);
             break;
         }
         err = cudaMalloc(&d_filter, complex_bytes);
         if (err != cudaSuccess) {
-            cudaFree(d_real); cudaFree(d_complex);
-            fprintf(stderr, "OOM at size %d (filter alloc %zu bytes)\n", fft_size, complex_bytes);
+            cudaFree(d_real); cudaFree(d_real_strided); cudaFree(d_complex);
+            fprintf(stderr, "OOM at size %d (filter alloc)\n", fft_size);
             break;
         }
 
         /* Initialize with random-ish data */
-        cudaMemset(d_real, 0, alloc_bytes);
+        cudaMemset(d_real, 0, real_bytes);
+        cudaMemset(d_real_strided, 0, strided_bytes);
         cudaMemset(d_complex, 0, complex_bytes);
         cudaMemset(d_filter, 1, complex_bytes); /* non-zero filter */
 
-        /* Benchmark cuFFT */
+        /* Benchmark cuFFT (contiguous real, strided via idist/odist) */
         double cufft_ns = bench_cufft(fft_size, d_real, d_complex, d_filter, stream);
 
-        /* Benchmark VkFFT — use d_real as in-place buffer (R2C in-place) */
-        cudaMemset(d_real, 0, alloc_bytes);
-        double vkfft_ns = bench_vkfft(fft_size, d_real, d_complex, d_filter, stream);
+        /* Benchmark VkFFT (strided real via isInputFormatted/isOutputFormatted) */
+        cudaMemset(d_real_strided, 0, strided_bytes);
+        double vkfft_ns = bench_vkfft(fft_size, d_real_strided, d_complex, d_filter, stream);
 
         /* Report */
         if (cufft_ns > 0 && vkfft_ns > 0) {
@@ -290,6 +343,7 @@ int main() {
         fflush(stdout);
 
         cudaFree(d_real);
+        cudaFree(d_real_strided);
         cudaFree(d_complex);
         cudaFree(d_filter);
     }
