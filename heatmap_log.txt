@@ -1,0 +1,211 @@
+n=64 k=64 ... 0.09 ms  B=1  peak=3.5 MB  reps=15  cv=0.058
+n=128 k=64 ... 0.13 ms  B=2  peak=6.6 MB  reps=10  cv=0.005
+n=128 k=128 ... 0.13 ms  B=2  peak=11.9 MB  reps=10  cv=0.006
+n=256 k=64 ... 0.14 ms  B=4  peak=11.4 MB  reps=10  cv=0.025
+n=256 k=128 ... 0.15 ms  B=4  peak=22.7 MB  reps=15  cv=0.031
+n=256 k=256 ... 0.17 ms  B=4  peak=26.3 MB  reps=10  cv=0.015
+n=512 k=64 ... 0.17 ms  B=8  peak=18.9 MB  reps=10  cv=0.009
+n=512 k=128 ... 0.18 ms  B=8  peak=42.3 MB  reps=10  cv=0.014
+n=512 k=256 ... 0.23 ms  B=8  peak=55.8 MB  reps=10  cv=0.009
+n=512 k=512 ... 0.22 ms  B=8  peak=60.5 MB  reps=10  cv=0.013
+n=1024 k=64 ... 0.21 ms  B=16  peak=30.0 MB  reps=10  cv=0.006
+n=1024 k=128 ... 0.24 ms  B=16  peak=77.4 MB  reps=10  cv=0.008
+n=1024 k=256 ... 0.32 ms  B=16  peak=110.8 MB  reps=10  cv=0.006
+n=1024 k=512 ... 0.31 ms  B=16  peak=116.9 MB  reps=10  cv=0.006
+n=1024 k=1024 ... 0.32 ms  B=16  peak=128.9 MB  reps=10  cv=0.008
+n=2048 k=64 ... 0.29 ms  B=32  peak=44.0 MB  reps=10  cv=0.005
+n=2048 k=128 ... 0.36 ms  B=32  peak=139.7 MB  reps=10  cv=0.004
+n=2048 k=256 ... 0.50 ms  B=32  peak=212.9 MB  reps=10  cv=0.010
+n=2048 k=512 ... 0.48 ms  B=32  peak=221.6 MB  reps=10  cv=0.010
+n=2048 k=1024 ... 0.53 ms  B=32  peak=249.6 MB  reps=10  cv=0.005
+n=2048 k=2048 ... 0.59 ms  B=32  peak=304.6 MB  reps=10  cv=0.012
+n=4096 k=64 ... 0.45 ms  B=64  peak=56.2 MB  reps=10  cv=0.003
+n=4096 k=128 ... 0.62 ms  B=32  peak=280.3 MB  reps=10  cv=0.003
+n=4096 k=256 ... 0.80 ms  B=64  peak=401.0 MB  reps=10  cv=0.005
+n=4096 k=512 ... 0.80 ms  B=64  peak=415.1 MB  reps=10  cv=0.001
+n=4096 k=1024 ... 0.90 ms  B=64  peak=475.1 MB  reps=10  cv=0.003
+n=4096 k=2048 ... 1.04 ms  B=64  peak=592.1 MB  reps=10  cv=0.004
+n=4096 k=4096 ... 1.10 ms  B=64  peak=640.9 MB  reps=10  cv=0.003
+n=8192 k=64 ... 0.80 ms  B=64  peak=112.6 MB  reps=10  cv=0.002
+n=8192 k=128 ... 1.06 ms  B=64  peak=497.5 MB  reps=15  cv=0.560
+n=8192 k=256 ... 3.75 ms  B=64  peak=809.3 MB  reps=10  cv=0.002
+n=8192 k=512 ... 3.81 ms  B=64  peak=834.1 MB  reps=10  cv=0.001
+n=8192 k=1024 ... 4.03 ms  B=64  peak=958.1 MB  reps=15  cv=0.155
+n=8192 k=2048 ... 4.33 ms  B=64  peak=1200.2 MB  reps=10  cv=0.001
+n=8192 k=4096 ... 2.14 ms  B=64  peak=1377.7 MB  reps=10  cv=0.001
+n=8192 k=8192 ... 2.29 ms  B=64  peak=1473.8 MB  reps=10  cv=0.001
+n=16384 k=64 ... 1.52 ms  B=64  peak=225.4 MB  reps=10  cv=0.001
+n=16384 k=128 ... 1.93 ms  B=128  peak=546.0 MB  reps=10  cv=0.001
+n=16384 k=256 ... 2.63 ms  B=128  peak=1498.0 MB  reps=10  cv=0.002
+n=16384 k=512 ... 2.80 ms  B=128  peak=1544.4 MB  reps=10  cv=0.001
+n=16384 k=1024 ... 3.25 ms  B=128  peak=1796.4 MB  reps=10  cv=0.001
+n=16384 k=2048 ... 4.36 ms  B=128  peak=2288.5 MB  reps=15  cv=0.320
+n=16384 k=4096 ... 11.39 ms  B=128  peak=2723.6 MB  reps=15  cv=0.123
+n=16384 k=8192 ... 4.63 ms  B=128  peak=3011.6 MB  reps=10  cv=0.001
+n=16384 k=16384 ... 5.02 ms  B=128  peak=3203.7 MB  reps=10  cv=0.001
+n=32768 k=64 ... 2.99 ms  B=64  peak=451.0 MB  reps=10  cv=0.001
+n=32768 k=128 ... 3.80 ms  B=128  peak=1093.0 MB  reps=10  cv=0.001
+n=32768 k=256 ... 5.85 ms  B=128  peak=3003.4 MB  reps=15  cv=0.367
+n=32768 k=512 ... 16.11 ms  B=160  peak=3795.6 MB  reps=3  cv=0.001
+n=32768 k=1024 ... 16.11 ms  B=128  peak=3600.7 MB  reps=3  cv=0.001
+n=32768 k=2048 ... 17.38 ms  B=128  peak=4593.0 MB  reps=15  cv=0.050
+n=32768 k=4096 ... 8.26 ms  B=128  peak=5543.1 MB  reps=10  cv=0.001
+n=32768 k=8192 ... 9.32 ms  B=128  peak=6215.2 MB  reps=10  cv=0.001
+n=32768 k=16384 ... 10.43 ms  B=128  peak=6791.2 MB  reps=3  cv=0.001
+n=32768 k=32768 ... 10.98 ms  B=128  peak=7175.3 MB  reps=3  cv=0.000
+n=65536 k=64 ... 5.86 ms  B=64  peak=902.3 MB  reps=10  cv=0.001
+n=65536 k=128 ... 7.53 ms  B=128  peak=2187.0 MB  reps=15  cv=0.157
+n=65536 k=256 ... 10.89 ms  B=256  peak=3197.4 MB  reps=3  cv=0.000
+n=65536 k=512 ... 12.59 ms  B=160  peak=7595.3 MB  reps=3  cv=0.000
+n=65536 k=1024 ... 13.82 ms  B=256  peak=4993.5 MB  reps=3  cv=0.000
+n=65536 k=2048 ... 16.34 ms  B=256  peak=6986.0 MB  reps=15  cv=0.280
+n=65536 k=4096 ... 17.65 ms  B=256  peak=8966.3 MB  reps=3  cv=0.006
+n=65536 k=8192 ... 19.66 ms  B=256  peak=10406.3 MB  reps=15  cv=0.081
+n=65536 k=16384 ... 22.28 ms  B=256  peak=11750.4 MB  reps=3  cv=0.001
+n=65536 k=32768 ... 23.85 ms  B=256  peak=12902.5 MB  reps=3  cv=0.001
+n=65536 k=65536 ... 24.91 ms  B=256  peak=13670.8 MB  reps=3  cv=0.000
+n=131072 k=64 ... 11.57 ms  B=64  peak=1804.8 MB  reps=3  cv=0.000
+n=131072 k=128 ... 14.81 ms  B=128  peak=4375.0 MB  reps=3  cv=0.000
+n=131072 k=256 ... 21.46 ms  B=256  peak=6402.1 MB  reps=3  cv=0.000
+n=131072 k=512 ... 24.96 ms  B=160  peak=15194.5 MB  reps=3  cv=0.000
+n=131072 k=1024 ... 27.46 ms  B=256  peak=9995.0 MB  reps=3  cv=0.000
+n=131072 k=2048 ... 32.48 ms  B=256  peak=13988.0 MB  reps=15  cv=0.050
+n=131072 k=4096 ... 34.72 ms  B=256  peak=18028.5 MB  reps=15  cv=0.073
+n=131072 k=8192 ... 39.07 ms  B=256  peak=21004.6 MB  reps=3  cv=0.000
+n=131072 k=16384 ... 44.51 ms  B=256  peak=23884.6 MB  reps=3  cv=0.000
+n=131072 k=32768 ... 48.14 ms  B=256  peak=26572.8 MB  reps=3  cv=0.000
+n=131072 k=65536 ... 51.52 ms  B=256  peak=28877.0 MB  reps=15  cv=0.047
+n=131072 k=131072 ... 54.82 ms  B=256  peak=29389.5 MB  reps=3  cv=0.000
+n=262144 k=64 ... 22.96 ms  B=64  peak=3609.8 MB  reps=3  cv=0.000
+n=262144 k=128 ... 29.43 ms  B=128  peak=8751.0 MB  reps=3  cv=0.000
+n=262144 k=256 ... 42.57 ms  B=256  peak=12811.6 MB  reps=15  cv=0.052
+n=262144 k=512 ... 49.69 ms  B=160  peak=30393.0 MB  reps=3  cv=0.000
+n=262144 k=1024 ... 54.72 ms  B=256  peak=19998.0 MB  reps=3  cv=0.000
+n=262144 k=2048 ... 64.71 ms  B=256  peak=27992.0 MB  reps=3  cv=0.000
+n=262144 k=4096 ... 69.01 ms  B=256  peak=36153.0 MB  reps=3  cv=0.000
+n=262144 k=8192 ... 77.73 ms  B=256  peak=42201.1 MB  reps=3  cv=0.001
+n=262144 k=16384 ... 88.78 ms  B=256  peak=48153.1 MB  reps=3  cv=0.004
+n=262144 k=32768 ... 175.97 ms  B=256  peak=53913.3 MB  reps=15  cv=0.366
+n=262144 k=65536 ... 104.67 ms  B=256  peak=59289.6 MB  reps=1  cv=0.000
+n=262144 k=131072 ... 113.83 ms  B=256  peak=61850.0 MB  reps=1  cv=0.000
+n=262144 k=262144 ... 118.53 ms  B=256  peak=64923.0 MB  reps=1  cv=0.000
+n=524288 k=64 ... 45.77 ms  B=64  peak=7219.9 MB  reps=3  cv=0.000
+n=524288 k=128 ... 58.71 ms  B=128  peak=17503.1 MB  reps=3  cv=0.009
+n=524288 k=256 ... 84.76 ms  B=256  peak=25630.5 MB  reps=15  cv=0.044
+n=524288 k=512 ... 99.13 ms  B=160  peak=60790.1 MB  reps=1  cv=0.000
+n=524288 k=1024 ... 109.23 ms  B=256  peak=40004.0 MB  reps=1  cv=0.000
+n=524288 k=2048 ... 129.16 ms  B=256  peak=56000.1 MB  reps=1  cv=0.000
+n=524288 k=4096 ... 137.58 ms  B=256  peak=72402.1 MB  reps=1  cv=0.000
+n=524288 k=8192 ... 156.04 ms  B=256  peak=84594.1 MB  reps=1  cv=0.000
+n=524288 k=16384 ... 177.09 ms  B=256  peak=96690.1 MB  reps=1  cv=0.000
+n=524288 k=32768 ... ERR(CUDA error at src/gpu/gpu_plan.cu:38 for cudaMalloc(ptr, bytes): out of memory)
+n=524288 k=65536 ... ERR(cuFFT error at src/gpu/gpu_plan.cu:823 for cufftMakePlanMany(*plan, rank, n_arr, ie, 1, cn, oe, 1, real_dist, CUFFT_Z2D, batch, &work_size): code=5)
+n=524288 k=131072 ... ERR(cuFFT error at src/gpu/gpu_plan.cu:823 for cufftMakePlanMany(*plan, rank, n_arr, ie, 1, cn, oe, 1, real_dist, CUFFT_Z2D, batch, &work_size): code=5)
+n=524288 k=262144 ... ERR(cuFFT error at src/gpu/gpu_plan.cu:816 for cufftMakePlanMany(*plan, rank, n_arr, ie, 1, real_dist, oe, 1, cn, CUFFT_D2Z, batch, &work_size): code=5)
+n=524288 k=524288 ... ERR(cuFFT error at src/gpu/gpu_plan.cu:816 for cufftMakePlanMany(*plan, rank, n_arr, ie, 1, real_dist, oe, 1, cn, CUFFT_D2Z, batch, &work_size): code=5)
+n=1048576 k=64 ... 91.37 ms  B=64  peak=14440.0 MB  reps=1  cv=0.000
+n=1048576 k=128 ... 117.26 ms  B=128  peak=35007.1 MB  reps=1  cv=0.000
+n=1048576 k=256 ... 169.11 ms  B=256  peak=51268.3 MB  reps=1  cv=0.000
+n=1048576 k=512 ... 198.01 ms  B=160  peak=137968.1 MB  reps=1  cv=0.000
+n=1048576 k=1024 ... 218.25 ms  B=256  peak=80016.1 MB  reps=1  cv=0.000
+n=1048576 k=2048 ... 258.05 ms  B=256  peak=112016.1 MB  reps=1  cv=0.000
+n=1048576 k=4096 ... ERR(cuFFT error at src/gpu/gpu_plan.cu:823 for cufftMakePlanMany(*plan, rank, n_arr, ie, 1, cn, oe, 1, real_dist, CUFFT_Z2D, batch, &work_size): code=5)
+n=1048576 k=8192 ... ERR(cuFFT error at src/gpu/gpu_plan.cu:823 for cufftMakePlanMany(*plan, rank, n_arr, ie, 1, cn, oe, 1, real_dist, CUFFT_Z2D, batch, &work_size): code=5)
+n=1048576 k=16384 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=1048576 k=32768 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=1048576 k=65536 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=1048576 k=131072 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=1048576 k=262144 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=1048576 k=524288 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=1048576 k=1048576 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=64 ... 404.25 ms  B=64  peak=28880.3 MB  reps=1  cv=0.000
+n=2097152 k=128 ... 519.94 ms  B=128  peak=70015.3 MB  reps=1  cv=0.000
+n=2097152 k=256 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=512 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=1024 ... ERR(cuFFT error at src/gpu/gpu_plan.cu:823 for cufftMakePlanMany(*plan, rank, n_arr, ie, 1, cn, oe, 1, real_dist, CUFFT_Z2D, batch, &work_size): code=5)
+n=2097152 k=2048 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=4096 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=8192 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=16384 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=32768 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=65536 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=131072 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=262144 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=524288 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=1048576 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=2097152 k=2097152 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=64 ... 366.29 ms  B=64  peak=57760.8 MB  reps=1  cv=0.000
+n=4194304 k=128 ... ERR(CUDA error at src/gpu/gpu_plan.cu:38 for cudaMalloc(ptr, bytes): out of memory)
+n=4194304 k=256 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=512 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=1024 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=2048 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=4096 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=8192 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=16384 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=32768 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=65536 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=131072 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=262144 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=524288 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=1048576 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=2097152 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=4194304 k=4194304 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=64 ... 1412.62 ms  B=64  peak=110133.8 MB  reps=1  cv=0.000
+n=8388608 k=128 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=256 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=512 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=1024 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=2048 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=4096 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=8192 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=16384 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=32768 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=65536 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=131072 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=262144 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=524288 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=1048576 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=2097152 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=4194304 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=8388608 k=8388608 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=64 ... 2204.35 ms  B=64  peak=110711.9 MB  reps=1  cv=0.000
+n=16777216 k=128 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=256 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=512 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=1024 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=2048 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=4096 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=8192 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=16384 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=32768 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=65536 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=131072 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=262144 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=524288 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=1048576 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=2097152 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=4194304 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=8388608 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=16777216 k=16777216 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=64 ... 3782.22 ms  B=64  peak=111867.9 MB  reps=1  cv=0.000
+n=33554432 k=128 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=256 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=512 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=1024 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=2048 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=4096 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=8192 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=16384 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=32768 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=65536 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=131072 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=262144 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=524288 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=1048576 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=2097152 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=4194304 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=8388608 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=16777216 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+n=33554432 k=33554432 ... ERR(CUDA error at src/gpu/gpu_plan.cu:1125 for cudaMalloc(&arena, arena_sz): out of memory)
+Wrote gpu_heatmap_final.csv
