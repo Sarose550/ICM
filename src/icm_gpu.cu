@@ -1294,6 +1294,44 @@ __global__ static void k_compute_a_from_ptr(const double *S_sorted, double *a_so
     a_sorted[i] = (arg < -700.0) ? 0.0 : exp(arg);
 }
 
+/* Batched compute_a: process qb Q-points in one launch.
+ * Grid: qb * ceil(n/256) blocks. Each thread computes one (qi, i) pair. */
+__global__ static void k_compute_a_qbatch(const double *S_sorted,
+                                          double * const *a_ptrs,
+                                          const double *logv_array,
+                                          int n, int qb) {
+    int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = qb * n;
+    if (global_idx >= total) return;
+    int qi = global_idx / n;
+    int i = global_idx % n;
+    double arg = S_sorted[i] * logv_array[qi];
+    a_ptrs[qi][i] = (arg < -700.0) ? 0.0 : exp(arg);
+}
+
+/* Batched set_leaves_b1: process qb Q-points in one launch (B=1 path).
+ * Grid: qb * ceil(N_tree/256) blocks. */
+__global__ static void k_set_leaves_b1_qbatch(double * const *a_ptrs,
+                                              int n, int N_tree,
+                                              int leaf_psz, int qb,
+                                              double *leaves, size_t leaf_stride) {
+    int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = qb * N_tree;
+    if (global_idx >= total) return;
+    int qi = global_idx / N_tree;
+    int i = global_idx % N_tree;
+    double *leaf = leaves + qi * leaf_stride + (size_t)i * (size_t)leaf_psz;
+    if (i < n) {
+        double ai = a_ptrs[qi][i];
+        leaf[0] = ai;
+        if (leaf_psz > 1) leaf[1] = 1.0 - ai;
+        for (int m = 2; m < leaf_psz; ++m) leaf[m] = 0.0;
+    } else {
+        leaf[0] = 1.0;
+        for (int m = 1; m < leaf_psz; ++m) leaf[m] = 0.0;
+    }
+}
+
 __global__ static void k_zero(double *x, size_t n) {
     size_t i = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     if (i < n) x[i] = 0.0;
@@ -1329,6 +1367,19 @@ __global__ static void k_leaf_extract_b1(int n, const double *g_leaf,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     inner_sorted[i] = g_leaf[(size_t)i * (size_t)leaf_psz];
+}
+
+/* Batched B=1 leaf extract for Q-batch path. Grid: qb * ceil(n/256) blocks. */
+__global__ static void k_leaf_extract_b1_qbatch(int n, const double *g_leaf,
+                                                int leaf_psz, int qb,
+                                                size_t g_stride, double *inner,
+                                                size_t inner_stride) {
+    int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = qb * n;
+    if (global_idx >= total) return;
+    int qi = global_idx / n;
+    int i = global_idx % n;
+    inner[qi * inner_stride + i] = g_leaf[qi * g_stride + (size_t)i * (size_t)leaf_psz];
 }
 
 __global__ static void k_block_build(const double *a_sorted, int n, int B,
@@ -3450,32 +3501,37 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     int threads = 256;
     int blocks_n = (plan->n + threads - 1) / threads;
 
-    /* 1. Compute a_sorted for each Q-point */
-    for (int qi = 0; qi < qb; ++qi) {
-        k_compute_a<<<blocks_n, threads, 0, plan->stream_compute>>>(
-            plan->d_S_sorted, plan->d_a_qbatch[qi], plan->n, pts[qi].logv);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-    }
-
-    /* 2. Block build for all Q-points.
-     * Upload a_ptrs to pre-allocated device buffer. */
+    /* 1. Compute a_sorted for all Q-points in one batched launch */
     double *h_a_ptrs[Q_BATCH_MAX];
-    for (int qi = 0; qi < qb; ++qi) h_a_ptrs[qi] = plan->d_a_qbatch[qi];
+    double h_logv[Q_BATCH_MAX];
+    for (int qi = 0; qi < qb; ++qi) {
+        h_a_ptrs[qi] = plan->d_a_qbatch[qi];
+        h_logv[qi] = pts[qi].logv;
+    }
 
     double **d_a_ptrs = plan->d_qb_a_ptrs;
     if (!CUDA_OK(cudaMemcpyAsync(d_a_ptrs, h_a_ptrs, (size_t)qb * sizeof(double *),
                                  cudaMemcpyHostToDevice, plan->stream_compute))) return false;
+    if (!CUDA_OK(cudaMemcpyAsync(plan->d_qb_inv_vs, h_logv, (size_t)qb * sizeof(double),
+                                 cudaMemcpyHostToDevice, plan->stream_compute))) return false;
 
+    {
+        int total_threads = qb * plan->n;
+        int blocks_a = (total_threads + threads - 1) / threads;
+        k_compute_a_qbatch<<<blocks_a, threads, 0, plan->stream_compute>>>(
+            plan->d_S_sorted, d_a_ptrs, plan->d_qb_inv_vs, plan->n, qb);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
+
+    /* 2. Block build for all Q-points */
     size_t leaf_stride = (size_t)plan->nn[0] * (size_t)plan->fft_stride[0];
     if (plan->B <= 1) {
-        /* B=1: set leaves directly for each Q-point in the batch */
-        for (int qi = 0; qi < qb; ++qi) {
-            int bl = (plan->N_tree + 255) / 256;
-            double *leaves_qi = plan->d_poly_levels[0] + qi * leaf_stride;
-            k_set_leaves_b1<<<bl, 256, 0, plan->stream_compute>>>(
-                plan->d_a_qbatch[qi], plan->n, plan->N_tree,
-                plan->fft_stride[0], leaves_qi);
-        }
+        /* B=1: batched set_leaves in single launch */
+        int total_leaves = qb * plan->N_tree;
+        int blocks_leaves = (total_leaves + 255) / 256;
+        k_set_leaves_b1_qbatch<<<blocks_leaves, 256, 0, plan->stream_compute>>>(
+            (double * const *)d_a_ptrs, plan->n, plan->N_tree,
+            plan->fft_stride[0], qb, plan->d_poly_levels[0], leaf_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
     } else {
         size_t bp_stride = (size_t)plan->N_tree * (size_t)(plan->B + 1);
@@ -3520,14 +3576,12 @@ static bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     size_t leaf_g_stride = (size_t)plan->nn[0] * (size_t)plan->fft_stride[0];
     size_t inner_stride = (size_t)plan->n;
     if (plan->B <= 1) {
-        /* B=1: direct read of g_leaf[i][0] for each Q-point */
-        for (int qi = 0; qi < qb; ++qi) {
-            int bl = (plan->n + 255) / 256;
-            double *g_leaf_qi = plan->d_g_levels[0] + qi * leaf_g_stride;
-            double *inner_qi = plan->d_inner_qbatch + qi * inner_stride;
-            k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
-                plan->n, g_leaf_qi, plan->fft_stride[0], inner_qi);
-        }
+        /* B=1: batched leaf extract for all Q-points in single launch */
+        int total_extract = qb * plan->n;
+        int blocks_extract = (total_extract + 255) / 256;
+        k_leaf_extract_b1_qbatch<<<blocks_extract, 256, 0, plan->stream_compute>>>(
+            plan->n, plan->d_g_levels[0], plan->fft_stride[0], qb,
+            leaf_g_stride, plan->d_inner_qbatch, inner_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
     } else {
         size_t bp_stride_local = (size_t)plan->N_tree * (size_t)(plan->B + 1);
@@ -4406,6 +4460,28 @@ standard_gpu_path:
     if (!plan) return -1.0;
     double t = icm_gpu_equity_with_plan(plan, Q, payout, equity, stats);
     icm_gpu_plan_destroy(plan);
+    return t;
+}
+
+double icm_gpu_equity_subset(int n, const double *S, int Q,
+                             const double *payout, int k,
+                             double *equity,
+                             const int *targets, int n_targets,
+                             const IcmGpuOptions *opts,
+                             IcmGpuRunStats *stats) {
+    if (n <= 0 || k <= 0 || n_targets <= 0 || !targets) return -1.0;
+
+    /* Compute all equities, then extract the subset */
+    std::vector<double> full_equity(n, 0.0);
+    double t = icm_gpu_equity(n, S, Q, payout, k, full_equity.data(), opts, stats);
+    if (t < 0) return t;
+
+    memset(equity, 0, n * sizeof(double));
+    for (int i = 0; i < n_targets; ++i) {
+        int idx = targets[i];
+        if (idx >= 0 && idx < n)
+            equity[idx] = full_equity[idx];
+    }
     return t;
 }
 

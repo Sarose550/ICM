@@ -70,6 +70,16 @@ double icm_gpu_equity(int n, const double *S, int Q,
                       double *equity, const IcmGpuOptions *opts,
                       IcmGpuRunStats *stats);
 
+/* Compute equities for a subset of players.
+ * Only equity[targets[i]] values are set in the output.
+ * Currently computes all equities internally and extracts the subset. */
+double icm_gpu_equity_subset(int n, const double *S, int Q,
+                             const double *payout, int k,
+                             double *equity,
+                             const int *targets, int n_targets,
+                             const IcmGpuOptions *opts,
+                             IcmGpuRunStats *stats);
+
 /* Calibration + diagnostics helpers */
 int icm_gpu_write_config_header(const char *output_path);
 int icm_gpu_measure_hbm_bandwidth_gbps(double *gbps_out);
