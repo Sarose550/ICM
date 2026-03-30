@@ -848,11 +848,23 @@ bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, int stride, 
         cuInit(0);
         s_vkfft_cuda_init_done = 1;
     }
-    /* Buffer covers batch * stride doubles (real side). VkFFT reads/writes
-     * at stride spacing, matching our fft_stride polynomial layout — no
-     * gather/scatter needed. */
-    int real_stride = (stride > 0) ? stride : n;
-    uint64_t buf_size = (uint64_t)real_stride * batch * sizeof(double);
+    int cn = n / 2 + 1;
+
+    /* Out-of-place R2C/C2R via isInputFormatted/isOutputFormatted.
+     *
+     * Forward R2C: reads real data from inputBuffer at inputBufferStride
+     *              spacing, writes complex to buffer (contiguous at cn).
+     * Inverse C2R: reads complex from buffer, writes real to outputBuffer
+     *              at outputBufferStride spacing.
+     *
+     * This avoids gather/scatter — VkFFT handles the strided real layout
+     * natively, same as cuFFT's idist/odist. The complex side (buffer) is
+     * contiguous at cn complex elements per batch element. */
+
+    /* Main buffer: contiguous complex, cn complex doubles per batch element */
+    uint64_t buf_size = (uint64_t)cn * batch * sizeof(cufftDoubleComplex);
+    /* Input/output buffer: strided real, stride doubles per batch element */
+    uint64_t io_buf_size = (uint64_t)stride * batch * sizeof(double);
 
     VkFFTConfiguration config = {};
     config.FFTdim = 1;
@@ -860,11 +872,21 @@ bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, int stride, 
     config.numberBatches = (uint64_t)batch;
     config.doublePrecision = 1;
     config.performR2C = 1;
+
+    /* Main buffer (complex side): contiguous */
     config.bufferSize = &buf_size;
     config.bufferNum = 1;
-    /* Set stride to match our fft_stride layout so VkFFT operates
-     * directly on poly_levels/g_levels without gather/scatter. */
-    config.bufferStride[0] = (uint64_t)real_stride;
+    config.bufferStride[0] = (uint64_t)cn;  /* complex elements per batch */
+
+    /* Input buffer (real side): strided at fft_stride */
+    config.isInputFormatted = 1;
+    config.inputBufferSize = &io_buf_size;
+    config.inputBufferStride[0] = (uint64_t)stride;  /* real elements per batch */
+
+    /* Output buffer (real side): strided at fft_stride */
+    config.isOutputFormatted = 1;
+    config.outputBufferSize = &io_buf_size;
+    config.outputBufferStride[0] = (uint64_t)stride;
 
     CUdevice cuDevice;
     cuDeviceGet(&cuDevice, 0);
@@ -875,7 +897,7 @@ bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, int stride, 
     VkFFTResult res = initializeVkFFT(app, config);
     if (res != VKFFT_SUCCESS) {
         fprintf(stderr, "VkFFT init failed for n=%d batch=%d stride=%d: error %d\n",
-                n, batch, real_stride, (int)res);
+                n, batch, stride, (int)res);
         return false;
     }
     return true;
