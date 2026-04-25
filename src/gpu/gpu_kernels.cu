@@ -331,6 +331,8 @@ __global__ static void k_cufftdx_corr_pair_parent_r2c(
     complex_t gbuf[R2C::storage_size];
     complex_t pbuf[R2C::storage_size];
     complex_t gspec_saved[R2C::elements_per_thread];
+    extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
+
     const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
     const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
     const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
@@ -369,20 +371,6 @@ template<int FFT_N>
 static bool launch_cufftdx_build_r2c_t(const double *child, int cps,
                                         double *parent, int pps, int nparents,
                                         double inv_fft_n, cudaStream_t stream) {
-    constexpr int FPB2 = 2;
-    using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
-    using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
-    size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
-    if (nparents >= 4 && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N, FPB2>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                          (int)shmem2))) {
-            int grid = (nparents + FPB2 - 1) / FPB2;
-            k_cufftdx_build_parent_r2c<FFT_N, FPB2><<<grid, R2C2::block_dim, shmem2, stream>>>(
-                child, cps, parent, pps, nparents, inv_fft_n);
-            if (CUDA_OK(cudaGetLastError())) return true;
-        }
-    }
     using R2C = cufftdx_r2c_t<FFT_N>;
     using C2R = cufftdx_c2r_t<FFT_N>;
     size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
@@ -399,22 +387,6 @@ static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, in
                                        const double *child_poly, int cps, int len_P,
                                        double *g_child, int child_gsz, int len_out, int nparents,
                                        double inv_fft_n, cudaStream_t stream) {
-    constexpr int FPB2 = 2;
-    using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
-    using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
-    size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
-    if (nparents >= 4 && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                          (int)shmem2))) {
-            int grid = (nparents + FPB2 - 1) / FPB2;
-            k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2><<<grid, R2C2::block_dim, shmem2, stream>>>(
-                g_parent, parent_gsz, len_g,
-                child_poly, cps, len_P,
-                g_child, child_gsz, len_out, nparents, inv_fft_n);
-            if (CUDA_OK(cudaGetLastError())) return true;
-        }
-    }
     using R2C = cufftdx_r2c_t<FFT_N>;
     using C2R = cufftdx_c2r_t<FFT_N>;
     size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
@@ -818,8 +790,7 @@ __global__ void k_schoolbook_build_warp_batch(const double *child, int cps,
     }
 }
 
-__global__ __launch_bounds__(GPU_THREADS_PER_BLOCK, 4)
-void k_pairwise_mul(const cufftDoubleComplex * __restrict__ child_spec, int cn,
+__global__ void k_pairwise_mul(const cufftDoubleComplex * __restrict__ child_spec, int cn,
                     cufftDoubleComplex * __restrict__ parent_spec, int nparents,
                     double scale) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
@@ -883,8 +854,7 @@ __global__ void k_wrap_build(double *parent, int pps, int nparents,
     }
 }
 
-__global__ __launch_bounds__(GPU_THREADS_PER_BLOCK, 4)
-void k_paired_corr_freq(const cufftDoubleComplex * __restrict__ g_hat,
+__global__ void k_paired_corr_freq(const cufftDoubleComplex * __restrict__ g_hat,
                         const cufftDoubleComplex * __restrict__ cached_child_spec,
                         int cn, int nparents,
                         cufftDoubleComplex * __restrict__ child_out_spec,
@@ -1360,8 +1330,7 @@ __global__ void k_set_root_g_qbatch(double *g_root, int root_gsz,
     g_root[(size_t)qi * g_stride + (size_t)i] = (i < k) ? payout[i] : 0.0;
 }
 
-__global__ __launch_bounds__(GPU_THREADS_PER_BLOCK, 2)
-void k_leaf_extract_qbatch(
+__global__ void k_leaf_extract_qbatch(
         const double * const *a_ptrs, int n, int B, int nblocks,
         const double *block_prods, size_t bp_stride,
         const double *g_leaf, int leaf_psz, size_t leaf_g_stride,
@@ -1415,8 +1384,7 @@ void k_leaf_extract_qbatch(
     }
 }
 
-__global__ __launch_bounds__(GPU_THREADS_PER_BLOCK, 2)
-void k_accumulate_equity_qbatch(
+__global__ void k_accumulate_equity_qbatch(
         const double *inner_sorted, size_t inner_stride,
         const double * const *a_ptrs,
         const double *S_sorted,

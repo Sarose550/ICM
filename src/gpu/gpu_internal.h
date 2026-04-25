@@ -14,6 +14,7 @@
 
 #include <cuda_runtime.h>
 #include <cufft.h>
+#include <cufftXt.h>
 #include <cub/cub.cuh>
 
 #include <algorithm>

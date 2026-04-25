@@ -76,8 +76,6 @@ int icm_gpu_init(int device_id) {
         max_optin > 0) {
         cudaFuncSetAttribute(k_block_build, cudaFuncAttributeMaxDynamicSharedMemorySize, max_optin);
     }
-    /* Reserve L2 persistent cache for read-heavy arrays (S_sorted, etc.) */
-    cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, 32 * 1024 * 1024);
     g_cuda_device = device_id;
     return 1;
 }

@@ -849,16 +849,7 @@ bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     int blocks_n = (plan->n + threads - 1) / threads;
     (void)blocks_n;
 
-    /* Pin S_sorted in L2 persistent cache — read every Q-batch by k_compute_a */
-    {
-        cudaAccessPolicyWindow window = {};
-        window.base_ptr = (void *)plan->d_S_sorted;
-        window.num_bytes = (size_t)plan->n * sizeof(double);
-        window.hitRatio = 1.0f;
-        window.hitProp = cudaAccessPropertyPersisting;
-        window.missProp = cudaAccessPropertyStreaming;
-        cudaStreamSetAccessPolicyWindow(plan->stream_compute, window);
-    }
+
 
     double *h_a_ptrs[Q_BATCH_MAX];
     double h_logv[Q_BATCH_MAX];
