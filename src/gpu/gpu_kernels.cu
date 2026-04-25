@@ -371,6 +371,20 @@ template<int FFT_N>
 static bool launch_cufftdx_build_r2c_t(const double *child, int cps,
                                         double *parent, int pps, int nparents,
                                         double inv_fft_n, cudaStream_t stream) {
+    constexpr int FPB2 = 2;
+    using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
+    using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
+    size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
+    if (nparents >= 4 && shmem2 <= 200 * 1024) {
+        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N, FPB2>,
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          (int)shmem2))) {
+            int grid = (nparents + FPB2 - 1) / FPB2;
+            k_cufftdx_build_parent_r2c<FFT_N, FPB2><<<grid, R2C2::block_dim, shmem2, stream>>>(
+                child, cps, parent, pps, nparents, inv_fft_n);
+            if (CUDA_OK(cudaGetLastError())) return true;
+        }
+    }
     using R2C = cufftdx_r2c_t<FFT_N>;
     using C2R = cufftdx_c2r_t<FFT_N>;
     size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
@@ -387,6 +401,22 @@ static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, in
                                        const double *child_poly, int cps, int len_P,
                                        double *g_child, int child_gsz, int len_out, int nparents,
                                        double inv_fft_n, cudaStream_t stream) {
+    constexpr int FPB2 = 2;
+    using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
+    using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
+    size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
+    if (nparents >= 4 && shmem2 <= 200 * 1024) {
+        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2>,
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          (int)shmem2))) {
+            int grid = (nparents + FPB2 - 1) / FPB2;
+            k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2><<<grid, R2C2::block_dim, shmem2, stream>>>(
+                g_parent, parent_gsz, len_g,
+                child_poly, cps, len_P,
+                g_child, child_gsz, len_out, nparents, inv_fft_n);
+            if (CUDA_OK(cudaGetLastError())) return true;
+        }
+    }
     using R2C = cufftdx_r2c_t<FFT_N>;
     using C2R = cufftdx_c2r_t<FFT_N>;
     size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
@@ -413,7 +443,9 @@ bool is_cufftdx_supported_fft_n(int fft_n) {
         case 1024:
         case 2048:
         case 4096:
+#if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192:
+#endif
             return true;
         default:
             return false;
@@ -433,7 +465,9 @@ bool launch_cufftdx_build_dispatch(int fft_n,
         case 1024: return launch_cufftdx_build_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream);
         case 2048: return launch_cufftdx_build_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream);
         case 4096: return launch_cufftdx_build_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+#if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192: return launch_cufftdx_build_t<8192>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+#endif
         default: return false;
     }
 #else
@@ -470,9 +504,11 @@ bool launch_cufftdx_corr_dispatch(int fft_n,
         case 4096:
             return launch_cufftdx_corr_t<4096>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+#if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192:
             return launch_cufftdx_corr_t<8192>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+#endif
         default:
             return false;
     }
@@ -496,7 +532,9 @@ bool launch_cufftdx_build_r2c_dispatch(int fft_n,
         case 1024: return launch_cufftdx_build_r2c_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream);
         case 2048: return launch_cufftdx_build_r2c_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream);
         case 4096: return launch_cufftdx_build_r2c_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+#if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192: return launch_cufftdx_build_r2c_t<8192>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+#endif
         default: return false;
     }
 #else
@@ -533,9 +571,11 @@ bool launch_cufftdx_corr_r2c_dispatch(int fft_n,
         case 4096:
             return launch_cufftdx_corr_r2c_t<4096>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                      g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+#if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192:
             return launch_cufftdx_corr_r2c_t<8192>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                      g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+#endif
         default:
             return false;
     }

@@ -1024,7 +1024,9 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
                                   "icm_build_mul_load_cb", gpu_lto_callback_fatbin, g_lto_fatbin_size,
                                   &d_cb_ptr)) {
                 b.lto_build_active = 1;
+                fprintf(stderr, "[LTO] build callback active for level %d fft_n=%d\n", ell, fft_n);
             } else {
+                fprintf(stderr, "[LTO] build callback FAILED for level %d fft_n=%d, falling back\n", ell, fft_n);
                 cudaFree(d_cb);
                 if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false, parent_stride)) return false;
             }
