@@ -76,6 +76,8 @@ int icm_gpu_init(int device_id) {
         max_optin > 0) {
         cudaFuncSetAttribute(k_block_build, cudaFuncAttributeMaxDynamicSharedMemorySize, max_optin);
     }
+    /* Reserve L2 persistent cache for read-heavy arrays (S_sorted, etc.) */
+    cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, 32 * 1024 * 1024);
     g_cuda_device = device_id;
     return 1;
 }
@@ -206,7 +208,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
     if (!CUDA_OK(cudaMemcpyAsync(plan->d_payout, payout, (size_t)plan->k * sizeof(double),
                                  cudaMemcpyHostToDevice, plan->stream_compute))) return -1.0;
 
-    int threads = 256;
+    int threads = GPU_THREADS_PER_BLOCK;
     int blocks = (plan->n + threads - 1) / threads;
     k_zero<<<blocks, threads, 0, plan->stream_compute>>>(plan->d_equity, (size_t)plan->n);
     if (!CUDA_OK(cudaGetLastError())) return -1.0;
@@ -279,11 +281,12 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                 plan->d_S_sorted, plan->d_a_sorted[curr], plan->n, pts[q_start].logv);
             if (!CUDA_OK(cudaGetLastError())) { pipeline_ok = false; goto pipeline_cleanup; }
             if (plan->B <= 1) {
-                int bl = (plan->N_tree + 255) / 256;
-                k_set_leaves_b1<<<bl, 256, 0, plan->stream_aux>>>(
+                int bl = (plan->N_tree + GPU_THREADS_PER_BLOCK - 1) / GPU_THREADS_PER_BLOCK;
+                k_set_leaves_b1<<<bl, GPU_THREADS_PER_BLOCK, 0, plan->stream_aux>>>(
                     plan->d_a_sorted[curr], plan->n, plan->N_tree, plan->fft_stride[0], leaf_bufs[buf_idx]);
             } else {
-                int threads_block = 256;
+                int threads_block = ((plan->B + 32) / 32) * 32;
+                if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
                 size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
                 k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
                     plan->d_a_sorted[curr], plan->n, plan->B,
@@ -312,11 +315,12 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                     plan->d_S_sorted, plan->d_a_sorted[next], plan->n, pts[qn].logv);
                 if (!CUDA_OK(cudaGetLastError())) { pipeline_ok = false; break; }
                 if (plan->B <= 1) {
-                    int bl = (plan->N_tree + 255) / 256;
-                    k_set_leaves_b1<<<bl, 256, 0, plan->stream_aux>>>(
+                    int bl = (plan->N_tree + GPU_THREADS_PER_BLOCK - 1) / GPU_THREADS_PER_BLOCK;
+                    k_set_leaves_b1<<<bl, GPU_THREADS_PER_BLOCK, 0, plan->stream_aux>>>(
                         plan->d_a_sorted[next], plan->n, plan->N_tree, plan->fft_stride[0], leaf_bufs[next_buf]);
                 } else {
-                    int threads_block = 256;
+                    int threads_block = ((plan->B + 32) / 32) * 32;
+                    if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
                     size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
                     k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
                         plan->d_a_sorted[next], plan->n, plan->B,
@@ -352,8 +356,8 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
             if (!CUDA_OK(cudaEventRecord(plan->evt_prop_done, plan->stream_compute))) { pipeline_ok = false; break; }
 
             if (plan->B <= 1) {
-                int bl = (plan->n + 255) / 256;
-                k_leaf_extract_b1<<<bl, 256, 0, plan->stream_compute>>>(
+                int bl = (plan->n + GPU_THREADS_PER_BLOCK - 1) / GPU_THREADS_PER_BLOCK;
+                k_leaf_extract_b1<<<bl, GPU_THREADS_PER_BLOCK, 0, plan->stream_compute>>>(
                     plan->n, plan->d_g_levels[0], plan->fft_stride[0], plan->d_inner_sorted);
             } else {
                 int threads_leaf = plan->B;
@@ -523,8 +527,8 @@ double icm_gpu_equity(int n, const double *S, int Q,
         cudaFuncSetAttribute(k_icm_single_kernel,
                              cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem_bytes);
 
-        int nthreads = 256;
-        if (n < 256) nthreads = ((n + 31) / 32) * 32;
+        int nthreads = GPU_THREADS_PER_BLOCK;
+        if (n < GPU_THREADS_PER_BLOCK) nthreads = ((n + 31) / 32) * 32;
         k_icm_single_kernel<<<Q, nthreads, shmem_bytes>>>(
             d_S, d_perm, n, Q, d_logv, d_weights, d_payout_buf, k, d_equity_buf,
             N, L, d_nn, d_psz, d_g_needed_d, d_plev_off_d, total_poly, max_g);

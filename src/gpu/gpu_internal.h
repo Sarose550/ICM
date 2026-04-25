@@ -81,6 +81,8 @@ extern const int kBCandidates[MAX_B_CANDIDATES];
 
 constexpr int Q_BATCH_MAX = 256;
 
+constexpr int GPU_THREADS_PER_BLOCK = 256;
+
 constexpr int GPU_SCHOOL_WARP_MAX_CONV = 128;
 constexpr int GPU_SCHOOL_WARPS_PER_BLOCK = 4;
 constexpr size_t GPU_SCHOOL_SMEM_SAFE_BYTES = 48u * 1024u;
@@ -114,6 +116,19 @@ struct GpuLevelPlan {
     int corr_wrap_m = 0;
 };
 
+/* LTO callback data structs (must match gpu_lto_callback.cu) */
+struct BuildMulCBData {
+    int cn;
+    double inv_fft_n;
+};
+struct CorrCBData {
+    const cufftDoubleComplex *g_hat;
+    const cufftDoubleComplex *child_spec;
+    int cn;
+    int g_cn;
+    double inv_fft_n;
+};
+
 struct GpuFftBuffers {
     double *real_in = nullptr;
     cufftDoubleComplex *spec_in = nullptr;
@@ -125,6 +140,7 @@ struct GpuFftBuffers {
     int batch_inv = 0;
     int fft_n = 0;
     int cn = 0;
+    int lto_build_active = 0;  /* 1 if build LTO callback is fused into plan_inv */
 #if ICM_HAVE_VKFFT
     VkFFTApplication vkfft_app_fwd = {};
     VkFFTApplication vkfft_app_inv = {};
@@ -300,7 +316,9 @@ bool build_plan_metadata(GpuPlan *plan);
 bool device_sort_players(GpuPlan *plan);
 bool allocate_plan_device_memory(GpuPlan *plan);
 bool choose_uncached_levels(GpuPlan *plan);
-bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist = 0);
+bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist = 0,
+                       const char *lto_cb_name = nullptr, const void *lto_ir = nullptr,
+                       size_t lto_ir_size = 0, void **lto_caller_info = nullptr);
 
 #if ICM_HAVE_VKFFT
 /* VkFFT plan creation and dispatch helpers (gpu_plan.cu / gpu_exec.cu) */
