@@ -146,17 +146,6 @@ VKFFT_FLAGS = $(if $(VKFFT_INC),$(VKFFT_INC) -DUSE_VKFFT)
 VKFFT_LIBS = $(if $(VKFFT_INC),-lnvrtc -lcuda)
 GPU_INCLUDES = $(INCLUDES) -Idevices/b200
 
-# ── LTO callback fatbin (fused multiply into cuFFT C2R) ──
-LTO_CALLBACK_SRC = src/gpu/gpu_lto_callback.cu
-LTO_CALLBACK_FATBIN = $(BUILD_DIR)/gpu_lto_callback.fatbin
-LTO_CALLBACK_HDR = $(BUILD_DIR)/gpu_lto_callback_fatbin.h
-
-$(LTO_CALLBACK_FATBIN): $(LTO_CALLBACK_SRC) | $(BUILD_DIR)
-	$(NVCC) --std=c++17 --generate-code arch=compute_100,code=lto_100 -dc -fatbin -o $@ $<
-
-$(LTO_CALLBACK_HDR): $(LTO_CALLBACK_FATBIN)
-	bin2c --name gpu_lto_callback_fatbin --type char $< > $@
-
 # ── Multi-file GPU compilation (separate compilation + device linking) ──
 GPU_SRCS = src/gpu/gpu_kernels.cu src/gpu/gpu_plan.cu src/gpu/gpu_exec.cu src/gpu/gpu_api.cu
 GPU_OBJS = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
@@ -165,8 +154,8 @@ GPU_HDRS = src/gpu/gpu_internal.h src/icm_gpu.h devices/b200/gpu_fft_config.h
 $(BUILD_DIR)/gpu_%.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu -dc -o $@ $<
 
-$(BUILD_DIR)/gpu_%_fused.o: src/gpu/%.cu $(GPU_HDRS) $(LTO_CALLBACK_HDR) | $(BUILD_DIR)
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu -I$(BUILD_DIR) $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -DICM_HAVE_LTO_CALLBACKS -dc -o $@ $<
+$(BUILD_DIR)/gpu_%_fused.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $@ $<
 
 GPU_OBJS_PLAIN = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
 GPU_OBJS_FUSED = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%_fused.o,$(GPU_SRCS))

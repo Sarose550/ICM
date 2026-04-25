@@ -1,10 +1,9 @@
 /* gpu_plan.cu -- Cost model, B selection, plan creation, memory allocation. */
 #include "gpu_internal.h"
 
-#if defined(ICM_HAVE_LTO_CALLBACKS)
-#include "gpu_lto_callback_fatbin.h"
-static const size_t g_lto_fatbin_size = sizeof(gpu_lto_callback_fatbin);
-#endif
+/* LTO callbacks disabled: cuFFT's JIT-compiled callback introduces ~1e-9
+ * rounding error per level at batch >= 64 (cuFFT multi-upload codepath).
+ * This compounds across tree levels to unacceptable error for FP64 ICM. */
 
 namespace icm_gpu_detail {
 
@@ -808,25 +807,9 @@ bool device_sort_players(GpuPlan *plan) {
 
 /* ── cuFFT plan creation ───────────────────────────────────────── */
 
-bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist,
-                       const char *lto_cb_name, const void *lto_ir, size_t lto_ir_size,
-                       void **lto_caller_info) {
+bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist) {
     if (real_dist <= 0) real_dist = n;
     if (!CUFFT_OK(cufftCreate(plan))) return false;
-#if defined(ICM_HAVE_LTO_CALLBACKS)
-    if (lto_cb_name && lto_ir && lto_ir_size > 0) {
-        cufftXtCallbackType cb_type = r2c ? CUFFT_CB_ST_COMPLEX_DOUBLE : CUFFT_CB_LD_COMPLEX_DOUBLE;
-        cufftResult lto_res = cufftXtSetJITCallback(*plan, lto_cb_name,
-            const_cast<void *>(lto_ir), lto_ir_size, cb_type, lto_caller_info);
-        if (lto_res != CUFFT_SUCCESS) {
-            fprintf(stderr, "LTO callback setup failed (n=%d batch=%d): cuFFT error %d\n",
-                    n, batch, (int)lto_res);
-            /* Fall through — plan works without callback */
-        }
-    }
-#else
-    (void)lto_cb_name; (void)lto_ir; (void)lto_ir_size; (void)lto_caller_info;
-#endif
     int rank = 1;
     int n_arr[1] = {n};
     int cn = n / 2 + 1;
@@ -914,9 +897,6 @@ bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, int stride, 
     config.device = &cuDevice;
     config.stream = stream_ptr;
     config.num_streams = 1;
-
-    /* Force single-upload R2C to avoid multi-upload stride bug (VkFFT < v1.3.3) */
-    config.swapTo2Stage4Step = (1 << 20);
 
     VkFFTResult res = initializeVkFFT(app, config);
     if (res != VKFFT_SUCCESS) {
@@ -1012,33 +992,7 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     b.spec_mid = plan->shared_build_work.spec_mid;
     b.real_out = nullptr;
     if (!create_cufft_plan(&b.plan_fwd, fft_n, qb * child_batch, true, child_stride)) return false;
-#if defined(ICM_HAVE_LTO_CALLBACKS)
-    if (lp.tier == GPU_TIER_CUFFT) {
-        /* Allocate callback data on device and set LTO callback on inverse plan */
-        BuildMulCBData h_cb = { cn, 1.0 / (double)fft_n };
-        BuildMulCBData *d_cb = nullptr;
-        if (CUDA_OK(cudaMalloc(&d_cb, sizeof(BuildMulCBData))) &&
-            CUDA_OK(cudaMemcpy(d_cb, &h_cb, sizeof(BuildMulCBData), cudaMemcpyHostToDevice))) {
-            void *d_cb_ptr = static_cast<void *>(d_cb);
-            if (create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false, parent_stride,
-                                  "icm_build_mul_load_cb", gpu_lto_callback_fatbin, g_lto_fatbin_size,
-                                  &d_cb_ptr)) {
-                b.lto_build_active = 1;
-                fprintf(stderr, "[LTO] build callback active for level %d fft_n=%d\n", ell, fft_n);
-            } else {
-                fprintf(stderr, "[LTO] build callback FAILED for level %d fft_n=%d, falling back\n", ell, fft_n);
-                cudaFree(d_cb);
-                if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false, parent_stride)) return false;
-            }
-        } else {
-            if (d_cb) cudaFree(d_cb);
-            if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false, parent_stride)) return false;
-        }
-    } else
-#endif
-    {
-        if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false, parent_stride)) return false;
-    }
+    if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false, parent_stride)) return false;
     if (!CUFFT_OK(cufftSetStream(b.plan_fwd, plan->stream_compute))) return false;
     if (!CUFFT_OK(cufftSetStream(b.plan_inv, plan->stream_compute))) return false;
 

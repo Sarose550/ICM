@@ -215,22 +215,15 @@ bool run_build_level_fft(GpuPlan *plan, int ell) {
         if (ell < (int)plan->fft_cache_valid.size()) plan->fft_cache_valid[ell] = true;
     }
 
-    cufftDoubleComplex *inv_in;
-    if (b.lto_build_active) {
-        /* LTO callback fuses multiply into C2R — pass fwd_out directly */
-        inv_in = fwd_out;
-    } else {
-        cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
-        size_t mul_total = (size_t)parent_batch * (size_t)b.cn;
-        int blocks_mul = (int)((mul_total + threads - 1) / threads);
-        double inv_fft_n = 1.0 / (double)b.fft_n;
-        k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(
-            fwd_out, b.cn, mul_out, parent_batch, inv_fft_n);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-        inv_in = mul_out;
-    }
+    cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
+    size_t mul_total = (size_t)parent_batch * (size_t)b.cn;
+    int blocks_mul = (int)((mul_total + threads - 1) / threads);
+    double inv_fft_n = 1.0 / (double)b.fft_n;
+    k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(
+        fwd_out, b.cn, mul_out, parent_batch, inv_fft_n);
+    if (!CUDA_OK(cudaGetLastError())) return false;
 
-    if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, inv_in, plan->d_poly_levels[ell]))) return false;
+    if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, mul_out, plan->d_poly_levels[ell]))) return false;
 
     if (parent_stride > pps) {
         size_t szp_total = (size_t)parent_batch * (size_t)parent_stride;
@@ -615,19 +608,13 @@ bool run_build_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     if (lp.cache_fft && plan->d_fft_cache[ell]) {
         if (ell < (int)plan->fft_cache_valid.size()) plan->fft_cache_valid[ell] = true;
     }
-    cufftDoubleComplex *inv_in;
-    if (b.lto_build_active) {
-        inv_in = fwd_out;
-    } else {
-        cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
-        size_t mul_total = (size_t)parent_batch * (size_t)b.cn;
-        int blocks_mul = (int)((mul_total + threads - 1) / threads);
-        double inv_fft_n_qb = 1.0 / (double)b.fft_n;
-        k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(fwd_out, b.cn, mul_out, parent_batch, inv_fft_n_qb);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-        inv_in = mul_out;
-    }
-    if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, inv_in, plan->d_poly_levels[ell]))) return false;
+    cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
+    size_t mul_total = (size_t)parent_batch * (size_t)b.cn;
+    int blocks_mul = (int)((mul_total + threads - 1) / threads);
+    double inv_fft_n_qb = 1.0 / (double)b.fft_n;
+    k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(fwd_out, b.cn, mul_out, parent_batch, inv_fft_n_qb);
+    if (!CUDA_OK(cudaGetLastError())) return false;
+    if (!CUFFT_OK(cufftExecZ2D(b.plan_inv, mul_out, plan->d_poly_levels[ell]))) return false;
     if (parent_stride > pps) {
         size_t szp_total = (size_t)parent_batch * (size_t)parent_stride;
         int blocks_szp = (int)((szp_total + threads - 1) / threads);
