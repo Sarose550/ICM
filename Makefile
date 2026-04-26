@@ -40,7 +40,7 @@ ifeq ($(UNAME),Darwin)
   OMP_LDFLAGS = -L/opt/homebrew/opt/libomp/lib -lomp -lfftw3_threads
 else
   # Linux: native OpenMP, system FFTW, dlopen for MKL dual dispatch
-  LDFLAGS += -ldl
+  LDFLAGS += -ldl -lmvec
   OMP_CFLAGS  = -fopenmp
   OMP_LDFLAGS = -lfftw3_threads -lpthread
   # Auto-detect AOCL-FFTW

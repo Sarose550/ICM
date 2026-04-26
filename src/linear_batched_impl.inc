@@ -113,11 +113,20 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
         {
             double logv_bq[BQ_IMPL];
             for (int qi = 0; qi < BQ_IMPL; qi++) logv_bq[qi] = pts[qb + qi].logv;
+#if HAS_VEXP && BQ_IMPL == 8
+            /* AVX-512 vectorized exp: compute all args, then batch exp.
+             * BQ=8 maps to one 512-bit vector per j, ideal for _ZGVeN8v_exp. */
+            for (int j = 0; j < n; j++)
+                for (int qi = 0; qi < 8; qi++)
+                    a_batch[(size_t)j * 8 + qi] = S[j] * logv_bq[qi];
+            vexp_clamp(a_batch, a_batch, (size_t)n * 8);
+#else
             for (int j = 0; j < n; j++)
                 for (int qi = 0; qi < BQ_IMPL; qi++) {
                     double arg = S[j] * logv_bq[qi];
                     a_batch[(size_t)j * BQ_IMPL + qi] = (arg < -700) ? 0 : exp(arg);
                 }
+#endif
         }
 
         if (use_ckpt) {
@@ -306,11 +315,20 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
         {
             double logv_bq[BQ_IMPL];
             for (int qi = 0; qi < BQ_IMPL; qi++) logv_bq[qi] = pts[qb + qi].logv;
+#if HAS_VEXP && BQ_IMPL == 8
+            /* AVX-512 vectorized exp: compute all args, then batch exp.
+             * BQ=8 maps to one 512-bit vector per j, ideal for _ZGVeN8v_exp. */
+            for (int j = 0; j < n; j++)
+                for (int qi = 0; qi < 8; qi++)
+                    a_batch[(size_t)j * 8 + qi] = S[j] * logv_bq[qi];
+            vexp_clamp(a_batch, a_batch, (size_t)n * 8);
+#else
             for (int j = 0; j < n; j++)
                 for (int qi = 0; qi < BQ_IMPL; qi++) {
                     double arg = S[j] * logv_bq[qi];
                     a_batch[(size_t)j * BQ_IMPL + qi] = (arg < -700) ? 0 : exp(arg);
                 }
+#endif
         }
 
         if (use_ckpt) {

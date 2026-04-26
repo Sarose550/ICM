@@ -23,6 +23,26 @@
 #ifdef __linux__
 #include <dlfcn.h>
 #endif
+#if defined(__linux__) && defined(__AVX512F__)
+#include <immintrin.h>
+extern __m512d _ZGVeN8v_exp(__m512d);
+static inline void vexp_clamp(double *y, const double *x, int n) {
+    int i = 0;
+    __m512d thresh = _mm512_set1_pd(-700.0);
+    for (; i + 8 <= n; i += 8) {
+        __m512d vx = _mm512_loadu_pd(x + i);
+        __m512d vy = _ZGVeN8v_exp(vx);
+        __mmask8 m = _mm512_cmp_pd_mask(vx, thresh, _CMP_LT_OS);
+        vy = _mm512_mask_blend_pd(m, vy, _mm512_setzero_pd());
+        _mm512_storeu_pd(y + i, vy);
+    }
+    for (; i < n; i++)
+        y[i] = (x[i] < -700.0) ? 0.0 : exp(x[i]);
+}
+#define HAS_VEXP 1
+#else
+#define HAS_VEXP 0
+#endif
 #include "amx.h"
 
 /* ══════════════════════════════════════════════════════════════
@@ -2472,6 +2492,9 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
         vvexp(a, exp_args, &vn);
         for (int j = 0; j < n; j++)
             if (exp_args[j] < -700) a[j] = 0;
+#elif HAS_VEXP
+        for (int j = 0; j < n; j++) a[j] = S[j] * logv;
+        vexp_clamp(a, a, n);
 #else
         for (int j = 0; j < n; j++) {
             double arg = S[j] * logv;
@@ -2524,10 +2547,15 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
         for (int qi = 0; qi < BQ; qi++) {
             double logv = pts[qb + qi].logv;
             double *aq = a_buf + (size_t)qi * n;
+#if HAS_VEXP
+            for (int j = 0; j < n; j++) aq[j] = S[j] * logv;
+            vexp_clamp(aq, aq, n);
+#else
             for (int j = 0; j < n; j++) {
                 double arg = S[j] * logv;
                 aq[j] = (arg < -700) ? 0 : exp(arg);
             }
+#endif
         }
 
         for (int qi = 0; qi < BQ; qi++) {
@@ -2556,10 +2584,15 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
     for (int q = n_batches_e * BQ; q < Q; q++) {
         if (pts[q].w == 0) continue;
         double logv = pts[q].logv, wq = pts[q].w;
+#if HAS_VEXP
+        for (int j = 0; j < n; j++) a_buf[j] = S[j] * logv;
+        vexp_clamp(a_buf, a_buf, n);
+#else
         for (int j = 0; j < n; j++) {
             double arg = S[j] * logv;
             a_buf[j] = (arg < -700) ? 0 : exp(arg);
         }
+#endif
         engine(n, a_buf, payout, k, inner_buf, ctx);
         double inv_v = exp(-logv);
         for (int i = 0; i < n; i++) {
