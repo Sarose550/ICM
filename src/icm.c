@@ -2222,12 +2222,14 @@ static void engine_hybrid_core(int n, const double *a,
         for (int j = 0; j < bsize; j++) {
             double aj = a[start + j], bj_val = 1 - aj;
             if (aj > 0.5) {
-                inv_arr[j] = 1.0 / aj;
-                coeff_arr[j] = -bj_val / aj;
+                double ia = 1.0 / aj;
+                inv_arr[j] = ia;
+                coeff_arr[j] = -bj_val * ia;
                 fwd_arr[j] = 1;
             } else if (aj > 1e-15) {
-                inv_arr[j] = 1.0 / bj_val;
-                coeff_arr[j] = -aj / bj_val;
+                double ib = 1.0 / bj_val;
+                inv_arr[j] = ib;
+                coeff_arr[j] = -aj * ib;
                 fwd_arr[j] = 0;
             } else {
                 inv_arr[j] = 0;
@@ -2565,10 +2567,16 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
         }
 
         double wq_b[BQ], iv_b[BQ];
-        for (int qi = 0; qi < BQ; qi++) {
+        for (int qi = 0; qi < BQ; qi++)
             wq_b[qi] = pts[qb + qi].w;
+#if HAS_VEXP && BQ == 8
+        for (int qi = 0; qi < 8; qi++)
+            iv_b[qi] = -pts[qb + qi].logv;
+        vexp_clamp(iv_b, iv_b, 8);
+#else
+        for (int qi = 0; qi < BQ; qi++)
             iv_b[qi] = exp(-pts[qb + qi].logv);
-        }
+#endif
         for (int i = 0; i < n; i++) {
             double sum = 0;
             for (int qi = 0; qi < BQ; qi++) {

@@ -229,10 +229,16 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
         }
 
         double wq_b[BQ_IMPL], iv_b[BQ_IMPL];
-        for (int qi = 0; qi < BQ_IMPL; qi++) {
+        for (int qi = 0; qi < BQ_IMPL; qi++)
             wq_b[qi] = pts[qb + qi].w;
+#if HAS_VEXP && BQ_IMPL == 8
+        for (int qi = 0; qi < 8; qi++)
+            iv_b[qi] = -pts[qb + qi].logv;
+        vexp_clamp(iv_b, iv_b, 8);
+#else
+        for (int qi = 0; qi < BQ_IMPL; qi++)
             iv_b[qi] = exp(-pts[qb + qi].logv);
-        }
+#endif
         for (int i = 0; i < n; i++) {
             if (active && !active[i]) continue;
             double sum = 0;
@@ -431,10 +437,16 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
         }
 
         double wq_b[BQ_IMPL], iv_b[BQ_IMPL];
-        for (int qi = 0; qi < BQ_IMPL; qi++) {
+        for (int qi = 0; qi < BQ_IMPL; qi++)
             wq_b[qi] = pts[qb + qi].w;
+#if HAS_VEXP && BQ_IMPL == 8
+        for (int qi = 0; qi < 8; qi++)
+            iv_b[qi] = -pts[qb + qi].logv;
+        vexp_clamp(iv_b, iv_b, 8);
+#else
+        for (int qi = 0; qi < BQ_IMPL; qi++)
             iv_b[qi] = exp(-pts[qb + qi].logv);
-        }
+#endif
         for (int i = 0; i < n; i++) {
             if (active && !active[i]) continue;
             double sum = 0;
