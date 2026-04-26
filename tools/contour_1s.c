@@ -129,17 +129,16 @@ static double measure_time(int n, const double *S, int k, double *payout,
    ══════════════════════════════════════════════════════════════ */
 
 static void run_heatmap(int measure_mem) {
-    /* Log-spaced n values */
+    /* Power-of-2 grid matching GPU heatmap for direct comparison */
     int n_values[] = {
-        100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000,
-        100000, 200000, 500000, 1000000, 2000000, 5000000, 10000000
+        64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+        131072, 262144, 524288, 1048576
     };
     int n_n = sizeof(n_values) / sizeof(n_values[0]);
 
-    /* Log-spaced k values */
     int k_values[] = {
-        2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000,
-        5000, 10000, 20000, 50000, 100000
+        64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+        131072, 262144, 524288, 1048576
     };
     int n_k = sizeof(k_values) / sizeof(k_values[0]);
 
