@@ -60,8 +60,14 @@ class BuildSharedLib(build_ext):
         ldflags = ["-lfftw3", "-lm"]
 
         if system == "Darwin":
-            includes.append("-I/opt/homebrew/include")
-            ldflags = ["-L/opt/homebrew/lib"] + ldflags + ["-framework", "Accelerate"]
+            # Detect Homebrew prefix (ARM: /opt/homebrew, Intel: /usr/local)
+            brew_prefix = subprocess.check_output(
+                ["brew", "--prefix"], text=True
+            ).strip() if os.path.exists("/opt/homebrew/bin/brew") or os.path.exists("/usr/local/bin/brew") else None
+            if brew_prefix:
+                includes.append(f"-I{brew_prefix}/include")
+                ldflags = [f"-L{brew_prefix}/lib"] + ldflags
+            ldflags += ["-framework", "Accelerate"]
         else:
             ldflags.append("-ldl")
             # Auto-detect AOCL-FFTW

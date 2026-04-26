@@ -203,11 +203,6 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef AMX_CALL_NS
 #define AMX_CALL_NS 30.0
 #endif
-/* Effective scalar polymul FMA cost (memory-bound, lower than FMA_NS). */
-#ifndef POLYMUL_FMA_NS
-#define POLYMUL_FMA_NS 0.13
-#endif
-
 /* ── Cost model functions ── */
 
 static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,

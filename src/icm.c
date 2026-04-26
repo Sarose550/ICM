@@ -514,7 +514,7 @@ static void correlate_school(const double *restrict g, int len_g,
 #define USE_AMX 1
 #endif
 
-#if HAS_AMX && USE_AMX && USE_AMX
+#if HAS_AMX && USE_AMX
 
 /* Minimum degree for AMX schoolbook to beat scalar.
  * Below this, scalar polymul_modk / correlate_school is used.

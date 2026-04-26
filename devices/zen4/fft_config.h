@@ -161,10 +161,6 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef INDEP_PAIR_RATIO
 #define INDEP_PAIR_RATIO 1.35
 #endif
-#ifndef POLYMUL_FMA_NS
-#define POLYMUL_FMA_NS 0.135
-#endif
-
 static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,
                                      int *out_size, int *out_build_m, int *out_corr_m) {
     int max_conv = (build_conv > corr_conv) ? build_conv : corr_conv;

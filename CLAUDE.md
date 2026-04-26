@@ -107,7 +107,6 @@ All tuning constants live in `devices/<DEVICE>/fft_config.h` as `#define`s:
 | Constant | M3 Max | Zen 4 | What | How to measure |
 |---|---|---|---|---|
 | `FMA_NS` | 0.25 | 0.13 | ns per scalar FMA | `./bench_grid profile` (schoolbook row) |
-| `POLYMUL_FMA_NS` | 0.13 | 0.135 | Memory-bound FMA (batched linear) | `./bench_grid bench` + calculation |
 | `FFT_OVERHEAD_NS` | 40.0 | 50.0 | Per-call FFT overhead | `./bench_grid profile` (overhead table) |
 | `PAIRED_CACHED_CORR_RATIO` | 1.03 | 1.08 | Paired correlate / full pipeline | `./bench_grid profile` (phase split) |
 | `INDEP_PAIR_RATIO` | 1.25 | 1.35 | correlate_fft_pair / full pipeline | `./bench_grid profile` (phase split) |
@@ -249,7 +248,7 @@ python3 tools/plot_contour.py
 After running the above, fill in:
 - **Table 1** (single-threaded performance): M3 Max column from `bench_grid_m3max_serial.txt`
 - **Table 2** (parallel performance): M3 Max column from `bench_grid_m3max_parallel.txt`
-- **Table 3** (bandwidth/hardware constants): FMA_NS, POLYMUL_FMA_NS,
+- **Table 3** (bandwidth/hardware constants): FMA_NS,
   FFT_OVERHEAD_NS from `./bench_grid profile` output; L2_CACHE_SIZE from
   hardware spec (32MB for M3 Max)
 - **Contour figures**: from the CSV files generated in steps 8-9
@@ -259,7 +258,7 @@ After running the above, fill in:
 1. Run `tools/calibrate` on the target machine → produces `fft_config.h` + `fftw_wisdom.dat`
 2. Copy to `devices/<DEVICE>/`
 3. `make DEVICE=<DEVICE>` and `./bench_grid profile` to measure platform constants
-4. Update `#define`s in `fft_config.h` (FMA_NS, POLYMUL_FMA_NS, FFT_OVERHEAD_NS, etc.)
+4. Update `#define`s in `fft_config.h` (FMA_NS, FFT_OVERHEAD_NS, etc.)
 5. On Apple Silicon: vDSP dispatch is automatic. Recalibrate `calib_times_ns[]`
    to reflect actual dispatch cost (run `tools/bench_amx` for AMX constants).
 6. On Linux with MKL: run `tools/calibrate_dual` → adds `calib_lib[]` + updates

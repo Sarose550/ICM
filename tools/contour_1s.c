@@ -1,9 +1,15 @@
 /*
- * contour_1s.c — Performance heatmap and contour sweep for (n, k) space.
+ * contour_1s.c — Performance heatmap, contour, and frontier for (n, k) space.
  *
  * Modes:
- *   ./contour_1s              # 2D heatmap: sweep grid, output time/engine/memory CSV
+ *   ./contour_1s              # 2D heatmap: sweep grid, output time/engine CSV
  *   ./contour_1s --contour    # 1D contour: binary-search for 1s boundary per k
+ *   ./contour_1s --nk         # n=k threshold: binary-search along the diagonal
+ *
+ * Options:
+ *   --timeout <sec>           # hard kill timeout per probe (default 10s)
+ *   --wisdom <path>           # FFTW wisdom file (default: fftw_wisdom.dat in CWD)
+ *   --memory                  # measure RSS (heatmap mode only, Linux)
  *
  * Outputs CSV to stdout. Progress to stderr.
  *
@@ -17,6 +23,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <signal.h>
 
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -28,6 +35,56 @@ static double wall_time_sec(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+/* ── Timeout infrastructure (fork-based) ──────────────────── */
+
+/* Run icm_equity in a forked child with a hard wall-clock timeout.
+ * Returns elapsed seconds, or -1.0 if killed by timeout.
+ * The fork isolates FFTW state — no corruption on kill. */
+static double fork_timed_equity(int n, const double *S, int Q, double *payout,
+                                int k, double *equity, double timeout_sec) {
+    int pipefd[2];
+    if (pipe(pipefd) < 0) return -1.0;
+
+    pid_t pid = fork();
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1.0; }
+
+    if (pid == 0) {
+        /* Child: inherited FFTW wisdom + plans via COW */
+        close(pipefd[0]);
+        double t0 = wall_time_sec();
+        icm_equity(n, S, Q, payout, k, equity);
+        double elapsed = wall_time_sec() - t0;
+        write(pipefd[1], &elapsed, sizeof(elapsed));
+        close(pipefd[1]);
+        _exit(0);
+    }
+
+    /* Parent: wait with timeout */
+    close(pipefd[1]);
+
+    double t0 = wall_time_sec();
+    double elapsed = -1.0;
+    while (1) {
+        int status;
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w > 0) {
+            /* Child finished */
+            read(pipefd[0], &elapsed, sizeof(elapsed));
+            break;
+        }
+        if (wall_time_sec() - t0 > timeout_sec) {
+            /* Timeout — kill child */
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            elapsed = -1.0;
+            break;
+        }
+        usleep(1000);  /* 1ms poll */
+    }
+    close(pipefd[0]);
+    return elapsed;
 }
 
 /* ── Memory measurement (Linux) ────────────────────────────── */
@@ -95,24 +152,44 @@ static void make_random_stacks(int n, double *S, unsigned int seed) {
 
 /* ── Time measurement ──────────────────────────────────────── */
 
+/* Hard timeout for a single icm_equity call (seconds). */
+static double g_call_timeout = 10.0;
+
+/* If timeout > 0, use fork-based isolation to enforce it.
+ * For the contour's binary search, only the initial probe at large n needs this;
+ * once we know the rough scale, subsequent probes are fast and run in-process. */
+static int g_use_fork_timeout = 0;
+
 static double measure_time(int n, const double *S, int k, double *payout,
                            double *equity, int reps) {
     int Q = 256;
 
-    /* Warm-up — skip if the single call already exceeds 2s (clearly above frontier) */
-    double t0 = wall_time_sec();
-    icm_equity(n, S, Q, payout, k, equity);
-    double warmup = wall_time_sec() - t0;
+    /* Warm-up — use fork timeout if enabled */
+    double warmup;
+    if (g_use_fork_timeout) {
+        warmup = fork_timed_equity(n, S, Q, payout, k, equity, g_call_timeout);
+        if (warmup < 0) return g_call_timeout;  /* killed by timeout */
+    } else {
+        double t0 = wall_time_sec();
+        icm_equity(n, S, Q, payout, k, equity);
+        warmup = wall_time_sec() - t0;
+    }
     if (warmup > 2.0) return warmup;
 
     double times[5];
     if (reps > 5) reps = 5;
 
     for (int r = 0; r < reps; r++) {
-        t0 = wall_time_sec();
-        icm_equity(n, S, Q, payout, k, equity);
-        times[r] = wall_time_sec() - t0;
-        /* Early exit: if first rep is well above 1s, no need for more reps */
+        double t;
+        if (g_use_fork_timeout) {
+            t = fork_timed_equity(n, S, Q, payout, k, equity, g_call_timeout);
+            if (t < 0) { times[r] = g_call_timeout; reps = r + 1; break; }
+        } else {
+            double t0 = wall_time_sec();
+            icm_equity(n, S, Q, payout, k, equity);
+            t = wall_time_sec() - t0;
+        }
+        times[r] = t;
         if (r == 0 && times[0] > 1.5) { reps = 1; break; }
     }
 
@@ -227,38 +304,45 @@ static void run_heatmap(int measure_mem) {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   MODE 2: CONTOUR SEARCH (binary search for 1s boundary per k)
+   BINARY SEARCH HELPERS
    ══════════════════════════════════════════════════════════════ */
 
-static int find_n_max(int k, double target_sec, double *out_time,
-                      double *S_buf, double *payout, double *equity_buf,
-                      int max_n) {
-    int n_lo = k;
-    int n_hi = (int)((double)50000000 / (k > 1 ? k : 1));
+/* Probe function type: given n, return wall-clock time in seconds.
+ * Implementations set up stacks/payout internally based on the mode. */
+typedef double (*probe_fn)(int n, void *ctx);
+
+/* Generic binary search: find largest n in [n_lo, max_n] where probe(n) <= target_sec.
+ * Starts at n_start, doubles until exceeding target, then bisects.
+ * Returns the threshold n and writes its time to *out_time.
+ * If even n_lo exceeds target, returns n_lo with its time. */
+static int bisect_threshold(probe_fn probe, void *ctx,
+                            int n_lo, int n_start, int max_n,
+                            double target_sec, double *out_time) {
+    int n_hi = n_start;
     if (n_hi > max_n) n_hi = max_n;
     if (n_hi < n_lo) n_hi = n_lo;
 
-    make_random_stacks(n_hi, S_buf, 42);
-    double t_hi = measure_time(n_hi, S_buf, k, payout, equity_buf, 1);
+    double t_hi = probe(n_hi, ctx);
 
+    /* Expand until we exceed the target or hit the ceiling */
     while (t_hi < target_sec && n_hi < max_n) {
         n_hi = (int)((double)n_hi * 2.0);
         if (n_hi > max_n) n_hi = max_n;
-        make_random_stacks(n_hi, S_buf, 42);
-        t_hi = measure_time(n_hi, S_buf, k, payout, equity_buf, 1);
+        t_hi = probe(n_hi, ctx);
     }
 
     if (t_hi < target_sec) { *out_time = t_hi; return n_hi; }
+    if (n_lo == n_hi) { *out_time = t_hi; return n_lo; }
 
-    make_random_stacks(n_lo, S_buf, 42);
-    double t_lo = measure_time(n_lo, S_buf, k, payout, equity_buf, 1);
+    double t_lo = probe(n_lo, ctx);
     if (t_lo > target_sec) { *out_time = t_lo; return n_lo; }
 
+    /* Bisect to 5% precision */
     while ((double)(n_hi - n_lo) > 0.05 * (double)n_lo && n_hi - n_lo > 10) {
         int n_mid = n_lo + (n_hi - n_lo) / 2;
-        make_random_stacks(n_mid, S_buf, 42);
-        int reps = (t_lo + t_hi) / 2.0 < 0.1 ? 3 : 1;
-        double t_mid = measure_time(n_mid, S_buf, k, payout, equity_buf, reps);
+        int reps_hint = (t_lo + t_hi) / 2.0 < 0.1 ? 3 : 1;
+        (void)reps_hint; /* used by callers that set rep count in ctx */
+        double t_mid = probe(n_mid, ctx);
         if (t_mid <= target_sec) { n_lo = n_mid; t_lo = t_mid; }
         else { n_hi = n_mid; t_hi = t_mid; }
     }
@@ -266,6 +350,55 @@ static int find_n_max(int k, double target_sec, double *out_time,
     *out_time = t_lo;
     return n_lo;
 }
+
+/* ── Probe: fixed k, varying n ─────────────────────────────── */
+
+typedef struct {
+    int k;
+    double *S_buf;
+    double *payout;
+    double *equity_buf;
+} contour_probe_ctx;
+
+static double contour_probe(int n, void *raw) {
+    contour_probe_ctx *ctx = (contour_probe_ctx *)raw;
+    make_random_stacks(n, ctx->S_buf, 42);
+    return measure_time(n, ctx->S_buf, ctx->k, ctx->payout, ctx->equity_buf, 1);
+}
+
+/* ── Probe: n=k (diagonal) ─────────────────────────────────── */
+
+typedef struct {
+    double *S_buf;
+    double *payout;
+    double *equity_buf;
+    int alloc_n;
+    int alloc_k;
+} nk_probe_ctx;
+
+static double nk_probe(int n, void *raw) {
+    nk_probe_ctx *ctx = (nk_probe_ctx *)raw;
+    /* Grow payout if needed (k=n may exceed previous allocation) */
+    if (n > ctx->alloc_k) {
+        free(ctx->payout);
+        ctx->alloc_k = n;
+        ctx->payout = (double *)malloc((size_t)n * sizeof(double));
+        for (int q = 0; q < n; q++) ctx->payout[q] = 1.0 / (q + 1) - 1.0 / (q + 2);
+    }
+    /* Grow stacks/equity if needed */
+    if (n > ctx->alloc_n) {
+        free(ctx->S_buf); free(ctx->equity_buf);
+        ctx->alloc_n = n;
+        ctx->S_buf = (double *)malloc((size_t)n * sizeof(double));
+        ctx->equity_buf = (double *)malloc((size_t)n * sizeof(double));
+    }
+    make_random_stacks(n, ctx->S_buf, 42);
+    return measure_time(n, ctx->S_buf, n, ctx->payout, ctx->equity_buf, 1);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   MODE 2: CONTOUR SEARCH (binary search for 1s boundary per k)
+   ══════════════════════════════════════════════════════════════ */
 
 static void run_contour(void) {
     int k_values[] = {
@@ -285,35 +418,53 @@ static void run_contour(void) {
     if (!S || !equity || !payout) { fprintf(stderr, "alloc failed\n"); exit(1); }
     for (int q = 0; q < max_k; q++) payout[q] = 1.0 / (q + 1) - 1.0 / (q + 2);
 
+    contour_probe_ctx ctx = { .k = 0, .S_buf = S, .payout = payout, .equity_buf = equity };
+
     printf("k,n_max,time_ms,engine,block_size\n");
     fflush(stdout);
 
+    int consecutive_timeouts = 0;
     for (int ki = 0; ki < n_k; ki++) {
         int k = k_values[ki];
         if (k > max_n) break;
+        if (consecutive_timeouts >= 3) {
+            fprintf(stderr, "k=%d: skipped (contour converged to n=k diagonal)\n", k);
+            continue;
+        }
 
+        /* Ensure buffers are large enough */
         int need_n = (int)((double)50000000 / (k > 1 ? k : 1));
         if (need_n > max_n) need_n = max_n;
         if (need_n < k) need_n = k;
         need_n *= 4;
         if (need_n > max_n) need_n = max_n;
-
         if (need_n > alloc_n) {
             alloc_n = need_n;
             free(S); free(equity);
             S = (double *)malloc((size_t)alloc_n * sizeof(double));
             equity = (double *)malloc((size_t)alloc_n * sizeof(double));
             if (!S || !equity) { fprintf(stderr, "realloc failed n=%d\n", alloc_n); exit(1); }
+            ctx.S_buf = S;
+            ctx.equity_buf = equity;
         }
+
+        ctx.k = k;
+        int eff_max = max_n < alloc_n ? max_n : alloc_n;
+        int n_start = (int)((double)50000000 / (k > 1 ? k : 1));
 
         fprintf(stderr, "k=%d: searching for 1s boundary...\n", k);
 
         double time_sec;
-        int eff_max = max_n < alloc_n ? max_n : alloc_n;
-        int n_max = find_n_max(k, target_sec, &time_sec, S, payout, equity, eff_max);
+        int n_max = bisect_threshold(contour_probe, &ctx, k, n_start, eff_max,
+                                     target_sec, &time_sec);
 
         int B = icm_select_engine(n_max, k);
         const char *engine = (B > 0) ? "hybrid" : "linear";
+
+        if (n_max == k && time_sec > target_sec)
+            consecutive_timeouts++;
+        else
+            consecutive_timeouts = 0;
 
         printf("%d,%d,%.0f,%s,%d\n", k, n_max, time_sec * 1000.0, engine, B);
         fflush(stdout);
@@ -324,23 +475,68 @@ static void run_contour(void) {
     free(S); free(equity); free(payout);
 }
 
+/* ══════════════════════════════════════════════════════════════
+   MODE 3: n=k THRESHOLD (binary search along the diagonal)
+   ══════════════════════════════════════════════════════════════ */
+
+static void run_nk_threshold(void) {
+    double target_sec = 1.0;
+    int max_n = 100000000;
+    int init_alloc = 100000;
+
+    nk_probe_ctx ctx = {
+        .S_buf = (double *)malloc((size_t)init_alloc * sizeof(double)),
+        .payout = (double *)malloc((size_t)init_alloc * sizeof(double)),
+        .equity_buf = (double *)malloc((size_t)init_alloc * sizeof(double)),
+        .alloc_n = init_alloc,
+        .alloc_k = init_alloc,
+    };
+    if (!ctx.S_buf || !ctx.payout || !ctx.equity_buf) {
+        fprintf(stderr, "alloc failed\n"); exit(1);
+    }
+    for (int q = 0; q < init_alloc; q++)
+        ctx.payout[q] = 1.0 / (q + 1) - 1.0 / (q + 2);
+
+    fprintf(stderr, "Searching for max n=k under %.0fs...\n", target_sec);
+
+    double time_sec;
+    int n_threshold = bisect_threshold(nk_probe, &ctx, 64, 1024, max_n,
+                                       target_sec, &time_sec);
+
+    int B = icm_select_engine(n_threshold, n_threshold);
+    const char *engine = (B > 0) ? "hybrid" : "linear";
+
+    printf("n_eq_k,%d,%.0f,%s,%d\n", n_threshold, time_sec * 1000.0, engine, B);
+    fprintf(stderr, "FRONTIER: n=k=%d  time=%.0f ms  [%s B=%d]\n",
+            n_threshold, time_sec * 1000.0, engine, B);
+
+    free(ctx.S_buf); free(ctx.payout); free(ctx.equity_buf);
+}
+
 /* ── Main ──────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
-    int contour_mode = 0;
+    enum { MODE_HEATMAP, MODE_CONTOUR, MODE_NK } mode = MODE_HEATMAP;
     int measure_mem = 0;
 
+    const char *wisdom_path = NULL;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--contour") == 0) contour_mode = 1;
-        if (strcmp(argv[i], "--memory") == 0) measure_mem = 1;
+        if (strcmp(argv[i], "--contour") == 0) mode = MODE_CONTOUR;
+        else if (strcmp(argv[i], "--nk") == 0) mode = MODE_NK;
+        else if (strcmp(argv[i], "--memory") == 0) measure_mem = 1;
+        else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc)
+            g_call_timeout = atof(argv[++i]);
+        else if (strcmp(argv[i], "--wisdom") == 0 && i + 1 < argc)
+            wisdom_path = argv[++i];
     }
 
-    icm_init("devices/zen4/fftw_wisdom.dat");
+    icm_init(wisdom_path);
+    g_use_fork_timeout = 1;
 
-    if (contour_mode) {
-        run_contour();
-    } else {
-        run_heatmap(measure_mem);
+    switch (mode) {
+    case MODE_HEATMAP: run_heatmap(measure_mem); break;
+    case MODE_CONTOUR: run_contour(); break;
+    case MODE_NK:      run_nk_threshold(); break;
     }
 
     return 0;

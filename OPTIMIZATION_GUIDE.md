@@ -356,19 +356,12 @@ The profile output has three measurement sections. Record these values:
      Cost = fwd(g) + 2×(fwd(P) + pw + ifft). Ratio = this / full_pipeline_calib.
      M3 Max measured 1.25.
 
-4. **Memory-bound FMA cost** — For the linear engine's inner loop, which is
-   memory-bound (not compute-bound), the effective FMA cost is higher than
-   the pure compute `FMA_NS`. Measure by running `./bench_grid bench 4096 50`
-   and comparing actual time to `n × k × 2 × POLYMUL_FMA_NS`.
-   → `POLYMUL_FMA_NS` (M3 Max: 0.13, estimated Zen 4: ~0.02 due to AVX-512 width)
-
 **Step 3: Update platform constants in `devices/zen4/fft_config.h`.**
 
 Edit the `#define`s at the top of the file with measured values:
 
 ```c
 #define FMA_NS             0.08    /* scalar FMA cost from profile schoolbook row */
-#define POLYMUL_FMA_NS     0.02    /* memory-bound FMA cost from bench measurement */
 #define FFT_OVERHEAD_NS    48.0    /* per-call FFT overhead from profile */
 #define PAIRED_CACHED_CORR_RATIO 1.08  /* from phase split */
 #define INDEP_PAIR_RATIO   1.30    /* from phase split */
@@ -395,7 +388,7 @@ make DEVICE=zen4
 
 This runs both linear and hybrid at each (n, k) and shows which wins. The
 `select_engine()` cost model should match the empirical crossover. If it doesn't,
-check that `FMA_NS`, `POLYMUL_FMA_NS`, and `FFT_OVERHEAD_NS` are correct — the
+check that `FMA_NS` and `FFT_OVERHEAD_NS` are correct — the
 dispatch is fully derived from these constants and the calibration table.
 
 No manual `K_CROSS` tuning is needed — dispatch is cost-based.
@@ -415,7 +408,7 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 
 | Feature | How it adapts |
 |---|---|
-| `select_engine(n,k)` | Compares linear cost (using `POLYMUL_FMA_NS`) vs hybrid cost (using `calib_times_ns[]`). Zen 4's faster schoolbook shifts crossover to higher k |
+| `select_engine(n,k)` | Compares linear roofline cost vs hybrid cost (using `calib_times_ns[]`). Zen 4's faster schoolbook shifts crossover to higher k |
 | `select_best_B(n,k)` | Derives optimal block size from calibration data. Typically B=32 on Zen 4 (vs B=16 on M3 Max) because wider schoolbook regime |
 | `ckpt_interval_batched` | Sized to fit working set in `L2_CACHE_SIZE`. Activates much earlier on Zen 4 (1MB vs 32MB) |
 | BQ=8 batched linear | Same interleaved `a_batch[j*BQ+qi]` layout. AVX-512 processes 8 doubles natively per instruction |
@@ -429,7 +422,6 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 | Constant | Why manual | How to measure |
 |---|---|---|
 | `FMA_NS` | Hardware-specific scalar FMA cost | `./bench_grid profile` schoolbook row |
-| `POLYMUL_FMA_NS` | Memory-bound FMA cost, depends on cache hierarchy | `./bench_grid bench` + manual calculation |
 | `FFT_OVERHEAD_NS` | Plan lookup + buffer copy cost | `./bench_grid profile` overhead column |
 | `PAIRED_CACHED_CORR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split |
 | `INDEP_PAIR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split |

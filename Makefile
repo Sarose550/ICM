@@ -34,10 +34,14 @@ UNAME := $(shell uname)
 
 ifeq ($(UNAME),Darwin)
   # macOS: Homebrew paths + Accelerate (vDSP, vvexp)
-  INCLUDES += -I/opt/homebrew/include
-  LDFLAGS  := -L/opt/homebrew/lib $(LDFLAGS) -framework Accelerate
-  OMP_CFLAGS  = -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include
-  OMP_LDFLAGS = -L/opt/homebrew/opt/libomp/lib -lomp -lfftw3_threads
+  BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+  ifeq ($(BREW_PREFIX),)
+    BREW_PREFIX := /opt/homebrew
+  endif
+  INCLUDES += -I$(BREW_PREFIX)/include
+  LDFLAGS  := -L$(BREW_PREFIX)/lib $(LDFLAGS) -framework Accelerate
+  OMP_CFLAGS  = -Xpreprocessor -fopenmp -I$(BREW_PREFIX)/opt/libomp/include
+  OMP_LDFLAGS = -L$(BREW_PREFIX)/opt/libomp/lib -lomp -lfftw3_threads
 else
   # Linux: native OpenMP, system FFTW, dlopen for MKL dual dispatch
   LDFLAGS += -ldl -lmvec

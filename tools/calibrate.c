@@ -255,8 +255,6 @@ static void write_config(const char *filename) {
 "#ifndef INDEP_PAIR_RATIO\n"
 "#define INDEP_PAIR_RATIO 1.25  /* correlate_fft_pair / full pipeline */\n"
 "#endif\n"
-"#ifndef POLYMUL_FMA_NS\n"
-"#define POLYMUL_FMA_NS 0.13  /* effective polymul FMA cost (memory-bound) */\n"
 "#endif\n\n");
 
     /* Cache and bandwidth constants */
