@@ -99,8 +99,15 @@ fi
 if ! run_with_timeout "${TIMEOUT_VERIFY_S}" "${GPU_BENCH_BIN}" verify | tee "${OUT_DIR}/verify.log"; then
   echo "WARNING: GPU verify failed; continuing campaign for profiling/calibration artifacts."
 fi
-if ! run_with_timeout "${TIMEOUT_VERIFY_EXT_S}" "${GPU_BENCH_BIN}" verify_ext | tee "${OUT_DIR}/verify_ext.log"; then
-  echo "WARNING: GPU extended verify failed; continuing campaign for profiling/calibration artifacts."
+# verify_ext is extremely slow (CPU reference at n=131072 takes ~10 min/case).
+# Skip by default; set RUN_VERIFY_EXT=1 to enable.
+RUN_VERIFY_EXT="${RUN_VERIFY_EXT:-0}"
+if [[ "${RUN_VERIFY_EXT}" == "1" ]]; then
+  if ! run_with_timeout "${TIMEOUT_VERIFY_EXT_S}" "${GPU_BENCH_BIN}" verify_ext | tee "${OUT_DIR}/verify_ext.log"; then
+    echo "WARNING: GPU extended verify failed; continuing campaign for profiling/calibration artifacts."
+  fi
+else
+  echo "Skipping verify_ext (set RUN_VERIFY_EXT=1 to enable)."
 fi
 
 echo "[3/8] Calibrating GPU model..."
