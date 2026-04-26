@@ -258,10 +258,11 @@ bool run_build_level_fused(GpuPlan *plan, int ell) {
     int nparents = plan->nn[ell];
     if (nparents <= 0 || cps <= 0 || pps <= 0) return true;
     bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n,
-                                                plan->d_poly_levels[ell - 1], child_stride,
-                                                plan->d_poly_levels[ell], parent_stride, nparents,
+                                                plan->d_poly_levels[ell - 1], cps,
+                                                plan->d_poly_levels[ell], pps, nparents,
                                                 1.0 / (double)lp.fft_n,
-                                                plan->stream_compute);
+                                                plan->stream_compute,
+                                                child_stride, parent_stride);
     if (!ok) {
         ok = launch_cufftdx_build_dispatch(lp.fft_n,
                                            plan->d_poly_levels[ell - 1], child_stride,
@@ -640,9 +641,10 @@ bool run_build_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     int cps = plan->psz[ell - 1]; int pps = plan->psz[ell];
     int cs = plan->fft_stride[ell - 1]; int ps = plan->fft_stride[ell];
     if (nparents_total <= 0 || cps <= 0 || pps <= 0) return true;
-    bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n, plan->d_poly_levels[ell - 1], cs,
-                                                plan->d_poly_levels[ell], ps, nparents_total,
-                                                1.0 / (double)lp.fft_n, plan->stream_compute);
+    bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n, plan->d_poly_levels[ell - 1], cps,
+                                                plan->d_poly_levels[ell], pps, nparents_total,
+                                                1.0 / (double)lp.fft_n, plan->stream_compute,
+                                                cs, ps);
     if (!ok) ok = launch_cufftdx_build_dispatch(lp.fft_n, plan->d_poly_levels[ell - 1], cs,
                                                  plan->d_poly_levels[ell], ps, nparents_total,
                                                  1.0 / (double)lp.fft_n, plan->stream_compute);
