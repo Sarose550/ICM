@@ -98,6 +98,78 @@ double estimate_cufft_pipeline_ns(int fft_n) {
     return (double)fft_n * 0.9 + GPU_FFT_OVERHEAD_NS;
 }
 
+/* Batch-aware cuFFT per-pipeline cost.
+ *
+ * The calibrated per-pipeline cost (from gpu_calib_cufft_ns) is measured at
+ * a moderate batch that varies by FFT size — typically 1024 for N ≤ 2048,
+ * 512 for N ≤ 8192, down to 16 for the largest sizes.  This calibration
+ * batch is large enough for reasonable GPU utilisation, but in the q-batch
+ * execution pipeline the effective batch per cuFFT call is q_batch × nn[ell],
+ * which can reach 10 000–100 000.  At these large batches, kernel-launch
+ * overhead fully amortises and the per-pipeline cost drops to a floor
+ * determined by HBM bandwidth and compute throughput.
+ *
+ * The floor values are measured directly:
+ *   (1) bench_batch.cu sweeps batch=1..65536 for R2C+C2R to find the
+ *       fwd+inv floor at each FFT size.
+ *   (2) level_timer.cu measures the full tree pipeline (fwd + pw + inv +
+ *       scale) per level at qb=64 to get the full-pipeline floor.
+ * These are stored in gpu_floor_ns[] in gpu_fft_config.h.
+ *
+ * The model interpolates between the calibrated cost and the floor:
+ *
+ *   cost(N, eb) = floor(N) + [calib(N) - floor(N)] × (calib_batch / eb)
+ *
+ * This is exact at eb = calib_batch (returns calib(N)) and approaches
+ * floor(N) as eb → ∞.  The interpolation follows from the linear
+ * decomposition: calib(N) = floor(N) + overhead(N) / calib_batch,
+ * cost(N, eb) = floor(N) + overhead(N) / eb. */
+#ifdef GPU_HAS_CUFFT_FLOOR
+static double cufft_floor_ns(int fft_n) {
+    /* Log-linear interpolation in the gpu_floor_ns table. */
+    if (fft_n <= gpu_floor_fft_sizes[0])
+        return gpu_floor_ns[0] * (double)fft_n / (double)gpu_floor_fft_sizes[0];
+    if (fft_n >= gpu_floor_fft_sizes[GPU_N_FLOOR_SIZES - 1])
+        return gpu_floor_ns[GPU_N_FLOOR_SIZES - 1]
+             * (double)fft_n / (double)gpu_floor_fft_sizes[GPU_N_FLOOR_SIZES - 1];
+    for (int i = 0; i < GPU_N_FLOOR_SIZES - 1; ++i) {
+        if (fft_n <= gpu_floor_fft_sizes[i + 1]) {
+            double log_lo = std::log((double)gpu_floor_fft_sizes[i]);
+            double log_hi = std::log((double)gpu_floor_fft_sizes[i + 1]);
+            double t = (std::log((double)fft_n) - log_lo) / (log_hi - log_lo);
+            return gpu_floor_ns[i] + t * (gpu_floor_ns[i + 1] - gpu_floor_ns[i]);
+        }
+    }
+    return gpu_floor_ns[GPU_N_FLOOR_SIZES - 1];
+}
+
+/* Return the calibration batch that was used when measuring gpu_calib_cufft_ns.
+ * Must match tools/calibrate_gpu.cu pick_batch_for_fft_n(). */
+static int calib_batch_for_size(int n) {
+    if (n <= 2048) return 1024;
+    if (n <= 8192) return 512;
+    if (n <= 32768) return 128;
+    if (n <= 65536) return 64;
+    if (n <= 131072) return 16;
+    return 8;
+}
+
+double estimate_cufft_pipeline_ns_batched(int fft_n, double effective_batch) {
+    double calib = estimate_cufft_pipeline_ns(fft_n);
+    double floor_val = cufft_floor_ns(fft_n);
+    if (floor_val >= calib) return calib;  /* floor should never exceed calib */
+    int cb = calib_batch_for_size(fft_n);
+    double overhead_at_calib = calib - floor_val;  /* = overhead(N) / cb */
+    /* overhead(N) / eb = overhead_at_calib × cb / eb */
+    return floor_val + overhead_at_calib * (double)cb / std::max(1.0, effective_batch);
+}
+#else
+double estimate_cufft_pipeline_ns_batched(int fft_n, double effective_batch) {
+    (void)effective_batch;
+    return estimate_cufft_pipeline_ns(fft_n);
+}
+#endif
+
 int fastest_fft_ge_gpu(int n) {
     if (n <= 1) return 2;
     int p2 = next_pow2_int(n);
@@ -392,7 +464,37 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
     if (nblocks_real < (double)GPU_SM_COUNT) occ_penalty = (double)GPU_SM_COUNT / std::max(1.0, nblocks_real);
 
     double block_fmas = ((double)n / B) * ((double)B * (B + 1) / 2.0);
+#ifdef GPU_HAS_BLOCK_BUILD_SPLIT
+    /* Two-component block build cost: per-block overhead + per-FMA compute.
+     * Captures the CUDA block setup cost (shared mem init, syncs) that
+     * dominates at small B where each block does little FMA work. */
+    double block_ns = (double)nblocks * GPU_BLOCK_BUILD_OVERHEAD_NS
+                    + block_fmas * GPU_BLOCK_BUILD_BASE_FMA_NS;
+    block_ns *= occ_penalty;
+#else
     double block_ns = block_fmas * block_build_ns_per_fma_model() * occ_penalty;
+#endif
+
+    /* Assumed q_batch for batch-aware FFT cost estimation.
+     * In the q-batch pipeline, each cuFFT call processes q_batch × nn[ell]
+     * transforms in one launch.  The per-pipeline cost drops at large batch
+     * because kernel-launch overhead amortises.  We estimate cost at a
+     * representative q_batch to avoid over-penalising lower tree levels
+     * (large nn) where the batch-efficiency gain is strongest. */
+    double assumed_qb = 64.0;
+    {
+        /* Estimate q_batch from VRAM budget, matching gpu_api.cu logic */
+        size_t per_q = 0;
+        for (int ell = 0; ell < L; ++ell)
+            per_q += 2 * (size_t)nn[ell] * psz[ell] * sizeof(double);
+        per_q += (size_t)N * (B + 1) * sizeof(double);
+        per_q += 2 * (size_t)n * sizeof(double);
+        size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.60);
+        int est_qb = (per_q > 0) ? (int)(budget / per_q) : Q_BATCH_MAX;
+        if (est_qb > Q_BATCH_MAX) est_qb = Q_BATCH_MAX;
+        if (est_qb < 1) est_qb = 1;
+        assumed_qb = (double)est_qb;
+    }
 
     double fma_ns = tree_school_ns_per_fma();
     double tree_ns = 0.0;
@@ -413,9 +515,11 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         double school_build = (double)(d_eff + 1) * (double)(d_eff + 1) * fma_ns;
         double school_corr = 2.0 * (double)p_eff * (double)out_needed * fma_ns;
 
+        double eff_batch = assumed_qb * (double)nn[ell];
+
         int bfn = 0, bwm = 0;
         best_fft_config_gpu(conv_build, 0, wrap_scale, &bfn, &bwm);
-        double fft_build = estimate_cufft_pipeline_ns(bfn)
+        double fft_build = estimate_cufft_pipeline_ns_batched(bfn, eff_batch)
             + (double)(bwm + 1) * (double)(bwm + 1) * fma_ns * wrap_scale;
         if (fft_build >= school_build) {
             tree_ns += (double)nn[ell] * (school_build + school_corr);
@@ -428,7 +532,7 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         int cfn = 0, cwm = 0;
         best_fft_config_gpu(conv_corr, p_eff, wrap_scale, &cfn, &cwm);
         double indep_cost = fft_build
-            + estimate_cufft_pipeline_ns(cfn) * GPU_INDEP_PAIR_RATIO
+            + estimate_cufft_pipeline_ns_batched(cfn, eff_batch) * GPU_INDEP_PAIR_RATIO
             + 2.0 * ((double)(cwm + 1) * (double)(cwm + 1) + (double)cwm * (double)p_eff)
                 * fma_ns * wrap_scale;
 
@@ -455,25 +559,33 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
             build_ns = estimate_fused_build_ns(fft_n);
             corr_ns = estimate_fused_corr_ns(fft_n);
             if (!std::isfinite(build_ns) || !std::isfinite(corr_ns)) {
-                build_ns = estimate_cufft_pipeline_ns(fft_n);
+                build_ns = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch);
                 corr_ns = build_ns * GPU_PAIRED_CACHED_CORR_RATIO;
             }
             build_ns += (double)(bwrap + 1) * (double)(bwrap + 1) * fma_ns * wrap_scale;
             corr_ns += 2.0 * ((double)(cwrap + 1) * (double)(cwrap + 1) + (double)cwrap * (double)p_eff)
                 * fma_ns * wrap_scale;
         } else {
-            build_ns = estimate_cufft_pipeline_ns(fft_n)
+            build_ns = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch)
                 + (double)(bwrap + 1) * (double)(bwrap + 1) * fma_ns * wrap_scale;
-            corr_ns = estimate_cufft_pipeline_ns(fft_n) * GPU_PAIRED_CACHED_CORR_RATIO
+            corr_ns = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch) * GPU_PAIRED_CACHED_CORR_RATIO
                 + 2.0 * ((double)(cwrap + 1) * (double)(cwrap + 1) + (double)cwrap * (double)p_eff)
                     * fma_ns * wrap_scale;
         }
         tree_ns += (double)nn[ell] * (build_ns + corr_ns);
     }
 
+    /* Per-level fixed overhead: each tree level requires at minimum 2 kernel
+     * launches (build + correlate).  At ~5µs per launch on this GPU, this
+     * adds ~10µs per level per q-batch.  Per Q-point: 10µs / assumed_qb.
+     * This cost is small but breaks ties between B values that produce
+     * trees with different depths. */
+    int build_levels = std::max(0, L - 2);  /* levels 1..L-2 */
+    double level_launch_ns = (double)build_levels * 10000.0 / std::max(1.0, assumed_qb);
+
     double leaf_fmas = (double)n * (double)B;
     double leaf_ns = leaf_fmas * leaf_extract_ns_per_fma_model() * occ_penalty;
-    return block_ns + tree_ns + leaf_ns;
+    return block_ns + tree_ns + leaf_ns + level_launch_ns;
 }
 
 /* ── B selection / engine dispatch ─────────────────────────────── */

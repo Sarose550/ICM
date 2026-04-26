@@ -275,6 +275,7 @@ void build_smooth_table(int max_n, std::vector<int> &smooth);
 int first_calib_ge(int n);
 int find_calib_index(int fft_n);
 double estimate_cufft_pipeline_ns(int fft_n);
+double estimate_cufft_pipeline_ns_batched(int fft_n, double effective_batch);
 int fastest_fft_ge_gpu(int n);
 double wrap_serial_penalty_gpu(int nparents);
 void best_fft_config_gpu(int conv_len, int len_P, double correction_scale,
