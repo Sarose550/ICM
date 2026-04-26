@@ -146,7 +146,8 @@ template<int FFT_N, int FPB = 1>
 __launch_bounds__(cufftdx_fft_fwd_t<FFT_N, FPB>::max_threads_per_block)
 __global__ static void k_cufftdx_build_parent(const double *child, int cps,
                                               double *parent, int pps,
-                                              int nparents, double inv_fft_n) {
+                                              int nparents, double inv_fft_n,
+                                              int child_stride, int parent_stride) {
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N, FPB>;
     using FFTInv = cufftdx_fft_inv_t<FFT_N, FPB>;
     using complex_t = typename FFTFwd::value_type;
@@ -157,9 +158,9 @@ __global__ static void k_cufftdx_build_parent(const double *child, int cps,
     complex_t b[FFTFwd::storage_size];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
-    const double *L = child + (size_t)(2 * p) * (size_t)cps;
-    const double *R = child + (size_t)(2 * p + 1) * (size_t)cps;
-    double *out = parent + (size_t)p * (size_t)pps;
+    const double *L = child + (size_t)(2 * p) * (size_t)child_stride;
+    const double *R = child + (size_t)(2 * p + 1) * (size_t)child_stride;
+    double *out = parent + (size_t)p * (size_t)parent_stride;
 
     cufftdx_load_real<FFTFwd>(L, cps, a);
     FFTFwd().execute(a, shared_mem);
@@ -175,7 +176,9 @@ __launch_bounds__(cufftdx_fft_fwd_t<FFT_N, FPB>::max_threads_per_block)
 __global__ static void k_cufftdx_corr_pair_parent(const double *g_parent, int parent_gsz, int len_g,
                                                   const double *child_poly, int cps, int len_P,
                                                   double *g_child, int child_gsz, int len_out,
-                                                  int nparents, double inv_fft_n) {
+                                                  int nparents, double inv_fft_n,
+                                                  int g_parent_stride, int poly_child_stride,
+                                                  int g_child_stride) {
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N, FPB>;
     using FFTInv = cufftdx_fft_inv_t<FFT_N, FPB>;
     using complex_t = typename FFTFwd::value_type;
@@ -187,11 +190,11 @@ __global__ static void k_cufftdx_corr_pair_parent(const double *g_parent, int pa
     complex_t gspec_saved[FFTFwd::elements_per_thread];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
-    const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
-    const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
-    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
-    double *outL = g_child + (size_t)(2 * p) * (size_t)child_gsz;
-    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_gsz;
+    const double *gp = g_parent + (size_t)p * (size_t)g_parent_stride;
+    const double *PL = child_poly + (size_t)(2 * p) * (size_t)poly_child_stride;
+    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)poly_child_stride;
+    double *outL = g_child + (size_t)(2 * p) * (size_t)g_child_stride;
+    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)g_child_stride;
 
     cufftdx_load_real<FFTFwd>(gp, len_g, gbuf);
     FFTFwd().execute(gbuf, shared_mem);
@@ -218,7 +221,8 @@ __global__ static void k_cufftdx_corr_pair_parent(const double *g_parent, int pa
 template<int FFT_N>
 static bool launch_cufftdx_build_t(const double *child, int cps,
                                    double *parent, int pps, int nparents,
-                                   double inv_fft_n, cudaStream_t stream) {
+                                   double inv_fft_n, cudaStream_t stream,
+                                   int child_stride, int parent_stride) {
     constexpr int FPB2 = 2;
     using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
     using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
@@ -229,7 +233,7 @@ static bool launch_cufftdx_build_t(const double *child, int cps,
                                           (int)shmem2))) {
             int grid = (nparents + FPB2 - 1) / FPB2;
             k_cufftdx_build_parent<FFT_N, FPB2><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
-                child, cps, parent, pps, nparents, inv_fft_n);
+                child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride);
             if (CUDA_OK(cudaGetLastError())) return true;
         }
     }
@@ -240,7 +244,7 @@ static bool launch_cufftdx_build_t(const double *child, int cps,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize,
                                       (int)shmem))) return false;
     k_cufftdx_build_parent<FFT_N><<<nparents, FFTFwd::block_dim, shmem, stream>>>(
-        child, cps, parent, pps, nparents, inv_fft_n);
+        child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride);
     return CUDA_OK(cudaGetLastError());
 }
 
@@ -248,7 +252,9 @@ template<int FFT_N>
 static bool launch_cufftdx_corr_t(const double *g_parent, int parent_gsz, int len_g,
                                   const double *child_poly, int cps, int len_P,
                                   double *g_child, int child_gsz, int len_out, int nparents,
-                                  double inv_fft_n, cudaStream_t stream) {
+                                  double inv_fft_n, cudaStream_t stream,
+                                  int g_parent_stride, int poly_child_stride,
+                                  int g_child_stride) {
     constexpr int FPB2 = 2;
     using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
     using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
@@ -260,7 +266,8 @@ static bool launch_cufftdx_corr_t(const double *g_parent, int parent_gsz, int le
             int grid = (nparents + FPB2 - 1) / FPB2;
             k_cufftdx_corr_pair_parent<FFT_N, FPB2><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
                 g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                g_child, child_gsz, len_out, nparents, inv_fft_n);
+                g_child, child_gsz, len_out, nparents, inv_fft_n,
+                g_parent_stride, poly_child_stride, g_child_stride);
             if (CUDA_OK(cudaGetLastError())) return true;
         }
     }
@@ -273,7 +280,8 @@ static bool launch_cufftdx_corr_t(const double *g_parent, int parent_gsz, int le
     k_cufftdx_corr_pair_parent<FFT_N><<<nparents, FFTFwd::block_dim, shmem, stream>>>(
         g_parent, parent_gsz, len_g,
         child_poly, cps, len_P,
-        g_child, child_gsz, len_out, nparents, inv_fft_n);
+        g_child, child_gsz, len_out, nparents, inv_fft_n,
+        g_parent_stride, poly_child_stride, g_child_stride);
     return CUDA_OK(cudaGetLastError());
 }
 #endif /* ICM_HAVE_CUFFTDX */
@@ -323,7 +331,9 @@ __global__ static void k_cufftdx_corr_pair_parent_r2c(
         const double *g_parent, int parent_gsz, int len_g,
         const double *child_poly, int cps, int len_P,
         double *g_child, int child_gsz, int len_out,
-        int nparents, double inv_fft_n) {
+        int nparents, double inv_fft_n,
+        int g_parent_stride, int poly_child_stride,
+        int g_child_stride) {
     using R2C = cufftdx_r2c_t<FFT_N, FPB>;
     using C2R = cufftdx_c2r_t<FFT_N, FPB>;
     using complex_t = typename R2C::value_type;
@@ -334,11 +344,11 @@ __global__ static void k_cufftdx_corr_pair_parent_r2c(
     complex_t gspec_saved[R2C::elements_per_thread];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
-    const double *gp = g_parent + (size_t)p * (size_t)parent_gsz;
-    const double *PL = child_poly + (size_t)(2 * p) * (size_t)cps;
-    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)cps;
-    double *outL = g_child + (size_t)(2 * p) * (size_t)child_gsz;
-    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_gsz;
+    const double *gp = g_parent + (size_t)p * (size_t)g_parent_stride;
+    const double *PL = child_poly + (size_t)(2 * p) * (size_t)poly_child_stride;
+    const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)poly_child_stride;
+    double *outL = g_child + (size_t)(2 * p) * (size_t)g_child_stride;
+    double *outR = g_child + (size_t)(2 * p + 1) * (size_t)g_child_stride;
 
     cufftdx_load_real_r2c<R2C>(gp, len_g, gbuf);
     R2C().execute(gbuf, shared_mem);
@@ -402,7 +412,9 @@ template<int FFT_N>
 static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, int len_g,
                                        const double *child_poly, int cps, int len_P,
                                        double *g_child, int child_gsz, int len_out, int nparents,
-                                       double inv_fft_n, cudaStream_t stream) {
+                                       double inv_fft_n, cudaStream_t stream,
+                                       int g_parent_stride, int poly_child_stride,
+                                       int g_child_stride) {
     constexpr int FPB2 = 2;
     using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
     using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
@@ -415,7 +427,8 @@ static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, in
             k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2><<<grid, R2C2::block_dim, shmem2, stream>>>(
                 g_parent, parent_gsz, len_g,
                 child_poly, cps, len_P,
-                g_child, child_gsz, len_out, nparents, inv_fft_n);
+                g_child, child_gsz, len_out, nparents, inv_fft_n,
+                g_parent_stride, poly_child_stride, g_child_stride);
             if (CUDA_OK(cudaGetLastError())) return true;
         }
     }
@@ -428,7 +441,8 @@ static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, in
     k_cufftdx_corr_pair_parent_r2c<FFT_N><<<nparents, R2C::block_dim, shmem, stream>>>(
         g_parent, parent_gsz, len_g,
         child_poly, cps, len_P,
-        g_child, child_gsz, len_out, nparents, inv_fft_n);
+        g_child, child_gsz, len_out, nparents, inv_fft_n,
+        g_parent_stride, poly_child_stride, g_child_stride);
     return CUDA_OK(cudaGetLastError());
 }
 
@@ -457,23 +471,25 @@ bool is_cufftdx_supported_fft_n(int fft_n) {
 bool launch_cufftdx_build_dispatch(int fft_n,
                                    const double *child, int cps,
                                    double *parent, int pps, int nparents,
-                                   double inv_fft_n, cudaStream_t stream) {
+                                   double inv_fft_n, cudaStream_t stream,
+                                   int child_stride, int parent_stride) {
 #if ICM_HAVE_CUFFTDX
     switch (fft_n) {
-        case 64: return launch_cufftdx_build_t<64>(child, cps, parent, pps, nparents, inv_fft_n, stream);
-        case 128: return launch_cufftdx_build_t<128>(child, cps, parent, pps, nparents, inv_fft_n, stream);
-        case 256: return launch_cufftdx_build_t<256>(child, cps, parent, pps, nparents, inv_fft_n, stream);
-        case 512: return launch_cufftdx_build_t<512>(child, cps, parent, pps, nparents, inv_fft_n, stream);
-        case 1024: return launch_cufftdx_build_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream);
-        case 2048: return launch_cufftdx_build_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream);
-        case 4096: return launch_cufftdx_build_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        case 64: return launch_cufftdx_build_t<64>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 128: return launch_cufftdx_build_t<128>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 256: return launch_cufftdx_build_t<256>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 512: return launch_cufftdx_build_t<512>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 1024: return launch_cufftdx_build_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 2048: return launch_cufftdx_build_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 4096: return launch_cufftdx_build_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
 #if GPU_FUSED_MAX_CONV_LEN >= 8192
-        case 8192: return launch_cufftdx_build_t<8192>(child, cps, parent, pps, nparents, inv_fft_n, stream);
+        case 8192: return launch_cufftdx_build_t<8192>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
 #endif
         default: return false;
     }
 #else
     (void)fft_n; (void)child; (void)cps; (void)parent; (void)pps; (void)nparents; (void)inv_fft_n; (void)stream;
+    (void)child_stride; (void)parent_stride;
     return false;
 #endif
 }
@@ -482,34 +498,44 @@ bool launch_cufftdx_corr_dispatch(int fft_n,
                                   const double *g_parent, int parent_gsz, int len_g,
                                   const double *child_poly, int cps, int len_P,
                                   double *g_child, int child_gsz, int len_out, int nparents,
-                                  double inv_fft_n, cudaStream_t stream) {
+                                  double inv_fft_n, cudaStream_t stream,
+                                  int g_parent_stride, int poly_child_stride,
+                                  int g_child_stride) {
 #if ICM_HAVE_CUFFTDX
     switch (fft_n) {
         case 64:
             return launch_cufftdx_corr_t<64>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                             g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                             g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                             g_parent_stride, poly_child_stride, g_child_stride);
         case 128:
             return launch_cufftdx_corr_t<128>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                              g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                              g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                              g_parent_stride, poly_child_stride, g_child_stride);
         case 256:
             return launch_cufftdx_corr_t<256>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                              g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                              g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                              g_parent_stride, poly_child_stride, g_child_stride);
         case 512:
             return launch_cufftdx_corr_t<512>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                              g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                              g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                              g_parent_stride, poly_child_stride, g_child_stride);
         case 1024:
             return launch_cufftdx_corr_t<1024>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                               g_parent_stride, poly_child_stride, g_child_stride);
         case 2048:
             return launch_cufftdx_corr_t<2048>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                               g_parent_stride, poly_child_stride, g_child_stride);
         case 4096:
             return launch_cufftdx_corr_t<4096>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                               g_parent_stride, poly_child_stride, g_child_stride);
 #if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192:
             return launch_cufftdx_corr_t<8192>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                               g_parent_stride, poly_child_stride, g_child_stride);
 #endif
         default:
             return false;
@@ -517,6 +543,7 @@ bool launch_cufftdx_corr_dispatch(int fft_n,
 #else
     (void)fft_n; (void)g_parent; (void)parent_gsz; (void)len_g; (void)child_poly; (void)cps; (void)len_P;
     (void)g_child; (void)child_gsz; (void)len_out; (void)nparents; (void)inv_fft_n; (void)stream;
+    (void)g_parent_stride; (void)poly_child_stride; (void)g_child_stride;
     return false;
 #endif
 }
@@ -551,34 +578,44 @@ bool launch_cufftdx_corr_r2c_dispatch(int fft_n,
                                       const double *g_parent, int parent_gsz, int len_g,
                                       const double *child_poly, int cps, int len_P,
                                       double *g_child, int child_gsz, int len_out, int nparents,
-                                      double inv_fft_n, cudaStream_t stream) {
+                                      double inv_fft_n, cudaStream_t stream,
+                                      int g_parent_stride, int poly_child_stride,
+                                      int g_child_stride) {
 #if ICM_HAVE_CUFFTDX_R2C
     switch (fft_n) {
         case 64:
             return launch_cufftdx_corr_r2c_t<64>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                                   g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                                   g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                                   g_parent_stride, poly_child_stride, g_child_stride);
         case 128:
             return launch_cufftdx_corr_r2c_t<128>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                                    g_parent_stride, poly_child_stride, g_child_stride);
         case 256:
             return launch_cufftdx_corr_r2c_t<256>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                                    g_parent_stride, poly_child_stride, g_child_stride);
         case 512:
             return launch_cufftdx_corr_r2c_t<512>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                                    g_parent_stride, poly_child_stride, g_child_stride);
         case 1024:
             return launch_cufftdx_corr_r2c_t<1024>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                                     g_parent_stride, poly_child_stride, g_child_stride);
         case 2048:
             return launch_cufftdx_corr_r2c_t<2048>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                                     g_parent_stride, poly_child_stride, g_child_stride);
         case 4096:
             return launch_cufftdx_corr_r2c_t<4096>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                                     g_parent_stride, poly_child_stride, g_child_stride);
 #if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192:
             return launch_cufftdx_corr_r2c_t<8192>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream);
+                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                                                     g_parent_stride, poly_child_stride, g_child_stride);
 #endif
         default:
             return false;
@@ -586,6 +623,7 @@ bool launch_cufftdx_corr_r2c_dispatch(int fft_n,
 #else
     (void)fft_n; (void)g_parent; (void)parent_gsz; (void)len_g; (void)child_poly; (void)cps; (void)len_P;
     (void)g_child; (void)child_gsz; (void)len_out; (void)nparents; (void)inv_fft_n; (void)stream;
+    (void)g_parent_stride; (void)poly_child_stride; (void)g_child_stride;
     return false;
 #endif
 }

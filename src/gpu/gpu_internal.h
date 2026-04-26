@@ -323,12 +323,15 @@ bool is_cufftdx_supported_fft_n(int fft_n);
 bool launch_cufftdx_build_dispatch(int fft_n,
                                    const double *child, int cps,
                                    double *parent, int pps, int nparents,
-                                   double inv_fft_n, cudaStream_t stream);
+                                   double inv_fft_n, cudaStream_t stream,
+                                   int child_stride, int parent_stride);
 bool launch_cufftdx_corr_dispatch(int fft_n,
                                   const double *g_parent, int parent_gsz, int len_g,
                                   const double *child_poly, int cps, int len_P,
                                   double *g_child, int child_gsz, int len_out, int nparents,
-                                  double inv_fft_n, cudaStream_t stream);
+                                  double inv_fft_n, cudaStream_t stream,
+                                  int g_parent_stride, int poly_child_stride,
+                                  int g_child_stride);
 bool launch_cufftdx_build_r2c_dispatch(int fft_n,
                                        const double *child, int cps,
                                        double *parent, int pps, int nparents,
@@ -338,7 +341,9 @@ bool launch_cufftdx_corr_r2c_dispatch(int fft_n,
                                       const double *g_parent, int parent_gsz, int len_g,
                                       const double *child_poly, int cps, int len_P,
                                       double *g_child, int child_gsz, int len_out, int nparents,
-                                      double inv_fft_n, cudaStream_t stream);
+                                      double inv_fft_n, cudaStream_t stream,
+                                      int g_parent_stride, int poly_child_stride,
+                                      int g_child_stride);
 
 /* Kernel declarations needed by gpu_exec.cu and gpu_api.cu */
 __global__ void k_compute_a(const double *S_sorted, double *a_sorted, int n, double logv);

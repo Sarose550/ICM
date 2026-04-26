@@ -268,7 +268,8 @@ bool run_build_level_fused(GpuPlan *plan, int ell) {
                                            plan->d_poly_levels[ell - 1], child_stride,
                                            plan->d_poly_levels[ell], parent_stride, nparents,
                                            1.0 / (double)lp.fft_n,
-                                           plan->stream_compute);
+                                           plan->stream_compute,
+                                           child_stride, parent_stride);
     }
     if (!ok) return run_build_level_fft(plan, ell);
     if (lp.build_wrap_m > 0) {
@@ -493,14 +494,16 @@ bool run_prop_level_fused(GpuPlan *plan, int ell) {
                                                plan->d_poly_levels[ell - 1], child_stride, len_P,
                                                plan->d_g_levels[ell - 1], child_stride, len_out, nparents,
                                                1.0 / (double)lp.fft_n,
-                                               plan->stream_compute);
+                                               plan->stream_compute,
+                                               parent_stride, child_stride, child_stride);
     if (!ok) {
         ok = launch_cufftdx_corr_dispatch(lp.fft_n,
                                           plan->d_g_levels[ell], parent_stride, len_g,
                                           plan->d_poly_levels[ell - 1], child_stride, len_P,
                                           plan->d_g_levels[ell - 1], child_stride, len_out, nparents,
                                           1.0 / (double)lp.fft_n,
-                                          plan->stream_compute);
+                                          plan->stream_compute,
+                                          parent_stride, child_stride, child_stride);
     }
     if (!ok) return run_prop_level_fft(plan, ell);
     if (lp.corr_wrap_m > 0) {
@@ -647,7 +650,8 @@ bool run_build_level_fused_qb(GpuPlan *plan, int ell, int qb) {
                                                 cs, ps);
     if (!ok) ok = launch_cufftdx_build_dispatch(lp.fft_n, plan->d_poly_levels[ell - 1], cs,
                                                  plan->d_poly_levels[ell], ps, nparents_total,
-                                                 1.0 / (double)lp.fft_n, plan->stream_compute);
+                                                 1.0 / (double)lp.fft_n, plan->stream_compute,
+                                                 cs, ps);
     if (!ok) return run_build_level_fft_qb(plan, ell, qb);
     if (lp.build_wrap_m > 0) {
         k_wrap_build<<<nparents_total, 64, 0, plan->stream_compute>>>(
@@ -812,11 +816,13 @@ bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     bool ok = launch_cufftdx_corr_r2c_dispatch(lp.fft_n, plan->d_g_levels[ell], ps, len_g,
                                                plan->d_poly_levels[ell - 1], cs, len_P,
                                                plan->d_g_levels[ell - 1], cs, len_out, nparents_total,
-                                               1.0 / (double)lp.fft_n, plan->stream_compute);
+                                               1.0 / (double)lp.fft_n, plan->stream_compute,
+                                               ps, cs, cs);
     if (!ok) ok = launch_cufftdx_corr_dispatch(lp.fft_n, plan->d_g_levels[ell], ps, len_g,
                                                 plan->d_poly_levels[ell - 1], cs, len_P,
                                                 plan->d_g_levels[ell - 1], cs, len_out, nparents_total,
-                                                1.0 / (double)lp.fft_n, plan->stream_compute);
+                                                1.0 / (double)lp.fft_n, plan->stream_compute,
+                                                ps, cs, cs);
     if (!ok) return run_prop_level_fft_qb(plan, ell, qb);
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents_total, 64, 0, plan->stream_compute>>>(
