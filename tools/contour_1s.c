@@ -99,16 +99,21 @@ static double measure_time(int n, const double *S, int k, double *payout,
                            double *equity, int reps) {
     int Q = 256;
 
-    /* Warm-up */
+    /* Warm-up — skip if the single call already exceeds 2s (clearly above frontier) */
+    double t0 = wall_time_sec();
     icm_equity(n, S, Q, payout, k, equity);
+    double warmup = wall_time_sec() - t0;
+    if (warmup > 2.0) return warmup;
 
     double times[5];
     if (reps > 5) reps = 5;
 
     for (int r = 0; r < reps; r++) {
-        double t0 = wall_time_sec();
+        t0 = wall_time_sec();
         icm_equity(n, S, Q, payout, k, equity);
         times[r] = wall_time_sec() - t0;
+        /* Early exit: if first rep is well above 1s, no need for more reps */
+        if (r == 0 && times[0] > 1.5) { reps = 1; break; }
     }
 
     /* Sort for median */
