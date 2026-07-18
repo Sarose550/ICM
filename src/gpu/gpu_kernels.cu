@@ -894,25 +894,27 @@ __global__ void k_pairwise_mul(const cufftDoubleComplex * __restrict__ child_spe
     parent_spec[idx] = o;
 }
 
-__global__ void k_scale_zero_pad(double *data, int fft_stride, int valid_len,
-                                 double inv_fft_n, int batch) {
+/* ── Gather/scatter for compact storage + cuFFT ──────────────── */
+
+__global__ void k_gather_to_fft(const double *src, int src_stride,
+                                double *dst, int fft_n, int batch) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
-    size_t total = (size_t)batch * (size_t)fft_stride;
+    size_t total = (size_t)batch * (size_t)fft_n;
     if (idx >= total) return;
-    int m = (int)(idx % (size_t)fft_stride);
-    if (m < valid_len) {
-        data[idx] *= inv_fft_n;
-    } else {
-        data[idx] = 0.0;
-    }
+    int b = (int)(idx / (size_t)fft_n);
+    int j = (int)(idx % (size_t)fft_n);
+    dst[idx] = (j < src_stride) ? src[(size_t)b * (size_t)src_stride + j] : 0.0;
 }
 
-__global__ void k_zero_pad(double *data, int fft_stride, int valid_len, int batch) {
+__global__ void k_scatter_from_fft(const double *src, int fft_n,
+                                   double *dst, int dst_stride,
+                                   int valid_len, int batch) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
-    size_t total = (size_t)batch * (size_t)fft_stride;
+    size_t total = (size_t)batch * (size_t)valid_len;
     if (idx >= total) return;
-    int m = (int)(idx % (size_t)fft_stride);
-    if (m >= valid_len) data[idx] = 0.0;
+    int b = (int)(idx / (size_t)valid_len);
+    int j = (int)(idx % (size_t)valid_len);
+    dst[(size_t)b * (size_t)dst_stride + j] = src[(size_t)b * (size_t)fft_n + j];
 }
 
 __global__ void k_wrap_build(double *parent, int pps, int nparents,

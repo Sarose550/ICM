@@ -43,7 +43,6 @@ static inline void vexp_clamp(double *y, const double *x, int n) {
 #else
 #define HAS_VEXP 0
 #endif
-#include "amx.h"
 
 /* ══════════════════════════════════════════════════════════════
    MKL DUAL DISPATCH — runtime dlopen on Linux
@@ -327,8 +326,6 @@ static FFTCache *fft_cache_create_sizes(const int *sizes, int n_sizes) {
     fc->plans_cap = n_sizes;
     fc->plans = (FFTPlan *)calloc(n_sizes, sizeof(FFTPlan));
 
-    /* Create FFTW_MEASURE plans for the requested sizes. With wisdom loaded
-     * from a previous run, plan creation is <1ms each. */
     fc->n_plans = 0;
     for (int i = 0; i < n_sizes; i++) {
         int sz = sizes[i];
@@ -337,8 +334,6 @@ static FFTCache *fft_cache_create_sizes(const int *sizes, int n_sizes) {
         p->rbuf = fftw_malloc(sz * sizeof(double));
         p->cbuf = fftw_malloc((sz/2 + 1) * sizeof(fftw_complex));
         memset(p->rbuf, 0, sz * sizeof(double));
-        /* Try MEASURE with wisdom; fall back to ESTIMATE if no wisdom exists
-         * (MEASURE without wisdom benchmarks from scratch — minutes at large sizes) */
         p->fwd_plan = fftw_plan_dft_r2c_1d(sz, p->rbuf, p->cbuf, FFTW_MEASURE | FFTW_WISDOM_ONLY);
         p->inv_plan = fftw_plan_dft_c2r_1d(sz, p->cbuf, p->rbuf, FFTW_MEASURE | FFTW_WISDOM_ONLY);
         if (!p->fwd_plan || !p->inv_plan) {
@@ -405,7 +400,6 @@ static FFTCache *fft_cache_create_sizes(const int *sizes, int n_sizes) {
     return fc;
 }
 
-
 static void fft_cache_destroy(FFTCache *fc) {
     for (int i = 0; i < fc->n_plans; i++) {
         fftw_destroy_plan(fc->plans[i].fwd_plan);
@@ -460,7 +454,7 @@ static inline void polymul_2x2(const double *a, const double *b,
     if (k > 3) c[3] = 0;
 }
 
-static void polymul_modk(const double *restrict a, int na,
+static inline __attribute__((always_inline)) void polymul_modk(const double *restrict a, int na,
                          const double *restrict b, int nb,
                          double *restrict c, int k) {
     if (na == 2 && nb == 2 && k <= 4) { polymul_2x2(a, b, c, k); return; }
@@ -484,7 +478,7 @@ static inline void correlate_2(const double *restrict g,
         out[m] = P[0] * g[m] + P[1] * g[m + 1];
 }
 
-static void correlate_school(const double *restrict g, int len_g,
+static inline __attribute__((always_inline)) void correlate_school(const double *restrict g, int len_g,
                              const double *restrict P, int len_P,
                              double *restrict out, int len_out) {
     /* Fast path for size 2 (dominates at leaf level) */
@@ -503,174 +497,6 @@ static void correlate_school(const double *restrict g, int len_g,
         out[m] = sum;
     }
 }
-
-/* ══════════════════════════════════════════════════════════════
-   AMX SCHOOLBOOK KERNELS — FP64 outer-product tiled multiplication
-   Uses lazy block-column accumulation (IACR CiC 2024, Section 4.3).
-   ══════════════════════════════════════════════════════════════ */
-
-/* Set USE_AMX=0 to disable AMX codepaths for A/B testing */
-#ifndef USE_AMX
-#define USE_AMX 1
-#endif
-
-#if HAS_AMX && USE_AMX
-
-/* Minimum degree for AMX schoolbook to beat scalar.
- * Below this, scalar polymul_modk / correlate_school is used.
- * Tuned empirically: AMX setup + load overhead dominates at small sizes. */
-/* AMX polymul crossover: measured at d≈170 (AMX wins above this).
- * Below this, scalar polymul_modk with NEON auto-vectorization is faster.
- * With mmap page isolation this could drop to ~90. */
-#ifndef AMX_SCHOOL_MIN_DEG
-#define AMX_SCHOOL_MIN_DEG 160
-#endif
-
-/* Aligned workspace for AMX kernels (thread-local via engine context).
- * amx_ws must be 128-byte aligned and hold at least:
- *   - pad_a: ceil(na/8)*8 doubles (padded input a)
- *   - pad_b: ceil(nb/8)*8 doubles (padded input b)
- *   - c_lo:  8 doubles  (VECFP low anti-diag output)
- *   - c_hi:  8 doubles  (VECFP high anti-diag output)
- *   - ones:  8 doubles  (all 1.0 for VECFP multiply-by-1)
- *   - zeros: 8 doubles  (zero buffer for LDZ/LDY)
- */
-
-static void polymul_modk_amx(const double *restrict a, int na,
-                              const double *restrict b, int nb,
-                              double *restrict c, int k,
-                              double *amx_ws) {
-    memset(c, 0, k * sizeof(double));
-    int na8 = (na + 7) & ~7, nb8 = (nb + 7) & ~7;
-    int nxa = na8 >> 3, nyb = nb8 >> 3;
-
-    /* Partition workspace: pad_a | pad_b | c_lo | c_hi | ones | zeros */
-    double *pad_a = amx_ws;
-    double *pad_b = pad_a + na8;
-    double *c_lo  = pad_b + nb8;
-    double *c_hi  = c_lo + 8;
-    double *ones  = c_hi + 8;
-    double *zeros = ones + 8;
-
-    memset(pad_a, 0, na8 * sizeof(double));
-    memset(pad_b, 0, nb8 * sizeof(double));
-    memcpy(pad_a, a, na * sizeof(double));
-    memcpy(pad_b, b, nb * sizeof(double));
-    for (int i = 0; i < 8; i++) ones[i] = 1.0;
-    memset(zeros, 0, 64);
-
-    int max_col = nxa + nyb - 2;
-
-    for (int col = 0; col <= max_col; col++) {
-        int base = col << 3;
-        if (base >= k) break;
-
-        /* Accumulate all outer products a_p ⊗ b_q where p+q = col */
-        int first = 1;
-        for (int p = (col < nxa ? col : nxa - 1); p >= 0; p--) {
-            int q = col - p;
-            if (q >= nyb) continue;
-            AMX_LDX(amx_ldx_op(pad_a + (p << 3), 0));
-            AMX_LDY(amx_ldy_op(pad_b + (q << 3), 0));
-            AMX_FMA64(amx_fma64_outer(0, 0, 0, first));
-            first = 0;
-        }
-        if (first) continue;
-
-        /* VECFP in-register extraction: anti-diagonal sums → c_lo, c_hi */
-        amx_extract_setup(ones, zeros);
-        amx_extract_antidiag_vecfp(c_lo, c_hi, 0, zeros);
-
-        /* Accumulate into output (with bounds checking) */
-        int remain = k - base;
-        int nlo = remain < 8 ? remain : 8;
-        for (int i = 0; i < nlo; i++) c[base + i] += c_lo[i];
-        if (remain > 8) {
-            int nhi = remain - 8;
-            if (nhi > 7) nhi = 7;
-            for (int i = 0; i < nhi; i++) c[base + 8 + i] += c_hi[i];
-        }
-    }
-}
-
-static void correlate_school_amx(const double *restrict g, int len_g,
-                                  const double *restrict P, int len_P,
-                                  double *restrict out, int len_out,
-                                  double *amx_ws) {
-    /*
-     * out[m] = Σ_j P[j] * g[m+j]  for m = 0..len_out-1
-     *
-     * Implemented as conv(P_rev, g) with anti-diagonal extraction:
-     *   P_rev[i] = P[len_P - 1 - i]
-     *   out[m] = conv(P_rev, g)[m + len_P - 1]
-     *
-     * This maps directly to the polymul anti-diagonal tiling because
-     * i+j anti-diagonals of the outer product P_rev ⊗ g naturally
-     * accumulate across block columns (unlike i-j diagonals which don't).
-     */
-    int conv_len = len_P + len_g - 1;
-    int nP8 = (len_P + 7) & ~7, ng8 = (len_g + 7) & ~7;
-    int nxa = nP8 >> 3, nyb = ng8 >> 3;
-
-    /* Partition workspace: pad_Prev | pad_g | c_lo | c_hi | ones | zeros */
-    double *pad_Prev = amx_ws;
-    double *pad_g    = pad_Prev + nP8;
-    double *c_lo     = pad_g + ng8;
-    double *c_hi     = c_lo + 8;
-    double *ones     = c_hi + 8;
-    double *zeros    = ones + 8;
-
-    /* Reverse P into padded buffer */
-    memset(pad_Prev, 0, nP8 * sizeof(double));
-    for (int i = 0; i < len_P; i++) pad_Prev[i] = P[len_P - 1 - i];
-
-    memset(pad_g, 0, ng8 * sizeof(double));
-    memcpy(pad_g, g, len_g * sizeof(double));
-    for (int i = 0; i < 8; i++) ones[i] = 1.0;
-    memset(zeros, 0, 64);
-
-    /* Compute conv(P_rev, g) using polymul block-column tiling.
-     * Only extract the range [len_P-1 .. len_P-1+len_out-1] into out[]. */
-    memset(out, 0, len_out * sizeof(double));
-    int max_col = nxa + nyb - 2;
-    int out_start = len_P - 1;  /* conv index where out[0] lives */
-
-    for (int col = 0; col <= max_col; col++) {
-        int base = col << 3;
-        if (base + 14 < out_start) continue;         /* before needed range */
-        if (base > out_start + len_out - 1) break;   /* past needed range */
-
-        /* Accumulate outer products P_rev_p ⊗ g_q where p+q = col */
-        int first = 1;
-        for (int p = (col < nxa ? col : nxa - 1); p >= 0; p--) {
-            int q = col - p;
-            if (q >= nyb) continue;
-            AMX_LDX(amx_ldx_op(pad_Prev + (p << 3), 0));
-            AMX_LDY(amx_ldy_op(pad_g + (q << 3), 0));
-            AMX_FMA64(amx_fma64_outer(0, 0, 0, first));
-            first = 0;
-        }
-        if (first) continue;
-
-        /* VECFP anti-diagonal extraction → c_lo[0..7], c_hi[0..6] */
-        amx_extract_setup(ones, zeros);
-        amx_extract_antidiag_vecfp(c_lo, c_hi, 0, zeros);
-
-        /* Map conv indices to out indices: out[m] = conv[m + out_start] */
-        for (int d = 0; d < 8; d++) {
-            int conv_idx = base + d;
-            int m = conv_idx - out_start;
-            if (m >= 0 && m < len_out) out[m] += c_lo[d];
-        }
-        for (int d = 0; d < 7; d++) {
-            int conv_idx = base + 8 + d;
-            int m = conv_idx - out_start;
-            if (m >= 0 && m < len_out) out[m] += c_hi[d];
-        }
-    }
-}
-
-#endif /* HAS_AMX */
 
 /* ══════════════════════════════════════════════════════════════
    FFT KERNELS — polynomial multiply and correlate via FFTW
@@ -797,7 +623,7 @@ static int fastest_fft_ge(int n) {
  * Cyclic convolution of size N = fft_n wraps terms C[N..2d] to C[0..2d-N].
  * The correction is a schoolbook product of the top (m+1) terms of each input:
  * cost = (m+1)² FMAs, where m = 2d - N. Typically m = 0..3. */
-static void polymul_fft_cyclic(const double *a, int na,
+static inline __attribute__((always_inline)) void polymul_fft_cyclic(const double *a, int na,
                                 const double *b, int nb,
                                 double *c, int k,
                                 FFTCache *fc,
@@ -859,7 +685,7 @@ static void polymul_fft_cyclic(const double *a, int na,
  * fft_n < na+nb-1 with wrap_m = (na+nb-1) - fft_n correction terms.
  * Works for any input sizes (below-sat, saturated, or mixed).
  * If fft_a_out/fft_b_out are non-NULL, caches FFT(a)/FFT(b) for reuse. */
-static void polymul_fft_wrap(const double *a, int na,
+static inline __attribute__((always_inline)) void polymul_fft_wrap(const double *a, int na,
                               const double *b, int nb,
                               double *c, int k,
                               FFTCache *fc,
@@ -920,7 +746,7 @@ static void polymul_fft_wrap(const double *a, int na,
  * c[0..k-1] = (a[0..na-1] * b[0..nb-1]) mod x^k
  * Optionally caches FFT(a) and FFT(b) into fft_a_out/fft_b_out for reuse.
  * target_fft_n: if > 0, use this FFT size instead of the minimum. */
-static void polymul_fft_modk(const double *a, int na,
+static inline __attribute__((always_inline)) void polymul_fft_modk(const double *a, int na,
                              const double *b, int nb,
                              double *c, int k,
                              FFTCache *fc,
@@ -969,7 +795,7 @@ static void polymul_fft_modk(const double *a, int na,
 
 /* Correlate via FFT (from scratch — FFTs both g and P):
  * out[m] = sum_j P[j] * g[m+j] */
-static void correlate_fft(const double *g, int len_g,
+static inline __attribute__((always_inline)) void correlate_fft(const double *g, int len_g,
                           const double *P, int len_P,
                           double *out, int len_out,
                           FFTCache *fc, int fft_n) {
@@ -1008,7 +834,7 @@ static void correlate_fft(const double *g, int len_g,
 /* Correlate g with TWO polynomials, sharing the forward FFT of g.
  * Saves 1 forward FFT vs calling correlate_fft twice.
  * Used at non-cached levels where both correlates need the same g. */
-static void correlate_fft_pair(const double *g, int len_g,
+static inline __attribute__((always_inline)) void correlate_fft_pair(const double *g, int len_g,
                                 const double *PL, const double *PR, int len_P,
                                 double *outL, double *outR, int len_out,
                                 FFTCache *fc, int fft_n) {
@@ -1119,7 +945,7 @@ static inline void correlate_wrap_input_correction(double *out, int len_out,
     }
 }
 
-static void correlate_fft_cached_pair_wrap(
+static inline __attribute__((always_inline)) void correlate_fft_cached_pair_wrap(
         const double *g, int len_g,
         const double *PL, const double *PR, int len_P,
         double *outL, double *outR, int len_out,
@@ -1287,11 +1113,6 @@ typedef struct {
     int corr_fft_n[MAX_TREE_LEVELS];         /* FFT size for correlate */
     int corr_wrap_m[MAX_TREE_LEVELS];        /* wrap coefficient count for cyclic correlate */
     int use_fft[MAX_TREE_LEVELS];            /* 1 = use FFT, 0 = schoolbook (per-level decision) */
-#if HAS_AMX && USE_AMX
-    double *amx_ws;                          /* 128-byte aligned AMX scratch (pad_a + pad_b + tile + zeros) */
-    size_t amx_ws_size;
-    int any_amx_school;                      /* 1 if any level dispatches to AMX schoolbook */
-#endif
 } TreeCtx;
 
 /* Create tree context. leaf_degree=1 for standard tree, B for hybrid.
@@ -1332,17 +1153,6 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
     tc->plev_total = off;
     tc->ws_size = tc->plev_total + 2 * tc->max_g;
     tc->ws = (double *)malloc(tc->ws_size * sizeof(double));
-
-#if HAS_AMX && USE_AMX
-    /* AMX workspace: enough for largest schoolbook at any level.
-     * Layout: pad_a[max_psz_8] + pad_b[max_psz_8] + c_lo[8] + c_hi[8] + ones[8] + zeros[8]
-     * where max_psz_8 = ceil(max_psz / 8) * 8. */
-    {
-        int max_psz_8 = (max_psz + 7) & ~7;
-        tc->amx_ws_size = 2 * max_psz_8 + 32;
-        posix_memalign((void **)&tc->amx_ws, 128, tc->amx_ws_size * sizeof(double));
-    }
-#endif
 
     /* Detect below-saturation levels where polys have actual degree = cps/2.
      * At these levels, the folded multiply halves the FFT size. */
@@ -1404,7 +1214,7 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
             double fft_build = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
                                ? calib_times_ns[fft_idx] : 1e18;
             double fft_overhead = FFT_OVERHEAD_NS;
-            double build_correction = (double)(bwm + 1) * (bwm + 1) * FMA_NS;
+            double build_correction = (double)bwm * (bwm + 1) / 2.0 * WRAP_FMA_NS;
 
             /* Build cost comparison: schoolbook vs FFT.
              * Uses build-phase cost only (not correlate), as this was empirically
@@ -1446,7 +1256,7 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
                       while(lo2<hi2){int m2=(lo2+hi2)>>1;if(calib_sizes[m2]<cfn)lo2=m2+1;else hi2=m2;}
                       cfn_idx = lo2; }
                     /* Independent correlate cost: output-wrap + input-wrap (for correlate) */
-                    double corr_correction = 2.0 * ((double)(cwm+1)*(cwm+1) + (double)cwm * p_eff) * FMA_NS;
+                    double corr_correction = (double)cwm * (cwm + 1) * WRAP_FMA_NS;
                     double icost = fft_build + build_correction
                         + INDEP_PAIR_RATIO * calib_times_ns[cfn_idx]
                         + corr_correction;
@@ -1511,22 +1321,6 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
         tc->fft_cache_ok[ell] = 1;
     }
 
-#if HAS_AMX && USE_AMX
-    /* Determine if any level will dispatch to AMX schoolbook.
-     * If not, skip AMX_SET/CLR to avoid overhead. */
-    tc->any_amx_school = 0;
-    for (int ell = 1; ell < tc->L; ell++) {
-        if (!tc->use_fft[ell]) {
-            int cps = tc->psz[ell-1];
-            int d_eff_b = tc->below_sat[ell] ? cps/2 : cps-1;
-            if (d_eff_b + 1 >= AMX_SCHOOL_MIN_DEG) {
-                tc->any_amx_school = 1;
-                break;
-            }
-        }
-    }
-#endif
-
     return tc;
 }
 
@@ -1541,9 +1335,6 @@ static TreeCtx *tree_ctx_create(int n, int k) {
 
 static void tree_ctx_destroy(TreeCtx *tc) {
     free(tc->ws);
-#if HAS_AMX && USE_AMX
-    free(tc->amx_ws);
-#endif
     if (tc->fft) fft_cache_destroy(tc->fft);
     for (int ell = 0; ell < tc->L; ell++)
         if (tc->fft_coeff[ell]) fftw_free(tc->fft_coeff[ell]);
@@ -1613,9 +1404,6 @@ static TreeCtx *tree_ctx_clone(const TreeCtx *src) {
     memcpy(tc, src, sizeof(TreeCtx));
     /* Allocate fresh workspace */
     tc->ws = (double *)malloc(tc->ws_size * sizeof(double));
-#if HAS_AMX && USE_AMX
-    posix_memalign((void **)&tc->amx_ws, 128, tc->amx_ws_size * sizeof(double));
-#endif
     /* Clone FFT cache (independent buffers + plans) */
     tc->fft = fft_cache_clone(src->fft);
     /* Clone FFT coefficient caches */
@@ -1678,15 +1466,6 @@ static void tree_build_levels(TreeCtx *tc) {
                                      tc->fft, fft_L, fft_R,
                                      tc->build_fft_n[ell], tc->build_wrap_m[ell]);
                 } else {
-#if HAS_AMX && USE_AMX
-                    /* Dispatch on effective degree, not cps: below-sat polys
-                     * have actual degree cps/2 (upper half zero), where scalar
-                     * polymul_modk skips zeros but AMX doesn't. */
-                    int d_eff_b = tc->below_sat[ell] ? cps/2 : cps-1;
-                    if (d_eff_b + 1 >= AMX_SCHOOL_MIN_DEG)
-                        polymul_modk_amx(Lc, cps, Rc, cps, out, pps, tc->amx_ws);
-                    else
-#endif
                     polymul_modk(Lc, cps, Rc, cps, out, pps);
                 }
             }
@@ -1754,17 +1533,8 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
                                        gL, gR, out_needed, tc->fft,
                                        tc->corr_fft_n[ell]);
                 } else {
-#if HAS_AMX && USE_AMX
-                    if (p_eff >= AMX_SCHOOL_MIN_DEG) {
-                        correlate_school_amx(gp, g_eff, PR, p_eff, gL, out_needed, tc->amx_ws);
-                        correlate_school_amx(gp, g_eff, PL, p_eff, gR, out_needed, tc->amx_ws);
-                    } else {
-#endif
                     correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                     correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
-#if HAS_AMX && USE_AMX
-                    }
-#endif
                 }
             }
         }
@@ -1793,14 +1563,8 @@ static void engine_tree_ctx(int n, const double *a,
         }
     }
 
-#if HAS_AMX && USE_AMX
-    if (tc->any_amx_school) AMX_SET();
-#endif
     tree_build_levels(tc);
     double *g_leaf = tree_propagate_g(tc, k, payout);
-#if HAS_AMX && USE_AMX
-    if (tc->any_amx_school) AMX_CLR();
-#endif
 
     int lgsz = psz[0];
     for (int j = 0; j < n; j++)
@@ -1909,7 +1673,6 @@ typedef struct {
 #define BQ 2
 #endif
 
-
 static int ckpt_interval(int n) {
     int C = (int)sqrt((double)n);
     if (C < 2) C = 2;
@@ -1946,7 +1709,6 @@ static inline void apply_factor(const double *restrict g_in,
         g_out[m] = a_val * g_in[m] + b_val * g_in[m + 1];
     g_out[k - 1] = a_val * g_in[k - 1];
 }
-
 
 static void engine_linear_ctx(int n, const double *a,
                                const double *payout, int k,
@@ -2187,14 +1949,8 @@ static void engine_hybrid_core(int n, const double *a,
         leaf[0] = 1.0;
     }
 
-#if HAS_AMX && USE_AMX
-    if (tc->any_amx_school) AMX_SET();
-#endif
     tree_build_levels(tc);
     double *g_leaf = tree_propagate_g(tc, k, payout);
-#if HAS_AMX && USE_AMX
-    if (tc->any_amx_school) AMX_CLR();
-#endif
     int g_need = tc->g_needed[0];
 
     /* ── Step 3: Within-block divide + fused dot product ── */
@@ -2373,21 +2129,39 @@ static int select_engine_ex(int n, int k, int n_targets) {
     double linear_per_qp = linear_full * (0.5 + 0.5 * target_frac);
 
     int B = select_best_B(n, k);
+    { const char *fb = getenv("ICM_FORCE_B");
+      if (fb && fb[0]) { int v = atoi(fb); if (v > 0 && v <= n && v <= k) B = v; } }
     int nblocks = (n + B - 1) / B;
-    double block = ((double)n / B * ((double)B * (B+1) / 2.0) + (double)n * 3.0 * B) * FMA_NS;
+    /* block_build: per-player FMA work + per-player memory streaming. */
+    double block_build = (double)n * ((double)(B+1) / 2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
     TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
     double tree = 0;
     for (int ell = 1; ell < tc->L - 1; ell++) {
         int cps = tc->psz[ell-1], nr = tc->n_real[ell];
         if (tc->use_fft[ell]) {
             int bfn = tc->build_fft_n[ell];
+            int bwm = tc->build_wrap_m[ell];
             int idx = 0;
             { int lo=0,hi=N_CALIBRATED_SIZES-1;
               while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
               idx=lo; }
-            double fft_cost = calib_times_ns[idx] + FFT_OVERHEAD_NS;
-            double corr_cost = fft_cost * PAIRED_CACHED_CORR_RATIO;
-            tree += nr * (fft_cost + corr_cost);
+            double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
+                             + (double)bwm*(bwm+1)/2.0*FMA_NS;
+            double corr;
+            if (tc->fft_cache_ok[ell]) {
+                corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
+                     + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
+            } else {
+                int cfn = tc->corr_fft_n[ell];
+                int cwm = tc->corr_wrap_m[ell];
+                int cidx=0;
+                {int lo=0,hi=N_CALIBRATED_SIZES-1;
+                 while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
+                 cidx=lo;}
+                corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
+                     + (double)cwm*(cwm+1)*FMA_NS;
+            }
+            tree += nr * (build_fft + corr);
         } else {
             int d_eff = tc->below_sat[ell] ? cps/2 : cps-1;
             double s = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
@@ -2397,10 +2171,12 @@ static int select_engine_ex(int n, int k, int n_targets) {
     }
     tree_ctx_destroy(tc);
 
-    /* For subset queries, hybrid leaf_extract (synthetic division) scales with
-     * n_targets. The block_build and tree phases are always full-n. */
-    double leaf_extract = (double)n * B * FMA_NS;
-    double hybrid_total = block + tree + leaf_extract * target_frac;
+    /* leaf_extract: ECM max(division throughput, FMA chain) + per-block overhead.
+     * For subset queries, only target players need extraction. */
+    double le_div = FP64_DIV_NS, le_fma = 2.0 * B * LEAF_FMA_NS;
+    double leaf_extract = (double)n * (le_div > le_fma ? le_div : le_fma)
+                        + (double)n / B * LEAF_BLOCK_NS;
+    double hybrid_total = block_build + tree + leaf_extract * target_frac;
 
     return (hybrid_total < linear_per_qp) ? B : 0;
 }
@@ -2618,9 +2394,7 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
     return elapsed;
 }
 
-
 /* ---- Optimal B selector (cost-model driven) ---- */
-
 
 /* Select optimal hybrid block size B from calibration data.
  * Creates lightweight TreeCtx for each candidate to use the real per-level
@@ -2637,7 +2411,13 @@ static int select_best_B(int n, int k) {
         int n_leaves = (n + B - 1) / B;
         TreeCtx *tc = tree_ctx_create_ex2(n_leaves, B, k, B);
         int L = tc->L;
-        double block = ((double)n / B * ((double)B * (B+1) / 2.0) + (double)n * 3.0 * B) * FMA_NS;
+        /* block_build: per-player FMA work + per-player memory streaming.
+         * leaf_extract: ECM max(division throughput, FMA chain) + per-block overhead. */
+        double block_build = (double)n * ((double)(B+1) / 2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
+        double leaf_div = FP64_DIV_NS;
+        double leaf_fma = 2.0 * B * LEAF_FMA_NS;
+        double leaf = (double)n * (leaf_div > leaf_fma ? leaf_div : leaf_fma)
+                    + (double)n / B * LEAF_BLOCK_NS;
         double tree = 0;
         for (int ell = 1; ell < L - 1; ell++) {
             int cps = tc->psz[ell-1];
@@ -2650,11 +2430,11 @@ static int select_best_B(int n, int k) {
                   while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
                   idx=lo; }
                 double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                                 + (double)(bwm+1)*(bwm+1)*FMA_NS;
+                                 + (double)bwm*(bwm+1)/2.0*FMA_NS;
                 double corr;
                 if (tc->fft_cache_ok[ell]) {
                     corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                         + 2.0*(double)(tc->corr_wrap_m[ell]+1)*(tc->corr_wrap_m[ell]+1)*FMA_NS;
+                         + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
                 } else {
                     int cfn = tc->corr_fft_n[ell];
                     int cwm = tc->corr_wrap_m[ell];
@@ -2663,19 +2443,13 @@ static int select_best_B(int n, int k) {
                      while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
                      cidx=lo;}
                     corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                         + 2.0*(double)(cwm+1)*(cwm+1)*FMA_NS;
+                         + (double)cwm*(cwm+1)*FMA_NS;
                 }
                 tree += nr * (build_fft + corr);
             } else {
                 int is_below = tc->below_sat[ell];
                 int d_eff = is_below ? cps/2 : cps-1;
                 double school_mul, school_corr;
-#if HAS_AMX && USE_AMX
-                if (d_eff + 1 >= AMX_SCHOOL_MIN_DEG) {
-                    int nb = ((d_eff+1)+7) >> 3;
-                    school_mul = nb*nb*AMX_TILE_NS + (2*nb-1)*AMX_PERCOL_NS + AMX_CALL_NS;
-                } else
-#endif
                     school_mul = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
                 /* Correlate uses scalar (inner loop is memory-bound at FMA_NS) */
                 school_corr = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
@@ -2683,7 +2457,7 @@ static int select_best_B(int n, int k) {
             }
         }
         tree_ctx_destroy(tc);
-        double total = block + tree;
+        double total = block_build + leaf + tree;
         if (total < best_cost) { best_cost = total; best_B = B; }
     }
     return best_B;

@@ -110,10 +110,6 @@ All tuning constants live in `devices/<DEVICE>/fft_config.h` as `#define`s:
 | `FFT_OVERHEAD_NS` | 40.0 | 50.0 | Per-call FFT overhead | `./bench_grid profile` (overhead table) |
 | `PAIRED_CACHED_CORR_RATIO` | 1.03 | 1.08 | Paired correlate / full pipeline | `./bench_grid profile` (phase split) |
 | `INDEP_PAIR_RATIO` | 1.25 | 1.35 | correlate_fft_pair / full pipeline | `./bench_grid profile` (phase split) |
-| `L2_CACHE_SIZE` | 32MB | 1MB | Per-core L2 for checkpointing | Hardware spec |
-| `AMX_TILE_NS` | 2.0 | n/a | AMX outer product cost (Apple only) | `tools/bench_amx` |
-| `AMX_PERCOL_NS` | 69.0 | n/a | AMX per-column extraction cost | `tools/bench_amx` |
-| `AMX_SCHOOL_MIN_DEG` | 160 | n/a | AMX schoolbook crossover | `tools/bench_amx` |
 | `calib_sizes[]` / `calib_times_ns[]` | 749 entries | 749 entries | Per-size FFT costs | `tools/calibrate` |
 | `calib_lib[]` | n/a | 749 entries | FFTW(0) vs MKL(1) per size | `tools/calibrate_dual` |
 
@@ -134,7 +130,6 @@ Auto-tuned at runtime (no manual tuning needed):
 src/
   icm.h                — public API header
   icm.c                — library implementation (all engines, FFT infrastructure)
-  amx.h                — Apple AMX FP64 outer-product primitives (validated, gated)
   linear_batched_impl.inc — BQ-parameterized batched linear engine template
   icm_gpu.h            — GPU public API header
   icm_gpu.cu           — GPU implementation (legacy monolithic, kept for reference)
@@ -260,7 +255,7 @@ After running the above, fill in:
 3. `make DEVICE=<DEVICE>` and `./bench_grid profile` to measure platform constants
 4. Update `#define`s in `fft_config.h` (FMA_NS, FFT_OVERHEAD_NS, etc.)
 5. On Apple Silicon: vDSP dispatch is automatic. Recalibrate `calib_times_ns[]`
-   to reflect actual dispatch cost (run `tools/bench_amx` for AMX constants).
+   to reflect actual dispatch cost.
 6. On Linux with MKL: run `tools/calibrate_dual` → adds `calib_lib[]` + updates
    `calib_times_ns[]` with min(FFTW, MKL). MKL dispatch via dlopen is automatic.
 7. `./bench_grid verify` then `./bench_grid` for final numbers

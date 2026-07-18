@@ -59,3 +59,44 @@ dist/
 
 # Zip archives
 *.zip
+
+# ── §7 Declutter: generated benchmark outputs ──────────────────
+# Blanket patterns for throwaway output artifacts (regeneratable).
+# Keepers live in results/ which is negated below.
+*.csv
+*.log
+*.txt
+bench_grid_*.txt
+bench_*_b200.csv
+bench_*_b200.log
+gpu_*.csv
+gpu_*.log
+heatmap_*.csv
+heatmap_*.txt
+nk_*.csv
+profile_*.csv
+profile_*.txt
+sample_plans*.csv
+sample_plans*.log
+accuracy_*.csv
+vkfft_*.csv
+vkfft_*.log
+b200_*.csv
+b200_*.txt
+b200_*.log
+results_b200_*/
+results_b200_optimized/
+
+# Compiled test binaries (leaked to repo root)
+test_cpu_cost_model
+test_cpu_cost_model_*
+
+# Jupyter / Python artifacts
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Negation: results/ directory holds reference artifacts ─────
+!results/**
+.dsar/

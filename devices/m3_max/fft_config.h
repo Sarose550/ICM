@@ -136,10 +136,11 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #define FMA_NS 0.25
 #endif
 
-/* FFT_OVERHEAD_NS: per-call overhead not captured in calibration
- * (plan lookup, buffer copies, result extraction). Measured via ./bench_grid profile. */
 #ifndef FFT_OVERHEAD_NS
-#define FFT_OVERHEAD_NS 40.0
+#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline measurement) */
+#endif
+#ifndef WRAP_FMA_NS
+#define WRAP_FMA_NS 3.0  /* ns per FMA in wrap correction — TODO: measure on M3 Max */
 #endif
 
 /* INDEP_PAIR_RATIO: cost of correlate_fft_pair (shared g, fresh P FFTs) / full pipeline.
@@ -153,6 +154,9 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 /* L2_CACHE_SIZE: per-core L2 in bytes. Used for batched linear checkpointing.
  * M3 Max has 32MB shared L2 per cluster — streaming at 400GB/s is fast enough
  * that checkpointing adds overhead without cache benefit. Set high to disable. */
+#ifndef L1_CACHE_SIZE
+#define L1_CACHE_SIZE 131072  /* 128KB per P-core (M3 Max) */
+#endif
 #ifndef L2_CACHE_SIZE
 #define L2_CACHE_SIZE 33554432  /* 32MB — effectively disables batched checkpointing */
 #endif
@@ -171,38 +175,25 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #define DRAM_BW_GBS 350.0  /* Unified memory — no DRAM penalty */
 #endif
 
-/* AMX FP64 outer-product schoolbook cost model constants.
- * Measured via profile_costs on M3 Max (4.064 GHz P-core).
- *
- * First-principles model:
- *   amx_polymul_ns = AMX_TILE_NS * n_tiles + AMX_PERCOL_NS * n_block_cols + AMX_CALL_NS
- * where n_tiles = ceil((d+1)/8)², n_block_cols = 2*ceil((d+1)/8) - 1.
- *
- * AMX_TILE_NS: cost per LDX+LDY+FMA64 (3 instructions through store port + L1 latency).
- *   Isolated: 3.2ns. Amortized in pipeline: ~2.0ns.
- *
- * AMX_PERCOL_NS: per-column overhead = VECFP extraction(11ns) + 2×STZ(16ns)
- *   + CPU/AMX page conflict(~35ns) + setup(4ns) + accumulation(3ns) = ~69ns.
- *
- * AMX_CALL_NS: per-call padding overhead (memset/memcpy).
- *
- * Scalar polymul effective cost: d² × 0.13 ns/FMA (memory-bound at 2 FMA/cycle
- * via NEON auto-vectorization: 2 loads + 1 FMLA + 1 store per cycle = 2 FP64 FMA/cycle).
- * Note: FMA_NS=0.25 was calibrated for compute-bound workloads; the polymul inner
- * loop is memory-bandwidth-limited and achieves ~2× higher throughput.
- *
- * Crossover: AMX polymul beats scalar at degree ≈ 170.
- * With mmap page isolation: crossover could drop to ≈ 90.
- */
-#ifndef AMX_TILE_NS
-#define AMX_TILE_NS 2.0
+/* ECM-style per-phase cost model constants (M3 Max).
+ * TODO: measure properly via tools/calibrate; these are initial estimates.
+ * Apple FDIV throughput ~7 cycles at 4.064 GHz ≈ 1.7 ns. */
+#ifndef FP64_DIV_NS
+#define FP64_DIV_NS 1.7
 #endif
-#ifndef AMX_PERCOL_NS
-#define AMX_PERCOL_NS 69.0
+#ifndef LEAF_FMA_NS
+#define LEAF_FMA_NS 0.03
 #endif
-#ifndef AMX_CALL_NS
-#define AMX_CALL_NS 30.0
+#ifndef LEAF_BLOCK_NS
+#define LEAF_BLOCK_NS 5.0
 #endif
+#ifndef BLOCK_FMA_NS
+#define BLOCK_FMA_NS 0.10
+#endif
+#ifndef BLOCK_MEM_NS
+#define BLOCK_MEM_NS 4.0
+#endif
+
 /* ── Cost model functions ── */
 
 static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,
@@ -223,15 +214,10 @@ static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,
         if (S < min_size) continue;
         int mb = (S >= build_conv) ? 0 : build_conv - S;
         int mc = (S >= corr_conv) ? 0 : corr_conv - S;
-        /* Correlate wrap correction has TWO parts:
-         * 1. Output wrap: (mc+1)² FMAs — undo aliased high-degree terms
-         * 2. Input wrap:  mc × p_eff FMAs — undo g's cyclic input aliasing
-         *    p_eff = build_conv/2 + 1 (polynomial size at this level). */
-        int corr_input_wrap = mc * p_eff;
         double cost = calib_times_ns[i]
-                    + (double)(mb+1)*(mb+1) * FMA_NS
+                    + (double)mb*(mb+1)/2.0 * WRAP_FMA_NS
                     + calib_times_ns[i] * PAIRED_CACHED_CORR_RATIO
-                    + 2.0 * ((double)(mc+1)*(mc+1) + corr_input_wrap) * FMA_NS;
+                    + (double)mc*(mc+1) * WRAP_FMA_NS;
         if (cost < best_cost) {
             best_cost = cost;
             *out_size = S;
@@ -284,10 +270,8 @@ static void best_fft_config(int L, int *out_size, int *out_wrap_m, int len_P) {
         if (S > 2 * L) break;  /* no point going far above L */
         if (S < min_size) continue;  /* FFT too small to hold input poly */
         int m = (S >= L) ? 0 : L - S;
-        /* Correction: output-wrap (m+1)² + input-wrap m × len_P.
-         * Input-wrap only applies to cross-correlation (correlate), not convolution
-         * (polymul). Callers pass len_P=0 for polymul to skip input-wrap cost. */
-        double correction = ((double)(m+1) * (m+1) + (double)m * len_P) * FMA_NS;
+        double correction = (len_P > 0) ? (double)m * (m + 1) * WRAP_FMA_NS
+                                        : (double)m * (m + 1) / 2.0 * WRAP_FMA_NS;
         double cost = calib_times_ns[i] + correction;
         if (cost < best_cost) {
             best_cost = cost;

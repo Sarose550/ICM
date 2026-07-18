@@ -1,0 +1,92 @@
+--- a/src/gpu/gpu_plan.cu	2026-07-18 17:36:56
++++ b/src/gpu/gpu_plan.cu	2026-07-18 17:37:26
+@@ -918,6 +918,32 @@
+ }
+ 
+ /* ── cuFFT plan creation ───────────────────────────────────────── */
++
++/* Check whether batch × n would overflow signed 32-bit internally in cuFFT.
++ * cufftMakePlanMany takes int parameters; very large batch×size products
++ * can overflow cuFFT's internal 32-bit indexing, producing
++ * CUFFT_INTERNAL_ERROR (code 5).  Threshold: batch × max(n, dist) ≥ 2^31.
++ *
++ * At n=524,288 with qb=256 and child_batch=16: 256×16×524,288 = 2^31. */
++static bool cufft_batch_would_overflow_32bit(int n, int batch, int real_dist) {
++    long long span = (real_dist > n) ? real_dist : n;
++    return ((long long)batch * span) > 2147483648LL;
++}
++
++/* Detection of the 64-bit cuFFT API (cufftMakePlanMany64).
++ * Available since CUDA 11.0. */
++#if defined(CUDART_VERSION) && CUDART_VERSION >= 11000
++#define ICM_HAS_CUFFT_64BIT 1
++#else
++#define ICM_HAS_CUFFT_64BIT 0
++#endif
++
++/* Forward declaration for 64-bit cuFFT API (may not be in all headers). */
++#if ICM_HAS_CUFFT_64BIT
++extern "C" cufftResult cufftMakePlanMany64(cufftHandle, int, long long*,
++    long long*, long long, long long, long long*, long long, long long,
++    cufftType, long long, size_t*);
++#endif
+ 
+ bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist) {
+     if (real_dist <= 0) real_dist = n;
+@@ -926,20 +951,44 @@
+     int n_arr[1] = {n};
+     int cn = n / 2 + 1;
+     size_t work_size = 0;
++    bool use_64bit = ICM_HAS_CUFFT_64BIT && cufft_batch_would_overflow_32bit(n, batch, real_dist);
++
+     if (r2c) {
+-        int ie[1] = {real_dist};
+-        int oe[1] = {cn};
+-        if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
+-                                        ie, 1, real_dist,
+-                                        oe, 1, cn,
+-                                        CUFFT_D2Z, batch, &work_size))) return false;
++        if (use_64bit) {
++            long long n64[1] = {(long long)n};
++            long long ie64[1] = {(long long)real_dist};
++            long long oe64[1] = {(long long)cn};
++            if (!CUFFT_OK(cufftMakePlanMany64(*plan, rank, n64,
++                                              ie64, 1LL, (long long)real_dist,
++                                              oe64, 1LL, (long long)cn,
++                                              CUFFT_D2Z, (long long)batch,
++                                              &work_size))) return false;
++        } else {
++            int ie[1] = {real_dist};
++            int oe[1] = {cn};
++            if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
++                                            ie, 1, real_dist,
++                                            oe, 1, cn,
++                                            CUFFT_D2Z, batch, &work_size))) return false;
++        }
+     } else {
+-        int ie[1] = {cn};
+-        int oe[1] = {real_dist};
+-        if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
+-                                        ie, 1, cn,
+-                                        oe, 1, real_dist,
+-                                        CUFFT_Z2D, batch, &work_size))) return false;
++        if (use_64bit) {
++            long long n64[1] = {(long long)n};
++            long long ie64[1] = {(long long)cn};
++            long long oe64[1] = {(long long)real_dist};
++            if (!CUFFT_OK(cufftMakePlanMany64(*plan, rank, n64,
++                                              ie64, 1LL, (long long)cn,
++                                              oe64, 1LL, (long long)real_dist,
++                                              CUFFT_Z2D, (long long)batch,
++                                              &work_size))) return false;
++        } else {
++            int ie[1] = {cn};
++            int oe[1] = {real_dist};
++            if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
++                                            ie, 1, cn,
++                                            oe, 1, real_dist,
++                                            CUFFT_Z2D, batch, &work_size))) return false;
++        }
+     }
+     return true;
+ }

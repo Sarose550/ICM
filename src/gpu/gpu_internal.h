@@ -228,6 +228,8 @@ struct GpuPlan {
     void *shared_cufft_workspace = nullptr;
     size_t shared_cufft_workspace_bytes = 0;
 
+    double *d_fft_scratch = nullptr;
+
     void *arena_base = nullptr;
     size_t arena_total_bytes = 0;
 
@@ -376,9 +378,11 @@ __global__ void k_schoolbook_build_warp_batch(const double *child, int cps,
 __global__ void k_pairwise_mul(const cufftDoubleComplex *child_spec, int cn,
                                cufftDoubleComplex *parent_spec, int nparents,
                                double scale);
-__global__ void k_scale_zero_pad(double *data, int fft_stride, int valid_len,
-                                 double inv_fft_n, int batch);
-__global__ void k_zero_pad(double *data, int fft_stride, int valid_len, int batch);
+__global__ void k_gather_to_fft(const double *src, int src_stride,
+                                double *dst, int fft_n, int batch);
+__global__ void k_scatter_from_fft(const double *src, int fft_n,
+                                   double *dst, int dst_stride,
+                                   int valid_len, int batch);
 __global__ void k_wrap_build(double *parent, int pps, int nparents,
                              const double *child, int cps, int conv_len,
                              int fft_n, int wrap_m,

@@ -160,8 +160,9 @@ static void benchmark_sizes(int quick) {
             inv = fftw_plan_dft_c2r_1d(sz, cbuf, rbuf, FFTW_ESTIMATE);
         }
 
-        /* Fill with test data */
+        /* Fill with test data (two input polynomials of degree sz-1) */
         for (int j = 0; j < sz; j++) rbuf[j] = 1.0 + 0.001 * j;
+        for (int j = 0; j < sz; j++) rbuf2[j] = 1.0 + 0.002 * j;
 
         /* Determine rep count: target ~100ms per size */
         int reps = (int)(1e8 / (double)(sz + 1));
@@ -170,9 +171,15 @@ static void benchmark_sizes(int quick) {
         if (reps > 2000000) reps = 2000000;
 
         int cn = sz / 2 + 1;
+        double inv_n = 1.0 / sz;
 
-        /* Warm up */
+        /* Full pipeline = memcpy_in + fwd(a) + fwd(b) + pointwise + ifft + scale.
+         * This matches what polymul_fft_wrap actually does per parent in the tree.
+         * Measured warm (second pass) — matches 255/256 Q-points. */
+
+        /* Warm up (plan + µop cache) */
         for (int r = 0; r < 5; r++) {
+            memcpy(rbuf, rbuf2, sz * sizeof(double));
             fftw_execute(fwd);
             fftw_execute_dft_r2c(fwd, rbuf2, cbuf2);
             for (int j = 0; j < cn; j++) {
@@ -181,12 +188,17 @@ static void benchmark_sizes(int quick) {
                 cbuf[j][0] = re; cbuf[j][1] = im;
             }
             fftw_execute(inv);
+            for (int j = 0; j < sz; j++) rbuf[j] *= inv_n;
         }
 
-        /* Time: full pipeline = fwd(a) + fwd(b) + pointwise + ifft */
+        /* Time: full polymul pipeline (memcpy + 2×fwd + pointwise + inv + scale) */
         double t0 = now_ns();
         for (int r = 0; r < reps; r++) {
+            memset(rbuf, 0, sz * sizeof(double));
+            rbuf[0] = 1.0 + 0.001 * r;
             fftw_execute(fwd);
+            memcpy(rbuf2, rbuf, sz * sizeof(double));
+            rbuf2[0] = 1.0 + 0.002 * r;
             fftw_execute_dft_r2c(fwd, rbuf2, cbuf2);
             for (int j = 0; j < cn; j++) {
                 double re = cbuf[j][0]*cbuf2[j][0] - cbuf[j][1]*cbuf2[j][1];
@@ -194,6 +206,7 @@ static void benchmark_sizes(int quick) {
                 cbuf[j][0] = re; cbuf[j][1] = im;
             }
             fftw_execute(inv);
+            for (int j = 0; j < sz; j++) rbuf[j] *= inv_n;
         }
         calib_times[i] = (now_ns() - t0) / reps;
 
@@ -240,14 +253,17 @@ static void write_config(const char *filename) {
     /* ── Device constants (all #ifndef guarded for manual override) ── */
     fprintf(f,
 "/* ── Device constants ── */\n"
-"/* Measure via: ./bench_grid profile (schoolbook row for FMA_NS,\n"
-" *   paired correlate for PAIRED_CACHED_CORR_RATIO and INDEP_PAIR_RATIO,\n"
-" *   overhead table for FFT_OVERHEAD_NS) */\n"
+"/* calib_times_ns now measures the full polymul_fft_wrap pipeline\n"
+" * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.\n"
+" * Wrap correction is modeled separately with WRAP_FMA_NS. */\n"
 "#ifndef FMA_NS\n"
 "#define FMA_NS 0.25  /* ns per scalar FMA — re-measure via ./bench_grid profile */\n"
 "#endif\n"
 "#ifndef FFT_OVERHEAD_NS\n"
-"#define FFT_OVERHEAD_NS 40.0  /* per-call FFT overhead — re-measure via ./bench_grid profile */\n"
+"#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline) */\n"
+"#endif\n"
+"#ifndef WRAP_FMA_NS\n"
+"#define WRAP_FMA_NS 4.0  /* ns per FMA in wrap correction (memory-latency-bound) */\n"
 "#endif\n"
 "#ifndef PAIRED_CACHED_CORR_RATIO\n"
 "#define PAIRED_CACHED_CORR_RATIO 1.03  /* paired cached correlate / full pipeline */\n"
@@ -304,11 +320,10 @@ static void write_config(const char *filename) {
 "        if (S < min_size) continue;\n"
 "        int mb = (S >= build_conv) ? 0 : build_conv - S;\n"
 "        int mc = (S >= corr_conv) ? 0 : corr_conv - S;\n"
-"        int corr_input_wrap = mc * p_eff;\n"
 "        double cost = calib_times_ns[i]\n"
-"                    + (double)(mb+1)*(mb+1) * FMA_NS\n"
+"                    + (double)mb*(mb+1)/2.0 * FMA_NS\n"
 "                    + calib_times_ns[i] * PAIRED_CACHED_CORR_RATIO\n"
-"                    + 2.0 * ((double)(mc+1)*(mc+1) + corr_input_wrap) * FMA_NS;\n"
+"                    + (double)mc*(mc+1) * FMA_NS;\n"
 "        if (cost < best_cost) {\n"
 "            best_cost = cost;\n"
 "            *out_size = S;\n"
@@ -337,7 +352,8 @@ static void write_config(const char *filename) {
 "        if (S > 2 * L) break;\n"
 "        if (S < min_size) continue;\n"
 "        int m = (S >= L) ? 0 : L - S;\n"
-"        double correction = ((double)(m+1) * (m+1) + (double)m * len_P) * FMA_NS;\n"
+"        double correction = (len_P > 0) ? (double)m * (m + 1) * FMA_NS\n"
+"                                        : (double)m * (m + 1) / 2.0 * FMA_NS;\n"
 "        double cost = calib_times_ns[i] + correction;\n"
 "        if (cost < best_cost) {\n"
 "            best_cost = cost;\n"

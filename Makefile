@@ -13,6 +13,8 @@
 
 DEVICE ?= m3_max
 
+.DEFAULT_GOAL := all
+
 CC = gcc
 CFLAGS = -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function
 INCLUDES = -Isrc -Idevices/$(DEVICE)
@@ -194,7 +196,22 @@ validate_planner_gpu: tools/validate_planner_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DI
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/validate_planner_gpu.o tools/validate_planner_gpu.cu
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/validate_planner_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
 
-.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu campaign_b200
+gpu_sample_plans: tools/gpu_sample_plans.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/gpu_sample_plans.o tools/gpu_sample_plans.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_sample_plans.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+
+gpu_phase_profile: tools/gpu_phase_profile.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/gpu_phase_profile.o tools/gpu_phase_profile.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_phase_profile.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+
+test_gpu_cost_model: tools/test_gpu_cost_model.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_cost_model.o tools/test_gpu_cost_model.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_cost_model.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+
+test_cpu_cost_model: tools/test_cpu_cost_model.c src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tools/test_cpu_cost_model.c $(LDFLAGS)
+
+.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model campaign_b200
 
 campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	bash tools/run_b200_campaign.sh
@@ -203,6 +220,6 @@ campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate
 
 clean:
 	rm -f $(OUT) calibrate contour_1s contour_1s_par
-	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
+	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model
 	rm -rf $(BUILD_DIR)
 	rm -rf python/*.egg-info python/build python/dist

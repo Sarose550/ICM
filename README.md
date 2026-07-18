@@ -132,9 +132,9 @@ Requires CUDA toolkit and cuFFTDx. VkFFT is optional for dual-dispatch FFT
 
 | n | k=n | Time |
 |---|-----|------|
-| 65,536 | 65,536 | 25 ms |
-| 262,144 | 262,144 | 118 ms |
-| 1,572,864 | 1,572,864 | 981 ms |
+| 65,536 | 65,536 | 24.75 ms |
+| 262,144 | 262,144 | 117.90 ms |
+| 1,441,792 | 1,441,792 | 937 ms |
 
 See `devices/b200/gpu_fft_config.h` for calibration data.
 
@@ -171,7 +171,6 @@ make libicm.a
 src/icm.h                    -- public CPU API
 src/icm.c                    -- all CPU engines + FFT infrastructure
 src/linear_batched_impl.inc  -- batched linear engine template
-src/amx.h                    -- Apple AMX FP64 outer-product primitives
 src/icm_gpu.h                -- GPU API header
 src/gpu/                     -- GPU implementation (split modules)
   gpu_internal.h             -- shared GPU types and helpers

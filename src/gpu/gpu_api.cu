@@ -133,12 +133,33 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
             if (v >= 1 && v <= Q_BATCH_MAX) qb_override = v;
         }
 
+        /* Per-Q-point VRAM: poly+g arrays, block prods, a_sorted,
+         * PLUS spec buffers, FFT cache, and scratch — all scale with qb. */
         size_t per_q_bytes = 0;
+        size_t max_cb_cn = 0, max_pb_cn = 0, max_cb_fft = 0, cache_per_q = 0;
         for (int ell = 0; ell < plan->L; ++ell)
             per_q_bytes += 2 * (size_t)plan->nn[ell] * plan->psz[ell] * sizeof(double);
         per_q_bytes += (size_t)plan->N_tree * (plan->B + 1) * sizeof(double);
         per_q_bytes += 2 * (size_t)plan->n * sizeof(double);
-        size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.60);
+        for (int ell = 1; ell < plan->L; ++ell) {
+            auto &lp = plan->levels[ell];
+            if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
+            int cn = lp.fft_n / 2 + 1;
+            int cb = plan->nn[ell - 1], pb = plan->nn[ell];
+            max_cb_cn = std::max(max_cb_cn, (size_t)cb * cn * sizeof(cufftDoubleComplex));
+            max_pb_cn = std::max(max_pb_cn, (size_t)pb * cn * sizeof(cufftDoubleComplex));
+            max_cb_fft = std::max(max_cb_fft, (size_t)cb * lp.fft_n * sizeof(double));
+            if (lp.use_fft && lp.cache_fft && lp.tier != GPU_TIER_SCHOOLBOOK)
+                cache_per_q += (size_t)cb * cn * sizeof(cufftDoubleComplex);
+        }
+        /* 4 spec buffers + scratch + cache, all proportional to qb */
+        per_q_bytes += max_cb_cn + max_pb_cn + max_pb_cn + 2 * max_pb_cn;
+        per_q_bytes += max_cb_fft;
+        per_q_bytes += cache_per_q;
+        /* Reserve ~5% for cuFFT workspace, driver overhead, and safety margin.
+         * The per_q_bytes estimate is accurate (includes spec/scratch/cache),
+         * so we can use most of the remaining VRAM. */
+        size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.90);
 
         int best_qb = 1;
         if (!plan->opts.enable_graphs && !qb_override) {
@@ -148,6 +169,9 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         }
         int qb = qb_override ? qb_override : best_qb;
         if (plan->opts.enable_graphs) qb = 1;
+        if (getenv("ICM_GPU_DEBUG_PLAN"))
+            fprintf(stderr, "  q_batch=%d (budget=%.0f MB, per_q=%.0f MB, graphs=%d)\n",
+                    qb, budget/1e6, per_q_bytes/1e6, plan->opts.enable_graphs);
         plan->q_batch = qb;
     }
 

@@ -95,6 +95,9 @@ int find_calib_index(int fft_n) {
 double estimate_cufft_pipeline_ns(int fft_n) {
     int idx = find_calib_index(fft_n);
     if (idx >= 0) return gpu_calib_cufft_ns[idx] + GPU_FFT_OVERHEAD_NS;
+    /* Calibration table should cover all sizes used in practice.
+     * If we reach here, the table needs extending via calibrate_gpu. */
+    fprintf(stderr, "WARNING: uncalibrated FFT size %d — extend calibration table\n", fft_n);
     return (double)fft_n * 0.9 + GPU_FFT_OVERHEAD_NS;
 }
 
@@ -235,13 +238,25 @@ void best_fft_config_gpu(int conv_len, int len_P, double correction_scale,
         if (s < min_size) continue;
         int m = (s >= conv_len) ? 0 : (conv_len - s);
         if (m > wrap_cap) continue;
-        double correction = ((double)(m + 1) * (double)(m + 1) + (double)m * (double)len_P)
-            * fma_ns * correction_scale;
+        double correction = (double)m * (double)(m + 1) / 2.0 * fma_ns * correction_scale;
         double cost = estimate_cufft_pipeline_ns(s) + correction;
         if (cost < best_cost) {
             best_cost = cost;
             best_n = s;
             best_m = m;
+        }
+    }
+    /* Also consider the smallest smooth FFT >= conv_len (wrap_m = 0).
+     * This matters when conv_len exceeds the largest calibrated size —
+     * the O(n log n) extrapolation cost without any wrap correction can
+     * beat a calibrated size that requires large wrap. */
+    if (best_m > 0) {
+        int nowrap = fastest_fft_ge_gpu(conv_len);
+        double nowrap_cost = estimate_cufft_pipeline_ns(nowrap);
+        if (nowrap_cost < best_cost) {
+            best_cost = nowrap_cost;
+            best_n = nowrap;
+            best_m = 0;
         }
     }
     if (best_n <= 0) {
@@ -278,17 +293,27 @@ double best_fft_config_joint_gpu(int build_conv, int corr_conv, int p_eff,
         int bm = (s >= build_conv) ? 0 : (build_conv - s);
         int cm = (s >= corr_conv) ? 0 : (corr_conv - s);
         if (bm > wrap_cap || cm > wrap_cap) continue;
-        double corr_input_wrap = (double)cm * (double)p_eff;
         double cost = estimate_cufft_pipeline_ns(s)
-            + (double)(bm + 1) * (double)(bm + 1) * fma_ns * correction_scale
+            + (double)bm * (double)(bm + 1) / 2.0 * fma_ns * correction_scale
             + estimate_cufft_pipeline_ns(s) * GPU_PAIRED_CACHED_CORR_RATIO
-            + 2.0 * ((double)(cm + 1) * (double)(cm + 1) + (double)corr_input_wrap)
-                * fma_ns * correction_scale;
+            + (double)cm * (double)(cm + 1) * fma_ns * correction_scale;
         if (cost < best_cost) {
             best_cost = cost;
             best_n = s;
             best_bm = bm;
             best_cm = cm;
+        }
+    }
+    /* Also consider the no-wrap option when conv exceeds calibration range */
+    if (best_bm > 0 || best_cm > 0) {
+        int nowrap = fastest_fft_ge_gpu(max_conv);
+        double nowrap_cost = estimate_cufft_pipeline_ns(nowrap)
+            + estimate_cufft_pipeline_ns(nowrap) * GPU_PAIRED_CACHED_CORR_RATIO;
+        if (nowrap_cost < best_cost) {
+            best_cost = nowrap_cost;
+            best_n = nowrap;
+            best_bm = 0;
+            best_cm = 0;
         }
     }
     if (best_n <= 0) {
@@ -342,7 +367,18 @@ double tree_school_ns_per_fma() {
 #ifdef GPU_TREE_SCHOOL_NS_PER_FMA
     return GPU_TREE_SCHOOL_NS_PER_FMA;
 #else
-    return std::max(GPU_SCHOOL_FMA_NS, GPU_BLOCK_BUILD_NS_PER_FMA);
+    /* Use the calibrated schoolbook FMA throughput — the physical rate at which
+     * the GPU executes FMA instructions when the SMs are saturated.  This is
+     * correct for wrap correction costs (large working set, GPU fully busy)
+     * and for schoolbook tier comparisons at sizes where fused is not available
+     * (conv_len > GPU_FUSED_MAX_CONV_LEN, so conv_len^2 is large enough to
+     * saturate the GPU).
+     *
+     * The old code returned max(GPU_SCHOOL_FMA_NS, GPU_BLOCK_BUILD_NS_PER_FMA),
+     * which inflated the schoolbook rate 18.6× to make the tier comparison
+     * "work" — but this gave correct results for the wrong reasons and caused
+     * wrong B selection at large n where the wrap correction cost dominates. */
+    return GPU_SCHOOL_FMA_NS;
 #endif
 }
 
@@ -369,10 +405,28 @@ double leaf_extract_ns_per_fma_model() {
 /* ── Tier selection ────────────────────────────────────────────── */
 
 int pick_tier_for_fft_len(int fft_n, int conv_len) {
-    double school = (double)conv_len * (double)conv_len * tree_school_ns_per_fma();
     double cufft = estimate_cufft_pipeline_ns(fft_n);
     double fused = estimate_fused_build_ns(fft_n);
-    if (conv_len <= g_runtime_fused_max_conv_len && fused < school && fused < cufft) return GPU_TIER_FUSED;
+
+    /* When fused (cuFFTDx) is calibrated at this fft_n, compare directly.
+     * Both costs are calibrated per-pipeline measurements that capture the
+     * full cost: data load + FFT + pointwise multiply + IFFT + store. */
+    if (conv_len <= g_runtime_fused_max_conv_len && std::isfinite(fused)) {
+        return (fused < cufft) ? GPU_TIER_FUSED : GPU_TIER_CUFFT;
+    }
+
+    /* Fused not calibrated at this fft_n but conv_len is within the fused
+     * range — the schoolbook FMA model is unreliable here (per-parent
+     * overhead dominates at small conv_len, underestimating actual cost
+     * by 10-20×).  Return cuFFT; the caller's fused fallback will check
+     * the power-of-2 fused option separately. */
+    if (conv_len <= g_runtime_fused_max_conv_len) {
+        return GPU_TIER_CUFFT;
+    }
+
+    /* Large conv_len (above fused range): FMA throughput model is accurate
+     * because the GPU is fully saturated with FMAs. */
+    double school = (double)conv_len * (double)conv_len * tree_school_ns_per_fma();
     if (school < cufft) return GPU_TIER_SCHOOLBOOK;
     return GPU_TIER_CUFFT;
 }
@@ -475,28 +529,60 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
     double block_ns = block_fmas * block_build_ns_per_fma_model() * occ_penalty;
 #endif
 
-    /* Assumed q_batch for batch-aware FFT cost estimation.
-     * In the q-batch pipeline, each cuFFT call processes q_batch × nn[ell]
-     * transforms in one launch.  The per-pipeline cost drops at large batch
-     * because kernel-launch overhead amortises.  We estimate cost at a
-     * representative q_batch to avoid over-penalising lower tree levels
-     * (large nn) where the batch-efficiency gain is strongest. */
+    double fma_ns = tree_school_ns_per_fma();
+
+    /* Estimate q_batch from VRAM budget, matching gpu_api.cu per_q_bytes.
+     * Includes poly+g arrays, block prods, a_sorted, PLUS spec buffers,
+     * FFT scratch, and FFT cache — all of which scale with q_batch. */
     double assumed_qb = 64.0;
     {
-        /* Estimate q_batch from VRAM budget, matching gpu_api.cu logic */
         size_t per_q = 0;
         for (int ell = 0; ell < L; ++ell)
             per_q += 2 * (size_t)nn[ell] * psz[ell] * sizeof(double);
         per_q += (size_t)N * (B + 1) * sizeof(double);
         per_q += 2 * (size_t)n * sizeof(double);
-        size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.60);
+
+        /* Spec buffers, FFT scratch, and paired cache (all qb-proportional).
+         * Pre-scan levels to estimate FFT sizes and tiers. */
+        size_t max_cb_cn = 0, max_pb_cn = 0, max_cb_fft = 0, cache_per_q = 0;
+        for (int ell = 1; ell < L; ++ell) {
+            int cps_e = psz[ell - 1];
+            int is_below_e = below_sat[ell];
+            int conv_build_e = is_below_e ? (2 * (cps_e / 2)) : (2 * cps_e - 1);
+            /* Within fused range: always FFT (fused or cuFFT, never schoolbook).
+             * Above fused range: FMA model is accurate, check schoolbook vs cuFFT. */
+            bool is_fft_level;
+            int est_fft_n;
+            if (conv_build_e <= g_runtime_fused_max_conv_len) {
+                is_fft_level = true;
+                est_fft_n = next_pow2_int(conv_build_e);
+            } else {
+                est_fft_n = fastest_fft_ge_gpu(conv_build_e);
+                double school_e = (double)conv_build_e * (double)conv_build_e * fma_ns;
+                is_fft_level = (estimate_cufft_pipeline_ns(est_fft_n) < school_e);
+            }
+            if (is_fft_level) {
+                int cn_e = est_fft_n / 2 + 1;
+                int cb_e = nn[ell - 1], pb_e = nn[ell];
+                max_cb_cn = std::max(max_cb_cn, (size_t)cb_e * cn_e * sizeof(cufftDoubleComplex));
+                max_pb_cn = std::max(max_pb_cn, (size_t)pb_e * cn_e * sizeof(cufftDoubleComplex));
+                max_cb_fft = std::max(max_cb_fft, (size_t)cb_e * est_fft_n * sizeof(double));
+                /* cuFFT-tier levels (above fused range, not at top) typically cache */
+                if (conv_build_e > g_runtime_fused_max_conv_len && ell < L - 1)
+                    cache_per_q += (size_t)cb_e * cn_e * sizeof(cufftDoubleComplex);
+            }
+        }
+        /* 4 shared spec buffers: build(si,sm) + corr(si, sm=2×parent) */
+        per_q += max_cb_cn + max_pb_cn + max_pb_cn + 2 * max_pb_cn;
+        per_q += max_cb_fft;   /* FFT scratch buffer */
+        per_q += cache_per_q;  /* paired FFT cache */
+
+        size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.90);
         int est_qb = (per_q > 0) ? (int)(budget / per_q) : Q_BATCH_MAX;
         if (est_qb > Q_BATCH_MAX) est_qb = Q_BATCH_MAX;
         if (est_qb < 1) est_qb = 1;
         assumed_qb = (double)est_qb;
     }
-
-    double fma_ns = tree_school_ns_per_fma();
     double tree_ns = 0.0;
     for (int ell = 1; ell < L - 1; ++ell) {
         int cps = psz[ell - 1];
@@ -520,8 +606,20 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         int bfn = 0, bwm = 0;
         best_fft_config_gpu(conv_build, 0, wrap_scale, &bfn, &bwm);
         double fft_build = estimate_cufft_pipeline_ns_batched(bfn, eff_batch)
-            + (double)(bwm + 1) * (double)(bwm + 1) * fma_ns * wrap_scale;
-        if (fft_build >= school_build) {
+            + (double)bwm * (double)(bwm + 1) / 2.0 * fma_ns * wrap_scale;
+        /* Check whether fused (cuFFTDx) is available for this level. */
+        double fused_build_cost = std::numeric_limits<double>::infinity();
+        if (conv_build <= g_runtime_fused_max_conv_len) {
+            int fused_fft_n = next_pow2_int(conv_build);
+            fused_build_cost = estimate_fused_build_ns(fused_fft_n);
+        }
+        /* Short-circuit to schoolbook only when fused is NOT available.
+         * When fused IS available the schoolbook FMA model underestimates
+         * actual cost (per-parent overhead dominates over raw FMAs at
+         * small conv_len).  Proceed to the full tier comparison instead. */
+        bool fused_available = (conv_build <= g_runtime_fused_max_conv_len
+                                && std::isfinite(fused_build_cost));
+        if (!fused_available && fft_build >= school_build) {
             tree_ns += (double)nn[ell] * (school_build + school_corr);
             continue;
         }
@@ -533,8 +631,7 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         best_fft_config_gpu(conv_corr, p_eff, wrap_scale, &cfn, &cwm);
         double indep_cost = fft_build
             + estimate_cufft_pipeline_ns_batched(cfn, eff_batch) * GPU_INDEP_PAIR_RATIO
-            + 2.0 * ((double)(cwm + 1) * (double)(cwm + 1) + (double)cwm * (double)p_eff)
-                * fma_ns * wrap_scale;
+            + (double)cwm * (double)(cwm + 1) * fma_ns * wrap_scale;
 
         int fft_n = 0;
         int bwrap = 0;
@@ -550,6 +647,45 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         }
 
         int tier = pick_tier_for_fft_len(fft_n, conv_build);
+
+        /* If the cuFFT config chose a non-fused size, check whether a
+         * power-of-2 fused size would be cheaper.  The fused kernel operates
+         * at conv_len <= GPU_FUSED_MAX_CONV_LEN with zero-padding up to the
+         * next power-of-2 — this is often faster than cuFFT at a smaller
+         * non-power-of-2 size because the single-kernel fused approach
+         * eliminates 5+ kernel launches. */
+        if (tier != GPU_TIER_FUSED && conv_build <= g_runtime_fused_max_conv_len) {
+            int p2 = next_pow2_int(conv_build);
+            double fb = estimate_fused_build_ns(p2);
+            double fc = estimate_fused_corr_ns(p2);
+            if (std::isfinite(fb) && std::isfinite(fc)) {
+                /* Wrap from padding: fft_n=p2, conv_build may exceed p2 for
+                 * correlate.  Build wrap: p2 >= conv_build always (p2 is
+                 * next power-of-2 of conv_build). Corr wrap: may need wrap
+                 * if conv_corr > p2. */
+                int p2_bwrap = (p2 >= conv_build) ? 0 : (conv_build - p2);
+                int p2_cwrap = (p2 >= conv_corr) ? 0 : (conv_corr - p2);
+                double fused_total = fb + fc
+                    + (double)p2_bwrap * (double)(p2_bwrap + 1) / 2.0 * fma_ns * wrap_scale
+                    + (double)p2_cwrap * (double)(p2_cwrap + 1) * fma_ns * wrap_scale;
+                double cufft_total;
+                if (tier == GPU_TIER_SCHOOLBOOK) {
+                    cufft_total = school_build + school_corr;
+                } else {
+                    cufft_total = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch)
+                        + (double)bwrap * (double)(bwrap + 1) / 2.0 * fma_ns * wrap_scale
+                        + estimate_cufft_pipeline_ns_batched(fft_n, eff_batch) * GPU_PAIRED_CACHED_CORR_RATIO
+                        + (double)cwrap * (double)(cwrap + 1) * fma_ns * wrap_scale;
+                }
+                if (fused_total < cufft_total) {
+                    fft_n = p2;
+                    bwrap = p2_bwrap;
+                    cwrap = p2_cwrap;
+                    tier = GPU_TIER_FUSED;
+                }
+            }
+        }
+
         double build_ns = 0.0;
         double corr_ns = 0.0;
         if (tier == GPU_TIER_SCHOOLBOOK) {
@@ -562,15 +698,13 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
                 build_ns = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch);
                 corr_ns = build_ns * GPU_PAIRED_CACHED_CORR_RATIO;
             }
-            build_ns += (double)(bwrap + 1) * (double)(bwrap + 1) * fma_ns * wrap_scale;
-            corr_ns += 2.0 * ((double)(cwrap + 1) * (double)(cwrap + 1) + (double)cwrap * (double)p_eff)
-                * fma_ns * wrap_scale;
+            build_ns += (double)bwrap * (double)(bwrap + 1) / 2.0 * fma_ns * wrap_scale;
+            corr_ns += (double)cwrap * (double)(cwrap + 1) * fma_ns * wrap_scale;
         } else {
             build_ns = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch)
-                + (double)(bwrap + 1) * (double)(bwrap + 1) * fma_ns * wrap_scale;
+                + (double)bwrap * (double)(bwrap + 1) / 2.0 * fma_ns * wrap_scale;
             corr_ns = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch) * GPU_PAIRED_CACHED_CORR_RATIO
-                + 2.0 * ((double)(cwrap + 1) * (double)(cwrap + 1) + (double)cwrap * (double)p_eff)
-                    * fma_ns * wrap_scale;
+                + (double)cwrap * (double)(cwrap + 1) * fma_ns * wrap_scale;
         }
         tree_ns += (double)nn[ell] * (build_ns + corr_ns);
     }
@@ -679,7 +813,7 @@ bool build_plan_metadata(GpuPlan *plan) {
         int bfn = 0, bwm = 0;
         best_fft_config_gpu(conv_build, 0, wrap_scale, &bfn, &bwm);
         double fft_build = estimate_cufft_pipeline_ns(bfn)
-            + (double)(bwm + 1) * (double)(bwm + 1) * tree_school_ns_per_fma() * wrap_scale;
+            + (double)bwm * (double)(bwm + 1) / 2.0 * tree_school_ns_per_fma() * wrap_scale;
         double school_build = (double)(d_eff + 1) * (double)(d_eff + 1) * tree_school_ns_per_fma();
         if (debug_plan) {
             fprintf(stderr,
@@ -687,7 +821,17 @@ bool build_plan_metadata(GpuPlan *plan) {
                     ell, nparents, wrap_scale, bfn, bwm, fft_build / 1e6, school_build / 1e6);
         }
 
-        int use_fft = (fft_build < school_build);
+        /* When fused is available, always use FFT path — the schoolbook
+         * FMA model underestimates actual cost at small conv_len where
+         * per-parent overhead dominates over raw FMAs. */
+        double fused_build_check = std::numeric_limits<double>::infinity();
+        if (conv_build <= g_runtime_fused_max_conv_len) {
+            int fused_fft_n = next_pow2_int(conv_build);
+            fused_build_check = estimate_fused_build_ns(fused_fft_n);
+        }
+        bool fused_avail = (conv_build <= g_runtime_fused_max_conv_len
+                            && std::isfinite(fused_build_check));
+        int use_fft = fused_avail || (fft_build < school_build);
         int fft_n = bfn;
         int build_wrap_m = bwm;
         int corr_wrap_m = 0;
@@ -707,8 +851,7 @@ bool build_plan_metadata(GpuPlan *plan) {
                 double joint_cost = best_fft_config_joint_gpu(conv_build, conv_corr, p_eff, wrap_scale, &jfn, &jbm, &jcm);
                 double indep_cost = fft_build
                     + estimate_cufft_pipeline_ns(cfn) * GPU_INDEP_PAIR_RATIO
-                    + 2.0 * ((double)(cwm + 1) * (double)(cwm + 1) + (double)cwm * (double)p_eff)
-                        * tree_school_ns_per_fma() * wrap_scale;
+                    + (double)cwm * (double)(cwm + 1) * tree_school_ns_per_fma() * wrap_scale;
                 if (joint_cost < indep_cost) {
                     fft_n = jfn;
                     build_wrap_m = jbm;
@@ -718,6 +861,33 @@ bool build_plan_metadata(GpuPlan *plan) {
             }
 
             tier = pick_tier_for_fft_len(fft_n, conv_build);
+
+            /* If the cuFFT config chose a non-fused size, check whether a
+             * power-of-2 fused size would be cheaper.  Override fft_n so
+             * the execution engine uses the fused kernel. */
+            if (tier != GPU_TIER_FUSED && conv_build <= g_runtime_fused_max_conv_len) {
+                int p2 = next_pow2_int(conv_build);
+                double fb = estimate_fused_build_ns(p2);
+                double fc = estimate_fused_corr_ns(p2);
+                if (std::isfinite(fb) && std::isfinite(fc)) {
+                    int p2_bwm = (p2 >= conv_build) ? 0 : (conv_build - p2);
+                    int p2_cwm = (p2 >= conv_corr) ? 0 : (conv_corr - p2);
+                    double fused_total = fb + fc
+                        + (double)p2_bwm * (double)(p2_bwm + 1) / 2.0 * tree_school_ns_per_fma() * wrap_scale
+                        + (double)p2_cwm * (double)(p2_cwm + 1) * tree_school_ns_per_fma() * wrap_scale;
+                    double cufft_total = estimate_cufft_pipeline_ns(fft_n)
+                        + (double)build_wrap_m * (double)(build_wrap_m + 1) / 2.0 * tree_school_ns_per_fma() * wrap_scale
+                        + estimate_cufft_pipeline_ns(fft_n) * GPU_PAIRED_CACHED_CORR_RATIO
+                        + (double)corr_wrap_m * (double)(corr_wrap_m + 1) * tree_school_ns_per_fma() * wrap_scale;
+                    if (fused_total < cufft_total) {
+                        fft_n = p2;
+                        build_wrap_m = p2_bwm;
+                        corr_wrap_m = p2_cwm;
+                        cache_fft = 0;
+                        tier = GPU_TIER_FUSED;
+                    }
+                }
+            }
         }
 
         if (force_tier_mode == 1) {
@@ -763,19 +933,11 @@ bool build_plan_metadata(GpuPlan *plan) {
     }
     choose_uncached_levels(plan);
 
-    /* Compute fft_stride */
+    /* Compact fft_stride: store polynomials at psz spacing.
+     * cuFFT/VkFFT use a scratch buffer with gather/scatter for fft_n-strided access. */
     plan->fft_stride.assign(plan->L, 0);
     for (int ell = 0; ell < plan->L; ++ell) {
-        int s = plan->psz[ell];
-        if (ell >= 1 && plan->levels[ell].use_fft &&
-            plan->levels[ell].tier != GPU_TIER_SCHOOLBOOK) {
-            s = std::max(s, plan->levels[ell].fft_n);
-        }
-        if (ell + 1 < plan->L && plan->levels[ell + 1].use_fft &&
-            plan->levels[ell + 1].tier != GPU_TIER_SCHOOLBOOK) {
-            s = std::max(s, plan->levels[ell + 1].fft_n);
-        }
-        plan->fft_stride[ell] = s;
+        plan->fft_stride[ell] = plan->psz[ell];
     }
     if (debug_plan) {
         for (int ell = 0; ell < plan->L; ++ell) {
@@ -922,6 +1084,10 @@ bool device_sort_players(GpuPlan *plan) {
 bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist) {
     if (real_dist <= 0) real_dist = n;
     if (!CUFFT_OK(cufftCreate(plan))) return false;
+    /* Disable auto workspace allocation — we use a shared workspace set later.
+     * Without this, each plan allocates its own workspace on creation,
+     * which exhausts VRAM when many large plans coexist. */
+    if (!CUFFT_OK(cufftSetAutoAllocation(*plan, 0))) return false;
     int rank = 1;
     int n_arr[1] = {n};
     int cn = n / 2 + 1;
@@ -1091,9 +1257,6 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     int parent_batch = plan->nn[ell];
     int qb = plan->q_batch;
 
-    int child_stride = plan->fft_stride[ell - 1];
-    int parent_stride = plan->fft_stride[ell];
-
     auto &b = plan->build_fft[ell];
     b.fft_n = fft_n;
     b.cn = cn;
@@ -1103,29 +1266,25 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     b.spec_in = plan->shared_build_work.spec_in;
     b.spec_mid = plan->shared_build_work.spec_mid;
     b.real_out = nullptr;
-    if (!create_cufft_plan(&b.plan_fwd, fft_n, qb * child_batch, true, child_stride)) return false;
-    if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false, parent_stride)) return false;
+    /* cuFFT plans use stride = fft_n (contiguous in scratch buffer) */
+    if (!create_cufft_plan(&b.plan_fwd, fft_n, qb * child_batch, true)) return false;
+    if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false)) return false;
     if (!CUFFT_OK(cufftSetStream(b.plan_fwd, plan->stream_compute))) return false;
     if (!CUFFT_OK(cufftSetStream(b.plan_inv, plan->stream_compute))) return false;
 
 #if ICM_HAVE_VKFFT
-    /* Create VkFFT R2C plans if calibration says VkFFT wins for this size.
-     * VkFFT reads/writes at bufferStride spacing, matching our fft_stride
-     * layout — no gather/scatter needed. */
+    /* VkFFT plans also use stride = fft_n (read/write scratch buffer via gather/scatter) */
     if (lp.tier == GPU_TIER_CUFFT && should_use_vkfft(fft_n)) {
-        /* Build: fwd reads children at child_stride, inv writes parents at parent_stride */
-        if (create_vkfft_r2c_plan(&b.vkfft_app_fwd, fft_n, qb * child_batch, child_stride, &plan->stream_compute)) {
+        if (create_vkfft_r2c_plan(&b.vkfft_app_fwd, fft_n, qb * child_batch, fft_n, &plan->stream_compute)) {
             b.vkfft_fwd_initialized = 1;
-            if (create_vkfft_r2c_plan(&b.vkfft_app_inv, fft_n, qb * parent_batch, parent_stride, &plan->stream_compute)) {
+            if (create_vkfft_r2c_plan(&b.vkfft_app_inv, fft_n, qb * parent_batch, fft_n, &plan->stream_compute)) {
                 b.vkfft_inv_initialized = 1;
                 b.use_vkfft = 1;
             } else {
-                /* Inv failed, clean up fwd and fall back to cuFFT */
                 destroy_vkfft_app(&b.vkfft_app_fwd);
                 b.vkfft_fwd_initialized = 0;
             }
         }
-        /* If VkFFT init failed, cuFFT plans are already created as fallback */
     }
 #endif
 
@@ -1138,19 +1297,16 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     c.spec_in = plan->shared_corr_work.spec_in;
     c.spec_mid = plan->shared_corr_work.spec_mid;
     c.real_out = nullptr;
-    if (!create_cufft_plan(&c.plan_fwd, fft_n, qb * parent_batch, true, parent_stride)) return false;
-    if (!create_cufft_plan(&c.plan_inv, fft_n, qb * 2 * parent_batch, false, child_stride)) return false;
+    if (!create_cufft_plan(&c.plan_fwd, fft_n, qb * parent_batch, true)) return false;
+    if (!create_cufft_plan(&c.plan_inv, fft_n, qb * 2 * parent_batch, false)) return false;
     if (!CUFFT_OK(cufftSetStream(c.plan_fwd, plan->stream_compute))) return false;
     if (!CUFFT_OK(cufftSetStream(c.plan_inv, plan->stream_compute))) return false;
 
 #if ICM_HAVE_VKFFT
-    /* Create VkFFT plans for correlate if build also uses VkFFT */
     if (b.use_vkfft) {
-        /* Corr: fwd = parent_batch signals, inv = 2*parent_batch signals */
-        /* Corr: fwd reads g at parent_stride, inv writes children at child_stride */
-        if (create_vkfft_r2c_plan(&c.vkfft_app_fwd, fft_n, qb * parent_batch, parent_stride, &plan->stream_compute)) {
+        if (create_vkfft_r2c_plan(&c.vkfft_app_fwd, fft_n, qb * parent_batch, fft_n, &plan->stream_compute)) {
             c.vkfft_fwd_initialized = 1;
-            if (create_vkfft_r2c_plan(&c.vkfft_app_inv, fft_n, qb * 2 * parent_batch, child_stride, &plan->stream_compute)) {
+            if (create_vkfft_r2c_plan(&c.vkfft_app_inv, fft_n, qb * 2 * parent_batch, fft_n, &plan->stream_compute)) {
                 c.vkfft_inv_initialized = 1;
                 c.use_vkfft = 1;
             } else {
@@ -1197,6 +1353,18 @@ bool allocate_plan_device_memory(GpuPlan *plan) {
         mc_sm = std::max(mc_sm, (size_t)qb*2*pb*cn*sizeof(cufftDoubleComplex));
     }
 
+    /* Scratch buffer for cuFFT/VkFFT gather/scatter (compact storage).
+     * Sized to the largest batch across all FFT levels. */
+    size_t fft_scratch_bytes = 0;
+    for (int ell = 1; ell < plan->L; ++ell) {
+        auto &lp = plan->levels[ell];
+        if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
+        int fft_n = lp.fft_n;
+        int cb = plan->nn[ell - 1];  /* child_batch = max(child, parent, 2*parent) */
+        size_t need = (size_t)qb * cb * fft_n * sizeof(double);
+        fft_scratch_bytes = std::max(fft_scratch_bytes, need);
+    }
+
     /* Arena allocation */
     size_t arena_sz = 0;
     #define A(sz) do { arena_sz = (arena_sz + 255) & ~(size_t)255; arena_sz += (sz); } while(0)
@@ -1234,10 +1402,14 @@ bool allocate_plan_device_memory(GpuPlan *plan) {
     }
     A(mb_si); A(mb_sm);
     A(mc_si); A(mc_sm);
+    A(fft_scratch_bytes);
     #undef A
 
     char *arena = nullptr;
     if (arena_sz == 0) { set_last_errorf("Arena size is 0"); return false; }
+    if (getenv("ICM_GPU_DEBUG_PLAN"))
+        fprintf(stderr, "  arena_sz=%.1f MB  fft_scratch=%.1f MB  spec=(%.1f,%.1f,%.1f,%.1f) MB\n",
+            arena_sz/1e6, fft_scratch_bytes/1e6, mb_si/1e6, mb_sm/1e6, mc_si/1e6, mc_sm/1e6);
     if (!CUDA_OK(cudaMalloc(&arena, arena_sz))) return false;
     if (!CUDA_OK(cudaMemset(arena, 0, arena_sz))) return false;
     plan->arena_base = arena;
@@ -1294,6 +1466,7 @@ bool allocate_plan_device_memory(GpuPlan *plan) {
     P(sb.spec_mid, cufftDoubleComplex*, mb_sm);
     P(sc.spec_in, cufftDoubleComplex*, mc_si);
     P(sc.spec_mid, cufftDoubleComplex*, mc_sm);
+    if (fft_scratch_bytes > 0) P(plan->d_fft_scratch, double*, fft_scratch_bytes);
     #undef P
     plan->use_async_pool = false;
     for (int ell = 1; ell < plan->L; ++ell) {

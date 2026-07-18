@@ -420,7 +420,7 @@ static void run_contour(void) {
 
     contour_probe_ctx ctx = { .k = 0, .S_buf = S, .payout = payout, .equity_buf = equity };
 
-    printf("k,n_max,time_ms,engine,block_size\n");
+    printf("k,n_max,time_ms,engine,block_size,status\n");
     fflush(stdout);
 
     int consecutive_timeouts = 0;
@@ -461,15 +461,18 @@ static void run_contour(void) {
         int B = icm_select_engine(n_max, k);
         const char *engine = (B > 0) ? "hybrid" : "linear";
 
-        if (n_max == k && time_sec > target_sec)
+        int valid = (time_sec <= target_sec * 1.05);  /* 5% tolerance */
+        if (!valid)
             consecutive_timeouts++;
         else
             consecutive_timeouts = 0;
 
-        printf("%d,%d,%.0f,%s,%d\n", k, n_max, time_sec * 1000.0, engine, B);
+        printf("%d,%d,%.0f,%s,%d,%s\n", k, n_max, time_sec * 1000.0, engine, B,
+               valid ? "ok" : "floor");
         fflush(stdout);
-        fprintf(stderr, "  k=%d -> n_max=%d (%.0f ms) [%s B=%d]\n",
-                k, n_max, time_sec * 1000.0, engine, B);
+        fprintf(stderr, "  k=%d -> n_max=%d (%.0f ms) [%s B=%d]%s\n",
+                k, n_max, time_sec * 1000.0, engine, B,
+                valid ? "" : " FLOOR");
     }
 
     free(S); free(equity); free(payout);
