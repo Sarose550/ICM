@@ -433,12 +433,14 @@ static void test_b_selection() {
 
 /* ═══════════════════════════════════════════════════════════════
    Test 9: Fused calibration coverage
-   Power-of-2 sizes up to GPU_FUSED_MAX_CONV_LEN should have
-   finite fused build/corr costs.
+   Power-of-2 sizes from 64 (the smallest size is_cufftdx_supported_fft_n
+   actually instantiates) up to GPU_FUSED_MAX_CONV_LEN should have finite
+   fused build/corr costs. Sizes below 64 are never dispatched to the
+   fused path in production, so they're intentionally uncalibrated.
    ═══════════════════════════════════════════════════════════════ */
 static void test_fused_calibration_coverage() {
     int max_conv = g_runtime_fused_max_conv_len;
-    for (int fft_n = 4; fft_n <= max_conv; fft_n *= 2) {
+    for (int fft_n = 64; fft_n <= max_conv; fft_n *= 2) {
         double fb = estimate_fused_build_ns(fft_n);
         double fc = estimate_fused_corr_ns(fft_n);
         CHECK(std::isfinite(fb) && fb > 0,

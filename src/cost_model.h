@@ -40,42 +40,44 @@ static inline double blended_bw(double bytes) {
 }
 
 /*
- * Roofline cost for the batched linear engine (per quadrature point).
+ * Cost estimate for the batched linear engine (per quadrature point).
  *
- * The batched engine (width batch_width) is memory-bandwidth-limited: its arithmetic
- * intensity (~0.15 FLOP/byte) is far below the machine balance point.
- * This function estimates bytes streamed through each cache level and
- * divides by measured bandwidth.
+ * The batched linear engine is compute-bound for all realistic (n,k):
+ * it performs ~4*n*k fused multiply-add operations per quadrature point
+ * (forward: ~1*n*k, backward: ~3*n*k).  The arithmetic intensity of the
+ * inner loop (~0.5 FMA/byte) exceeds the machine balance point on modern
+ * hardware (e.g. M3 Max: ~0.06 FMA/byte at 350 GB/s, ~4 TFLOPS), so
+ * memory bandwidth is not the bottleneck.
+ *
+ * When checkpointing is required (working set > L2), there is an additional
+ * outer I/O cost for checkpoint writes/reads and a_batch reloads.
  *
  * C = checkpoint interval = L2_CACHE_SIZE / (k * batch_width * sizeof(double)).
  *
  * Returns estimated nanoseconds per quadrature point.
+ *
+ * Requires: FMA_NS, L2_CACHE_SIZE, L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS
+ * (from fft_config.h).
  */
 static inline double linear_roofline_cost(int n, int k, int batch_width) {
+    /* Core compute: ~4*n*k FMAs per Q-point (empirically verified within 6%
+     * against measured n=16384 at k=1638,2048,4096 on M3 Max). */
+    double compute_ns = 4.0 * n * k * FMA_NS;
+
     int C = (int)((size_t)L2_CACHE_SIZE / ((size_t)k * batch_width * sizeof(double)));
     if (C < 1) C = 1;
 
     if (C >= n) {
-        /* No checkpointing — g_store fits in L2.
-         * Forward + backward: 2 passes of n*k doubles (read+write).
-         * Per QP (amortized over BQ): 2 * n * k * 8 bytes. */
-        double bytes_per_qp = 2.0 * n * k * 8.0;
-        double bytes_per_batch = bytes_per_qp * batch_width;
-        double bw = blended_bw(bytes_per_batch);
-        return bytes_per_qp / bw;
+        /* No checkpointing — everything fits in L2, pure compute bound. */
+        return compute_ns;
     }
 
-    /* Checkpointed: local_g fits in L2 (by design of C).
+    /* Checkpointed: inner loop is compute-bound (local_g fits in L2 by
+     * design of C).  Outer I/O for checkpoint writes/reads and a_batch
+     * reloads adds a small bandwidth-bound term.
      *
-     * Inner work (L2-resident): recompute forward + backward within each
-     * segment.  2 passes of n*k doubles, all hitting L2.
-     * Per QP: 2 * n * k * 8 / L2_BW. */
-    double inner_bytes = 2.0 * n * k * 8.0;
-    double inner_time = inner_bytes / L2_BW_GBS;
-
-    /* Outer I/O (L3 and/or DRAM):
-     *   Checkpoints: (n/C) × k×BQ×8 bytes, read+write → 2×(n/C)×k×BQ×8
-     *   a_batch: n×BQ×8 bytes, read 3 times → 3×n×BQ×8
+     * Checkpoints: (n/C) × k×BQ×8 bytes, read+write → 2×(n/C)×k×BQ×8
+     * a_batch: n×BQ×8 bytes, read 3 times → 3×n×BQ×8
      * Per QP (÷BQ): 2*(n/C)*k*8 + 3*n*8 */
     double ckpt_bytes = 2.0 * ((double)n / C) * k * 8.0;
     double abatch_bytes = 3.0 * n * 8.0;
@@ -84,7 +86,7 @@ static inline double linear_roofline_cost(int n, int k, int batch_width) {
     double outer_bw = blended_bw(outer_total);
     double outer_time = outer_bytes / outer_bw;
 
-    return inner_time + outer_time;
+    return compute_ns + outer_time;
 }
 
 #endif /* COST_MODEL_H */
