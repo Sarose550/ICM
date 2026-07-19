@@ -95,6 +95,21 @@ static double time_schoolbook_pair(int conv_size, int batch, int warmup, int rep
     int blocks_corr = nparents;
     size_t shmem_corr = (size_t)(len_g + 2 * len_P) * sizeof(double);
 
+    /* Both kernels use dynamic shared memory that can exceed the default
+     * 48KB/block limit at larger conv sizes (e.g. cps=4096 -> 64KB). Opt in
+     * to the device's actual max (up to ~227KB on Blackwell) via
+     * cudaFuncSetAttribute before launching, and check for a real CUDA
+     * error afterward instead of trusting a silently-failed (near-instant,
+     * no-op) launch as if it were a real measurement. At sizes where the
+     * request exceeds even the hardware max, this correctly reports
+     * "unsupported" (-1) rather than a bogus near-zero time. */
+    size_t max_shmem = std::max(shmem_build, shmem_corr);
+    cudaFuncSetAttribute(k_schoolbook_build_smem_parent,
+                        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)max_shmem);
+    cudaFuncSetAttribute(k_schoolbook_corr_pair_smem_parent,
+                        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)max_shmem);
+    cudaGetLastError(); /* clear any "invalid value" from an over-limit request */
+
     cudaEvent_t e0, e1;
     cudaEventCreate(&e0);
     cudaEventCreate(&e1);
@@ -108,7 +123,16 @@ static double time_schoolbook_pair(int conv_size, int batch, int warmup, int rep
             d_child, stride, len_P,
             d_g_child, stride, len_out, nparents, stride, stride, stride);
     }
-    cudaStreamSynchronize(stream);
+    cudaError_t launch_err = cudaStreamSynchronize(stream);
+    if (launch_err != cudaSuccess || cudaPeekAtLastError() != cudaSuccess) {
+        cudaEventDestroy(e0);
+        cudaEventDestroy(e1);
+        cudaFree(d_child);
+        cudaFree(d_parent);
+        cudaFree(d_g_parent);
+        cudaFree(d_g_child);
+        return -1.0;
+    }
 
     /* Timing */
     std::vector<double> samples;
@@ -422,11 +446,16 @@ int main(void) {
     for (int si = 0; si < n_sizes; ++si) {
         int size = sizes[si];
         /* FFT size for this convolution: next power of 2 (or calibrated size).
-         * For ablation we use the next power of 2 as the neutral baseline. */
+         * For ablation we use the next power of 2 as the neutral baseline.
+         * `size` already IS the convolution length (see header comment), so
+         * the smallest sufficient FFT size is the smallest power of 2 >= size
+         * — matching how the real planner picks fft_n (fastest_fft_ge_gpu).
+         * An earlier draft doubled this again, which shifted every row's
+         * fused-kernel test up one octave (e.g. size=8192 tested fft_n=16384,
+         * which isn't in the supported dispatch list, silently reporting
+         * "unsupported" for a size that IS actually shipped). */
         int fft_n = 1;
         while (fft_n < size) fft_n <<= 1;
-        /* Ensure fft_n is at least 2× the conv for safe R2C (needs fft_n ≥ conv+1) */
-        if (fft_n <= size) fft_n <<= 1;
 
         for (int bi = 0; bi < n_batches; ++bi) {
             int batch = batches[bi];

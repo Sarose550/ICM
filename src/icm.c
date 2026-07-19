@@ -177,7 +177,6 @@ static void wisdom_save(void) {
     fftw_export_wisdom_to_filename(WISDOM_FILE);
 }
 
-/* Forward declarations for helpers defined below */
 static int next_pow2(int n);
 
 /* ══════════════════════════════════════════════════════════════
@@ -424,10 +423,8 @@ static void fft_cache_destroy(FFTCache *fc) {
     free(fc);
 }
 
-/* Direct-index lookup: fft_n → plan pointer. Avoids linear scan. */
+/* Binary search for plan with fft_n >= needed_n. Plans are sorted ascending. */
 static FFTPlan *fft_cache_get(FFTCache *fc, int needed_n) {
-    /* Plans are sorted ascending. The caller always passes next_pow2(L)
-     * which is an exact match for some plan. Use binary search. */
     int lo = 0, hi = fc->n_plans - 1;
     while (lo < hi) {
         int mid = (lo + hi) / 2;
@@ -505,15 +502,12 @@ static inline __attribute__((always_inline)) void correlate_school(const double 
 /* FFT vs schoolbook is now decided per-level in tree_ctx_create_ex2()
  * using calibrated FFT times from fft_config.h. No global crossover. */
 
-/* Helper: compute next power of 2 >= n */
 static inline int next_pow2(int n) {
     int p = 1; while (p < n) p <<= 1; return p;
 }
 
-/* Helper: compute next FFTW-friendly size >= n (products of 2,3,5,7).
- * FFTW is highly optimized for these composite sizes, often 30-50% faster
- * Composite FFTW-friendly sizes help at saturated levels when k is non-power-of-2.
- * k is rounded to next_fftw_size(k) (not next_pow2) to preserve the benefit. */
+/* FFTW is 30–50% faster at composite (7-smooth) sizes than arbitrary sizes.
+ * Rounding k to a smooth size rather than next_pow2 preserves this benefit. */
 
 /* Sorted array of all 7-smooth numbers up to 131072. ~500 entries = 2KB.
  * Binary search gives O(log 500) ≈ 9 comparisons without polluting L1
@@ -539,7 +533,6 @@ static void build_fftw_size_table(void) {
 /* next_fftw_size: binary search for smallest smooth number >= n.
  * Only called when next_pow2 wastes significant padding. */
 static int next_fftw_size(int n) {
-    /* Binary search in sorted smooth numbers (~2KB, stays in L1) */
     int lo = 0, hi = n_smooth - 1;
     while (lo < hi) {
         int mid = (lo + hi) >> 1;
@@ -555,10 +548,9 @@ static int next_fftw_size(int n) {
  * resulting conv_len, and pick the k' with the cheapest total. */
 static int best_k_pad(int k) {
     if (k <= 2) return k;
-    /* Power-of-2 fast path: already optimal */
+    /* Power-of-2: already optimal — no padding needed */
     if ((k & (k - 1)) == 0) return k;
 
-    /* Binary search for first smooth >= k */
     int lo = 0, hi = n_smooth - 1;
     while (lo < hi) { int mid = (lo+hi)>>1; if (smooth_nums[mid] < k) lo = mid+1; else hi = mid; }
 
@@ -587,32 +579,6 @@ static int best_k_pad(int k) {
         }
     }
     return best_k;
-}
-
-/* fastest_fft_ge: find the fastest calibrated FFT size >= n.
- * Unlike next_fftw_size (smallest smooth >= n), this picks the smooth with
- * the lowest calibrated time. Crucial because e.g. 245 (5×7²) is 1.55x slower
- * than 256 (2⁸) despite being smaller. Searches up to n*1.3 or next_pow2. */
-static int fastest_fft_ge(int n) {
-    if (n <= 1) return 2;
-    /* Power-of-2 fast path */
-    int p2 = next_pow2(n);
-    if (p2 == n) return n;
-
-    /* Binary search for first calib_size >= n */
-    int lo = 0, hi = N_CALIBRATED_SIZES - 1;
-    while (lo < hi) { int mid = (lo+hi)>>1; if (calib_sizes[mid] < n) lo = mid+1; else hi = mid; }
-
-    /* Search up to next_pow2 (which is always a valid upper bound) */
-    double best_cost = 1e18;
-    int best = p2;
-    for (int i = lo; i < N_CALIBRATED_SIZES && calib_sizes[i] <= p2; i++) {
-        if (calib_times_ns[i] < best_cost) {
-            best_cost = calib_times_ns[i];
-            best = calib_sizes[i];
-        }
-    }
-    return best;
 }
 
 /* Cyclic FFT multiply for below-saturation tree levels.
@@ -2073,7 +2039,6 @@ static void ctx_destroy(void *ctx, EngineKind ek) {
    INTEGRATION WRAPPER (OpenMP parallel over quadrature points)
    ══════════════════════════════════════════════════════════════ */
 
-/* Forward declaration */
 static double run_engine_ctx_ex(int n, const double *S, int Q,
                                 const double *payout, int k,
                                 double *equity, EquityEngine engine,

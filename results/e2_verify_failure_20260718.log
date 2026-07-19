@@ -1,0 +1,52 @@
+# E2 B200 session — ./bench_gpu_fused verify FAILURE
+# Captured from live session_stdout.log on vast.ai instance (contract 45270073,
+# B200, CUDA 13.0, offer 36083203) before instance was destroyed 2026-07-18.
+#
+# Context: patches/oom_fix.patch and patches/cufft_524k_fix.patch applied on top
+# of commit 8833c98 (tip of main as of this session), rebuilt with
+# `make bench_gpu_fused CUDA_ARCH=sm_100 CUFFTDX_INC=-I/usr/local/lib/python3.12/dist-packages/nvidia/mathdx/include`.
+#
+# Both target bugs confirmed FIXED before this failure surfaced:
+#   Step 7a: n=1,048,576 k=n  -> total=234.88 ms  B=128 engine=1  peak_vram=165803.8 MB  -> "OOM FIX: passed (RC=0)"
+#   Step 7b: n=524,288   k=n  -> total=132.57 ms  B=128 engine=1  peak_vram=103492.1 MB  -> "cuFFT FIX: passed (RC=0)"
+#
+# Step 8 (./bench_gpu_fused verify, timeout 600) then FAILED as follows (verbatim tail):
+
+PASS n=256     k=256     dist=0  err=1.333e-15  cpu=20.4 ms gpu=2.4 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=256     k=100     dist=1  err=8.884e-16  cpu=10.4 ms gpu=1.1 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=256     k=256     dist=1  err=1.776e-15  cpu=20.2 ms gpu=2.4 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=256     k=100     dist=2  err=2.158e-15  cpu=8.1 ms gpu=1.1 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=256     k=256     dist=2  err=1.726e-15  cpu=16.8 ms gpu=2.3 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=1024    k=100     dist=0  err=3.684e-15  cpu=39.8 ms gpu=3.4 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=1024    k=1024    dist=0  err=2.248e-15  cpu=63.6 ms gpu=61.1 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=1024    k=100     dist=1  err=1.447e-14  cpu=46.7 ms gpu=3.4 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=1024    k=1024    dist=1  err=7.327e-15  cpu=83.2 ms gpu=61.0 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=1024    k=100     dist=2  err=2.437e-15  cpu=39.9 ms gpu=3.3 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=1024    k=1024    dist=2  err=2.242e-15  cpu=66.5 ms gpu=61.0 ms  B=0 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=4096    k=100     dist=0  err=1.903e-15  cpu=179.4 ms gpu=0.5 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=4096    k=4096    dist=0  err=1.899e+01  cpu=310.8 ms gpu=1.0 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=4096    k=100     dist=1  err=4.562e-14  cpu=307.3 ms gpu=0.4 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=4096    k=4096    dist=1  err=1.502e-02  cpu=388.5 ms gpu=0.9 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=4096    k=100     dist=2  err=2.985e-15  cpu=170.8 ms gpu=0.4 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=4096    k=4096    dist=2  err=6.748e+00  cpu=321.2 ms gpu=0.9 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=16384   k=100     dist=0  err=5.176e-15  cpu=1293.4 ms gpu=1.5 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=16384   k=16384   dist=0  err=2.078e+01  cpu=1605.3 ms gpu=4.4 ms  B=128 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=16384   k=100     dist=1  err=1.346e-13  cpu=2660.6 ms gpu=1.5 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=16384   k=16384   dist=1  err=7.661e-03  cpu=1856.1 ms gpu=4.4 ms  B=128 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=16384   k=100     dist=2  err=2.983e-15  cpu=1182.7 ms gpu=1.4 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=16384   k=16384   dist=2  err=6.591e+00  cpu=1593.0 ms gpu=4.4 ms  B=128 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=65536   k=100     dist=0  err=2.515e-14  cpu=7616.8 ms gpu=5.4 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=65536   k=65536   dist=0  err=1.799e+01  cpu=8448.1 ms gpu=20.3 ms  B=128 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=65536   k=100     dist=1  err=7.569e-13  cpu=14858.4 ms gpu=5.4 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=65536   k=65536   dist=1  err=9.922e-01  cpu=9104.7 ms gpu=20.3 ms  B=128 tiers(cache/recomp)=0.0/0.0 ms
+PASS n=65536   k=100     dist=2  err=1.172e-14  cpu=7482.7 ms gpu=5.4 ms  B=64 tiers(cache/recomp)=0.0/0.0 ms
+FAIL n=65536   k=65536   dist=2  err=4.968e+00  cpu=8135.3 ms gpu=20.2 ms  B=128 tiers(cache/recomp)=0.0/0.0 ms
+VERIFY: FAILED
+
+# Pattern: every k=n (full top-k) case fails at n>=4096; every k=100 (partial)
+# case passes with normal FP64 error (~1e-14 to 1e-15). n=256/1024 k=n cases
+# (which use B=0, i.e. no hybrid/tree engine, likely the pure-linear or small-n
+# path) PASS. Failure onset is exactly where B>0 (hybrid engine, B=64 then 128)
+# kicks in for the k=n case. Ordinary GPU "run but don't check answer" smoke
+# tests (step 7a/7b above) did NOT catch this because they never compared
+# against a CPU reference — only checked exit code.

@@ -4,11 +4,11 @@
 set -e
 
 echo "=== Installing dependencies ==="
-apt-get update -qq && apt-get install -y -qq git make wget > /dev/null 2>&1
-pip3 install nvidia-mathdx 2>/dev/null || pip install nvidia-mathdx 2>/dev/null
+apt-get update -qq && apt-get install -y -qq git make wget python3-pip > /dev/null 2>&1
+pip3 install --break-system-packages nvidia-mathdx 2>/dev/null || pip install nvidia-mathdx 2>/dev/null
 
 echo "=== Locating cuFFTDx ==="
-MATHDX=$(python3 -c "import nvidia.mathdx; import os; print(os.path.dirname(nvidia.mathdx.__file__))" 2>/dev/null)
+MATHDX=$(python3 -c "import nvidia.mathdx; print(list(nvidia.mathdx.__path__)[0])" 2>/dev/null)
 CUFFTDX_INC="$MATHDX/include"
 if [ ! -f "$CUFFTDX_INC/cufftdx.hpp" ]; then
     echo "ERROR: cufftdx.hpp not found at $CUFFTDX_INC"

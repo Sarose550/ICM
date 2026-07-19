@@ -156,6 +156,13 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         per_q_bytes += max_cb_cn + max_pb_cn + max_pb_cn + 2 * max_pb_cn;
         per_q_bytes += max_cb_fft;
         per_q_bytes += cache_per_q;
+        /* qb>1 extras: a_qbatch[qi], inner_qbatch, block_prods_qbatch.
+         * These are allocated per q-point when qb > 1.  Added unconditionally
+         * to per_q_bytes (slightly conservative when final qb==1, which is
+         * acceptable — the overestimate only matters at the qb=1→2 boundary). */
+        per_q_bytes += (size_t)plan->n * sizeof(double);          /* a_qbatch slot */
+        per_q_bytes += (size_t)plan->n * sizeof(double);          /* inner_qbatch share */
+        per_q_bytes += (size_t)plan->N_tree * (plan->B + 1) * sizeof(double); /* block_prods_qbatch */
         /* Reserve ~5% for cuFFT workspace, driver overhead, and safety margin.
          * The per_q_bytes estimate is accurate (includes spec/scratch/cache),
          * so we can use most of the remaining VRAM. */

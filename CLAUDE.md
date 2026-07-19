@@ -155,6 +155,17 @@ tools/
   gen_gpu_calib_lib.py — generate GPU calibration library selection arrays
   plot_contour.py      — matplotlib contour/heatmap plotting
   plot_heatmap.py      — matplotlib GPU heatmap plotting
+  gpu_phase_profile.cu — per-phase GPU timing breakdown (build/prop/leaf)
+  gpu_sample_plans.cu  — sample planner decisions across an (n,k) grid
+  sample_plans.c       — CPU analogue of gpu_sample_plans
+  test_cpu_cost_model.c — validate CPU cost-model dispatch against measured times
+  test_gpu_cost_model.cu — validate GPU cost-model dispatch against measured times
+  run_b200_campaign.sh — full B200 benchmark campaign (calibrate + heatmap + frontier)
+  setup_b200.sh        — one-time B200 instance setup (cuFFTDx via nvidia-mathdx)
+  tier_ablation.cu     — direct schoolbook/fused/cuFFT timing comparison per level
+  fit_cost_model.py    — fit CPU cost-model constants from calibration data
+  fit_gpu_cost_model.py — fit GPU cost-model constants from calibration data
+  run_vkfft_calib.sh   — VkFFT dual-dispatch calibration helper
 devices/
   m3_max/              — Apple M3 Max calibration
     fft_config.h       — calibrated FFT times + cost model constants

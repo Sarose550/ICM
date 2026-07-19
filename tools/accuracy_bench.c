@@ -101,6 +101,14 @@ static void make_stacks_adversarial(int n, double *S) {
         S[i] = 1.0;
 }
 
+/* Extreme adversarial: ratio bounded by 1e9 — the practical worst case
+ * that motivated the choice of Gaussian quadrature over tanh-sinh. */
+static void make_stacks_adv_1e9(int n, double *S) {
+    S[0] = 1e9;
+    for (int i = 1; i < n; i++)
+        S[i] = 1.0;
+}
+
 static void make_stacks_geometric(int n, double *S) {
     for (int i = 0; i < n; i++)
         S[i] = pow(2.0, (double)i);
@@ -187,11 +195,12 @@ int main(void) {
     int Q_values[] = {4, 8, 16, 32, 64, 128, 256, 512, 1024};
     int n_Q = sizeof(Q_values) / sizeof(Q_values[0]);
 
-    const char *dist_names[] = {"uniform", "adversarial", "geometric"};
+    const char *dist_names[] = {"uniform", "adversarial", "geometric",
+                                "adv_1e9"};
     typedef void (*StackFn)(int, double*);
     StackFn dist_fns[] = {make_stacks_uniform, make_stacks_adversarial,
-                          make_stacks_geometric};
-    int n_dists = 3;
+                          make_stacks_geometric, make_stacks_adv_1e9};
+    int n_dists = 4;
 
     /* CSV header */
     printf("scheme,n,k,Q,max_abs_err,max_rel_err,payout_type,distribution\n");

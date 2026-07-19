@@ -39,6 +39,50 @@ double ns = icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
 
 Returns wall-clock time in nanoseconds. All correctness tests pass at < 5e-12 relative error.
 
+## How It Works
+
+**The problem.** ICM computes each poker-tournament player's expected dollar
+equity given chip stacks and a prize structure. The naive answer sums over
+$n!$ elimination orderings -- infeasible beyond $n \approx 23$.
+
+**The generating-function quadrature trick.** Each player's equity rewrites
+as a 1D integral of coefficients of a leave-one-out generating function
+$Q_i(x;v) = \prod_{j \neq i}(a_j(v) + b_j(v)x)$. Under a change of variables
+$v = \Phi(y)$ (normal CDF mapping), the integrand becomes rapidly decaying
+and is evaluated at $Q=256$ quadrature nodes, converging to double-precision
+accuracy. The heavy lifting is computing an inner product of the reversed
+payout vector with the degree-$(k-1)$ truncation of $Q_i$ for all $n$ players
+simultaneously at each quadrature point.
+
+**Three CPU engines with cost-based dispatch.** The library picks the
+fastest engine per $(n,k)$ pair via `select_engine()`, which compares a
+roofline linear-cost estimate against a calibrated hybrid-cost model -- no
+hand-tuned crossover thresholds:
+
+1. **Linear (batched):** O(nk) forward-backward pass. Interleaves BQ=8
+   quadrature points for SIMD (NEON on Apple Silicon, AVX-512 on Zen 4).
+   Best for small $k$.
+2. **Hybrid (block + tree):** Partitions $n$ players into cost-model-selected
+   blocks, builds block products sequentially, then runs an FFT-accelerated
+   binary subproduct tree over the blocks. Best for large $k$.
+3. **Tree (pure FFT):** FFT-accelerated subproduct tree without blocking.
+   Slightly slower than hybrid in serial but wins in parallel.
+
+**The FFT infrastructure.** All tree operations use offline-calibrated
+per-size FFT costs across the 7-smooth ($2^a 3^b 5^c 7^d$) size family.
+`best_fft_config()` searches for the optimal FFT size including
+wrap-correction tradeoffs: a smaller FFT plus a schoolbook correction for
+aliased terms often beats padding to the next power of two. The propagation
+phase shares the forward FFT of the parent g-vector across both children
+and reuses cached FFT(P) from the build phase.
+
+**GPU path (cuFFTDx fused-kernel).** On NVIDIA B200/H200, `src/gpu/`
+implements a planner, execution engine, and API. The planner assigns each
+tree level to one of three tiers -- schoolbook (small degrees), cuFFTDx
+fused kernels (medium), or batched cuFFT (large) -- and executes via CUDA
+graph capture for near-zero launch overhead. See the Performance tables
+below for current throughput numbers.
+
 ## Performance
 
 Three engines with cost-based automatic dispatch:
@@ -56,11 +100,11 @@ Three engines with cost-based automatic dispatch:
 | n | k=10 | k=100 | k=n/2 | k=n | | k=10 | k=100 | k=n/2 | k=n |
 |---|------|-------|-------|-----|-|------|-------|-------|-----|
 | | **M3 Max** |||| | **Zen 4 7950X** ||||
-| 1024 | 3 | 16 | 24 | 27 | | 5 | 15 | 22 | 24 |
-| 4096 | 7 | 46 | 137 | 147 | | 7 | 28 | 119 | 130 |
-| 8192 | 14 | 115 | 318 | 350 | | 15 | 56 | 287 | 296 |
-| 16384 | 28 | 230 | 709 | 752 | | 29 | 114 | 640 | 690 |
-| 65536 | 135 | 937 | 4017 | 4392 | | 142 | 510 | 3473 | 3861 |
+| 1024 | 3 | 16 | 24 | 27 | | 1 | 6 | 21 | 23 |
+| 4096 | 7 | 46 | 137 | 147 | | 7 | 24 | 113 | 125 |
+| 8192 | 14 | 115 | 318 | 350 | | 14 | 49 | 271 | 298 |
+| 16384 | 28 | 230 | 709 | 752 | | 26 | 109 | 661 | 702 |
+| 65536 | 135 | 937 | 4017 | 4392 | | 114 | 395 | 3573 | 3937 |
 
 ### 16-thread parallel (ms, Q=256)
 
@@ -134,7 +178,8 @@ Requires CUDA toolkit and cuFFTDx. VkFFT is optional for dual-dispatch FFT
 |---|-----|------|
 | 65,536 | 65,536 | 24.75 ms |
 | 262,144 | 262,144 | 117.90 ms |
-| 1,441,792 | 1,441,792 | 937 ms |
+| 1,441,792 | 1,441,792 | 866 ms |
+| 1,572,864 | 1,572,864 | 1,148 ms |
 
 See `devices/b200/gpu_fft_config.h` for calibration data.
 

@@ -42,8 +42,8 @@ def _find_library():
 
     # Search order:
     # 1. ICM_LIB_PATH environment variable (explicit override)
-    # 2. Build directory relative to this package (../../../build/)
-    # 3. Project root relative to this package (../../../)
+    # 2. <project_root>/build/ (relative to this file: ../../build/)
+    # 3. <project_root>/ (relative to this file: ../../)
     # 4. System library paths via ctypes.util.find_library
 
     env_path = os.environ.get("ICM_LIB_PATH")

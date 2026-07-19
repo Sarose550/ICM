@@ -40,7 +40,8 @@ pip install -e .        # editable install (for development)
 pip install -e .[test]  # with test dependencies
 ```
 
-The `pip install` step automatically builds the shared library.
+The `pip install` step builds the shared library automatically (requires a C
+compiler and FFTW3; see Prerequisites).
 
 ## Usage
 

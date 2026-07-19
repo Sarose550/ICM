@@ -1,0 +1,20 @@
+--- a/src/gpu/gpu_plan.cu
++++ b/src/gpu/gpu_plan.cu
+@@ -595,7 +595,7 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
+         int g_eff_max = is_below ? (cps + cps / 2) : pgsz;
+         int g_eff = std::min(g_eff_needed, g_eff_max);
+ 
+-        int conv_build = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
++        int conv_build = is_below ? (2 * (cps / 2) + 1) : (2 * cps - 1);
+         int conv_corr = g_eff + p_eff - 1;
+         double wrap_scale = wrap_serial_penalty_gpu(nn[ell]);
+         double school_build = (double)(d_eff + 1) * (double)(d_eff + 1) * fma_ns;
+@@ -805,7 +805,7 @@ bool build_plan_metadata(GpuPlan *plan) {
+         int g_eff_needed = out_needed + p_eff - 1;
+         int g_eff_max = is_below ? (cps + cps / 2) : pgsz;
+         int g_eff = std::min(g_eff_needed, g_eff_max);
+-        int conv_build = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
++        int conv_build = is_below ? (2 * (cps / 2) + 1) : (2 * cps - 1);
+         int conv_corr = g_eff + p_eff - 1;
+         int d_eff = is_below ? (cps / 2) : (cps - 1);
+         double wrap_scale = wrap_serial_penalty_gpu(nparents);

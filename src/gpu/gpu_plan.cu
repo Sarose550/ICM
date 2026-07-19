@@ -576,6 +576,12 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         per_q += max_cb_cn + max_pb_cn + max_pb_cn + 2 * max_pb_cn;
         per_q += max_cb_fft;   /* FFT scratch buffer */
         per_q += cache_per_q;  /* paired FFT cache */
+        /* qb>1 extras: a_qbatch[qi], inner_qbatch, block_prods_qbatch.
+         * Kept in sync with gpu_api.cu per_q_bytes so the timing heuristic
+         * (assumed_qb) does not drift from the real budget check. */
+        per_q += (size_t)n * sizeof(double);          /* a_qbatch slot */
+        per_q += (size_t)n * sizeof(double);          /* inner_qbatch share */
+        per_q += (size_t)N * (B + 1) * sizeof(double); /* block_prods_qbatch */
 
         size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.90);
         int est_qb = (per_q > 0) ? (int)(budget / per_q) : Q_BATCH_MAX;
@@ -595,7 +601,7 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         int g_eff_max = is_below ? (cps + cps / 2) : pgsz;
         int g_eff = std::min(g_eff_needed, g_eff_max);
 
-        int conv_build = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
+        int conv_build = is_below ? (2 * (cps / 2) + 1) : (2 * cps - 1);
         int conv_corr = g_eff + p_eff - 1;
         double wrap_scale = wrap_serial_penalty_gpu(nn[ell]);
         double school_build = (double)(d_eff + 1) * (double)(d_eff + 1) * fma_ns;
@@ -805,7 +811,7 @@ bool build_plan_metadata(GpuPlan *plan) {
         int g_eff_needed = out_needed + p_eff - 1;
         int g_eff_max = is_below ? (cps + cps / 2) : pgsz;
         int g_eff = std::min(g_eff_needed, g_eff_max);
-        int conv_build = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
+        int conv_build = is_below ? (2 * (cps / 2) + 1) : (2 * cps - 1);
         int conv_corr = g_eff + p_eff - 1;
         int d_eff = is_below ? (cps / 2) : (cps - 1);
         double wrap_scale = wrap_serial_penalty_gpu(nparents);
@@ -1081,6 +1087,32 @@ bool device_sort_players(GpuPlan *plan) {
 
 /* ── cuFFT plan creation ───────────────────────────────────────── */
 
+/* Check whether batch × n would overflow signed 32-bit internally in cuFFT.
+ * cufftMakePlanMany takes int parameters; very large batch×size products
+ * can overflow cuFFT's internal 32-bit indexing, producing
+ * CUFFT_INTERNAL_ERROR (code 5).  Threshold: batch × max(n, dist) ≥ 2^31.
+ *
+ * At n=524,288 with qb=256 and child_batch=16: 256×16×524,288 = 2^31. */
+static bool cufft_batch_would_overflow_32bit(int n, int batch, int real_dist) {
+    long long span = (real_dist > n) ? real_dist : n;
+    return ((long long)batch * span) > 2147483648LL;
+}
+
+/* Detection of the 64-bit cuFFT API (cufftMakePlanMany64).
+ * Available since CUDA 11.0. */
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 11000
+#define ICM_HAS_CUFFT_64BIT 1
+#else
+#define ICM_HAS_CUFFT_64BIT 0
+#endif
+
+/* Forward declaration for 64-bit cuFFT API (may not be in all headers). */
+#if ICM_HAS_CUFFT_64BIT
+extern "C" cufftResult cufftMakePlanMany64(cufftHandle, int, long long*,
+    long long*, long long, long long, long long*, long long, long long,
+    cufftType, long long, size_t*);
+#endif
+
 bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist) {
     if (real_dist <= 0) real_dist = n;
     if (!CUFFT_OK(cufftCreate(plan))) return false;
@@ -1092,20 +1124,44 @@ bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_d
     int n_arr[1] = {n};
     int cn = n / 2 + 1;
     size_t work_size = 0;
+    bool use_64bit = ICM_HAS_CUFFT_64BIT && cufft_batch_would_overflow_32bit(n, batch, real_dist);
+
     if (r2c) {
-        int ie[1] = {real_dist};
-        int oe[1] = {cn};
-        if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
-                                        ie, 1, real_dist,
-                                        oe, 1, cn,
-                                        CUFFT_D2Z, batch, &work_size))) return false;
+        if (use_64bit) {
+            long long n64[1] = {(long long)n};
+            long long ie64[1] = {(long long)real_dist};
+            long long oe64[1] = {(long long)cn};
+            if (!CUFFT_OK(cufftMakePlanMany64(*plan, rank, n64,
+                                              ie64, 1LL, (long long)real_dist,
+                                              oe64, 1LL, (long long)cn,
+                                              CUFFT_D2Z, (long long)batch,
+                                              &work_size))) return false;
+        } else {
+            int ie[1] = {real_dist};
+            int oe[1] = {cn};
+            if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
+                                            ie, 1, real_dist,
+                                            oe, 1, cn,
+                                            CUFFT_D2Z, batch, &work_size))) return false;
+        }
     } else {
-        int ie[1] = {cn};
-        int oe[1] = {real_dist};
-        if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
-                                        ie, 1, cn,
-                                        oe, 1, real_dist,
-                                        CUFFT_Z2D, batch, &work_size))) return false;
+        if (use_64bit) {
+            long long n64[1] = {(long long)n};
+            long long ie64[1] = {(long long)cn};
+            long long oe64[1] = {(long long)real_dist};
+            if (!CUFFT_OK(cufftMakePlanMany64(*plan, rank, n64,
+                                              ie64, 1LL, (long long)cn,
+                                              oe64, 1LL, (long long)real_dist,
+                                              CUFFT_Z2D, (long long)batch,
+                                              &work_size))) return false;
+        } else {
+            int ie[1] = {cn};
+            int oe[1] = {real_dist};
+            if (!CUFFT_OK(cufftMakePlanMany(*plan, rank, n_arr,
+                                            ie, 1, cn,
+                                            oe, 1, real_dist,
+                                            CUFFT_Z2D, batch, &work_size))) return false;
+        }
     }
     return true;
 }
@@ -1325,6 +1381,8 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
 }
 
 bool allocate_plan_device_memory(GpuPlan *plan) {
+    int arena_retries = 0;
+retry_arena:
     if (!CUDA_OK(cudaStreamCreate(&plan->stream_compute))) return false;
     if (!CUDA_OK(cudaStreamCreate(&plan->stream_aux))) return false;
     if (!CUDA_OK(cudaEventCreateWithFlags(&plan->evt_a_ready[0], cudaEventDisableTiming))) return false;
@@ -1410,7 +1468,23 @@ bool allocate_plan_device_memory(GpuPlan *plan) {
     if (getenv("ICM_GPU_DEBUG_PLAN"))
         fprintf(stderr, "  arena_sz=%.1f MB  fft_scratch=%.1f MB  spec=(%.1f,%.1f,%.1f,%.1f) MB\n",
             arena_sz/1e6, fft_scratch_bytes/1e6, mb_si/1e6, mb_sm/1e6, mc_si/1e6, mc_sm/1e6);
-    if (!CUDA_OK(cudaMalloc(&arena, arena_sz))) return false;
+    {
+        cudaError_t arena_err = cudaMalloc(&arena, arena_sz);
+        if (arena_err != cudaSuccess) {
+            if (plan->q_batch > 1 && arena_retries < 4) {
+                plan->q_batch = std::max(1, plan->q_batch / 2);
+                arena_retries++;
+                cudaStreamDestroy(plan->stream_compute); plan->stream_compute = nullptr;
+                cudaStreamDestroy(plan->stream_aux);     plan->stream_aux = nullptr;
+                cudaEventDestroy(plan->evt_a_ready[0]);  plan->evt_a_ready[0] = nullptr;
+                cudaEventDestroy(plan->evt_a_ready[1]);  plan->evt_a_ready[1] = nullptr;
+                goto retry_arena;
+            }
+            set_last_errorf("CUDA arena alloc(%zu) failed after %d retries: %s",
+                            arena_sz, arena_retries, cudaGetErrorString(arena_err));
+            return false;
+        }
+    }
     if (!CUDA_OK(cudaMemset(arena, 0, arena_sz))) return false;
     plan->arena_base = arena;
     plan->arena_total_bytes = arena_sz;

@@ -65,17 +65,17 @@ Threads  Serial  Parallel  Speedup
 
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
-64       0      1      1      0      0      1
-128      1      1      2      1      1      2
-256      1      2      4      3      4      4
-512      3      5      7      8      9     10
-1024     5      9     15     19     22     24
-2048     3      7     15     47     51     55
-4096     7     14     28    109    119    130
-8192    15     29     56    251    287    296
-16384   29     65    114    604    640    690
-32768   71    132    219   1360   1517   1597
-65536  142    259    510   3198   3473   3861
+64       0      0      0      0      0      0
+128      0      0      1      0      0      1
+256      0      1      2      1      2      4
+512      1      2      3      4      8     10
+1024     1      4      6     20     21     23
+2048     3      8     13     44     49     53
+4096     7     16     24    102    113    125
+8192    14     30     49    237    271    298
+16384   26     66    109    577    661    702
+32768   58    110    201   1396   1514   1608
+65536  114    252    395   3285   3573   3937
 ```
 
 ### 16-thread parallel (ms, Q=256, uniform stacks, median of 5)
@@ -99,8 +99,8 @@ n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
 
 ```
 Threads  Serial  Parallel  Speedup
-1        296     —         —
-16       —       24        12.3x
+1        298     —         —
+16       —       24        12.4x
 ```
 
 ### 1-second threshold: n ≈ 19,904 (k=n, single-threaded)
@@ -109,9 +109,8 @@ Threads  Serial  Parallel  Speedup
 
 ### MKL dual dispatch
 
-FFTW+MKL per-size best-of-both via `dlopen`. MKL wins 181/749 smooth sizes
-(mostly small composites 14-64, plus 131072 at 1.15x). FFTW wins 568/749
-(dominates 128-65536 with PATIENT wisdom, 1.02-1.42x faster).
+AOCL-FFTW+MKL per-size best-of-both via `dlopen`. AOCL-FFTW wins 637/749 smooth sizes,
+MKL wins 112/749 (mostly small composites 14-64, plus 131072 at 1.15x).
 `calib_lib[]` array in `fft_config.h` drives per-plan library selection.
 
 ---
@@ -121,12 +120,12 @@ FFTW+MKL per-size best-of-both via `dlopen`. MKL wins 181/749 smooth sizes
 
 | k     | M3 Max | Zen 4 |
 | ----- | ------ | ----- |
-| k=10  | L:14   | L:15  |
-| k=50  | L:50   | L:29  |
-| k=100 | L:115  | L:56  |
-| k=n/4 | H:287  | H:251 |
-| k=n/2 | H:318  | H:287 |
-| k=n   | H:350  | H:296 |
+| k=10  | L:14   | L:14  |
+| k=50  | L:50   | L:30  |
+| k=100 | L:115  | L:49  |
+| k=n/4 | H:287  | H:237 |
+| k=n/2 | H:318  | H:271 |
+| k=n   | H:350  | T:298 |
 
 
 Zen 4 wins at all k values: ~2x faster at small k (AVX-512 linear engine),
