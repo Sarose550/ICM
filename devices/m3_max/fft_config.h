@@ -145,10 +145,12 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 
 /* INDEP_PAIR_RATIO: cost of correlate_fft_pair (shared g, fresh P FFTs) / full pipeline.
  * = (fwd_g + 2×fwd_P_rev + 2×pw + 2×ifft) / (2×fwd + pw + ifft)
- * M3 Max: (0.30 + 2×0.30 + 2×0.045 + 2×0.32) / 1.0 ≈ 1.63.
- * Original estimate was 1.25; the measured value should be used. */
+ * M3 Max: (0.30 + 2×0.30 + 2×0.045 + 2×0.32) / (2×0.30 + 0.045 + 0.32)
+ *       = 1.63 / 0.965 ≈ 1.69.
+ * Original estimate (1.25) never divided by the denominator -- it was the
+ * numerator sum, not the ratio. */
 #ifndef INDEP_PAIR_RATIO
-#define INDEP_PAIR_RATIO 1.25
+#define INDEP_PAIR_RATIO 1.69
 #endif
 
 /* L2_CACHE_SIZE: per-core L2 in bytes. Used for batched linear checkpointing.
