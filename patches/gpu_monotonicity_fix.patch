@@ -1,0 +1,46 @@
+diff --git a/src/gpu/gpu_exec.cu b/src/gpu/gpu_exec.cu
+index f692f79..0000000 100644
+--- a/src/gpu/gpu_exec.cu
++++ b/src/gpu/gpu_exec.cu
+@@ -24,13 +24,39 @@
+ }
+ 
+ int single_kernel_max_n(int k) {
+-    (void)k;
+     const char *env = getenv("ICM_GPU_SINGLE_KERNEL_MAX_N");
+     if (env && env[0]) {
+         int v = atoi(env);
+         if (v > 0) return v;
+     }
+-    return 1024;
++    /* The single-kernel path does O(n*k*log n) schoolbook work per Q-point
++     * within a single CUDA block (one block per Q-point).  When k is small
++     * (e.g., k=2 for heads-up ICM), this is faster than the overhead of
++     * plan creation + cuFFT plan setup + HBM allocation + multi-kernel
++     * launch.  But when k is large (k ~ n, winner-take-all), the schoolbook
++     * cost O(k^2) dominates and the single kernel serialises all work within
++     * one block, leaving the GPU severely underutilised.
++     *
++     * The hybrid engine (plan creation + FFT-based tree) is available for
++     * all n and is faster at large k even for small n.  This function now
++     * returns a k-dependent cutoff: permissive for small-k (typical poker
++     * payout structures), restrictive for large-k (worst-case schoolbook).
++     *
++     * Thresholds are conservative and tunable via the env var above.  The
++     * 200KB shared-memory gate in icm_gpu_equity provides an independent
++     * backstop: if the single-kernel tree does not fit in shmem at a given n
++     * even though this function authorises it, the dispatch falls through to
++     * the hybrid path. */
++    if (k <= 64) {
++        return 1024;
++    } else if (k <= 256) {
++        return 512;
++    } else if (k <= 512) {
++        return 256;
++    }
++    /* k > 512: only use single kernel for trivially small n where plan
++     * creation overhead would dominate. */
++    return 128;
+ }
+ 
+ /* ── destroy_fft_buffers / destroy_plan ────────────────────────── */

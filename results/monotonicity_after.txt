@@ -1,0 +1,24 @@
+=== n=512 k=512 AFTER ===
+run=3  total=0.14 ms  B=32  engine=1  peak_vram=37.3 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=0.14 ms  (n=512 k=512 Q=256)
+=== n=768 k=768 AFTER ===
+run=3  total=0.26 ms  B=24  engine=1  peak_vram=80.7 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=0.26 ms  (n=768 k=768 Q=256)
+=== n=1024 k=1024 AFTER ===
+run=3  total=0.23 ms  B=32  engine=1  peak_vram=82.5 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=0.23 ms  (n=1024 k=1024 Q=256)
+=== n=1280 k=1280 AFTER ===
+run=3  total=0.37 ms  B=40  engine=1  peak_vram=148.2 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=0.37 ms  (n=1280 k=1280 Q=256)
+=== n=1536 k=1536 AFTER ===
+run=3  total=0.40 ms  B=48  engine=1  peak_vram=150.7 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=0.40 ms  (n=1536 k=1536 Q=256)
+=== n=2048 k=2048 AFTER ===
+run=3  total=0.48 ms  B=32  engine=1  peak_vram=181.1 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=0.48 ms  (n=2048 k=2048 Q=256)
+=== n=3072 k=3072 AFTER ===
+run=3  total=0.78 ms  B=48  engine=1  peak_vram=381.7 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=0.78 ms  (n=3072 k=3072 Q=256)
+=== n=4096 k=4096 AFTER ===
+run=3  total=0.91 ms  B=64  engine=1  peak_vram=425.2 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
+best=0.91 ms  (n=4096 k=4096 Q=256)
