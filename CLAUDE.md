@@ -177,7 +177,6 @@ devices/
     gpu_fft_config.h   — GPU FFT calibration data
   h200/                — NVIDIA H200 GPU (placeholder)
 python/                — Python ctypes bindings (pip install)
-paper/                 — LaTeX paper + BibTeX
 Makefile               — build system
 RESULTS.md             — performance grid and optimization history
 OPTIMIZATION_GUIDE.md  — detailed optimization notes + porting guide
