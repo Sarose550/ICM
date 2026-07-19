@@ -1079,6 +1079,9 @@ typedef struct {
     int corr_fft_n[MAX_TREE_LEVELS];         /* FFT size for correlate */
     int corr_wrap_m[MAX_TREE_LEVELS];        /* wrap coefficient count for cyclic correlate */
     int use_fft[MAX_TREE_LEVELS];            /* 1 = use FFT, 0 = schoolbook (per-level decision) */
+    int n_hot_blocks;                        /* 0 = all hot (full-equity fast path); >0 = number
+                                                of target-containing leaf blocks clustered at
+                                                the front (subset pruning). */
 } TreeCtx;
 
 /* Create tree context. leaf_degree=1 for standard tree, B for hybrid.
@@ -1441,7 +1444,16 @@ static void tree_build_levels(TreeCtx *tc) {
 
 /* Propagate g-vectors top-down through the tree.
  * k: number of payout terms (original, not padded).
- * Returns pointer to leaf-level g vectors. */
+ * Returns pointer to leaf-level g vectors.
+ *
+ * When tc->n_hot_blocks > 0 (subset pruning), hot blocks are clustered at
+ * leaf positions [0, n_hot_blocks).  Internal nodes whose entire leaf range
+ * is >= n_hot_blocks are "cold": their g-buffers are never read downstream,
+ * so we skip correlate calls into them and zero-fill instead.  This saves
+ * one correlate per cold internal node.
+ *
+ * The fast path (n_hot_blocks == 0, full-equity) is branch-free beyond the
+ * initial check and uses the original pair-correlate loop unchanged. */
 static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
     int L = tc->L;
     int *psz = tc->psz, *nn = tc->nn;
@@ -1456,6 +1468,15 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
     memset(g_parent, 0, (size_t)nn[top] * root_gsz * sizeof(double));
     int copy = (k < root_gsz) ? k : root_gsz;
     memcpy(g_parent, payout, copy * sizeof(double));
+
+    /* ── Subset pruning: precompute hot-node counts per level ── */
+    int n_hot = tc->n_hot_blocks;
+    int n_hot_level[MAX_TREE_LEVELS];
+    if (n_hot > 0) {
+        n_hot_level[0] = n_hot;
+        for (int ell = 1; ell < tc->L; ell++)
+            n_hot_level[ell] = (n_hot_level[ell-1] + 1) / 2;
+    }
 
     for (int ell = top; ell >= 1; ell--) {
         int pgsz = psz[ell], cgsz = psz[ell-1], cps = psz[ell-1];
@@ -1475,32 +1496,118 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
 
         int nr_parent = tc->n_real[ell];
         int nr_child = tc->n_real[ell-1];
-        for (int j = 0; j < nr_parent; j++) {
-            double *gp = g_parent + (size_t)j * pgsz;
-            double *gL = g_child + (size_t)(2*j) * cgsz;
-            if (2*j+1 >= nr_child) {
-                int cp = (out_needed < pgsz) ? out_needed : pgsz;
-                memcpy(gL, gp, cp * sizeof(double));
-                if (cp < out_needed) memset(gL + cp, 0, (out_needed - cp) * sizeof(double));
-            } else {
-                double *PL = child_base + (size_t)(2*j) * cps;
-                double *PR = child_base + (size_t)(2*j+1) * cps;
-                double *gR = g_child + (size_t)(2*j+1) * cgsz;
-                if (use_fft && cache_fft) {
-                    const fftw_complex *fft_R = tc->fft_coeff[ell] + (size_t)(2*j+1)*cn;
-                    const fftw_complex *fft_L = tc->fft_coeff[ell] + (size_t)(2*j)*cn;
-                    int cwm = tc->corr_wrap_m[ell];
-                    correlate_fft_cached_pair_wrap(gp, g_eff, PL, PR, p_eff,
-                                                   gL, gR, out_needed,
-                                                   tc->fft, fft_L, fft_R,
-                                                   cached_fft_n, cwm);
-                } else if (use_fft) {
-                    correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
-                                       gL, gR, out_needed, tc->fft,
-                                       tc->corr_fft_n[ell]);
+
+        /* Fast path: full-equity or all children hot. */
+        if (n_hot == 0 || n_hot_level[ell-1] >= nr_child) {
+            for (int j = 0; j < nr_parent; j++) {
+                double *gp = g_parent + (size_t)j * pgsz;
+                double *gL = g_child + (size_t)(2*j) * cgsz;
+                if (2*j+1 >= nr_child) {
+                    int cp = (out_needed < pgsz) ? out_needed : pgsz;
+                    memcpy(gL, gp, cp * sizeof(double));
+                    if (cp < out_needed) memset(gL + cp, 0, (out_needed - cp) * sizeof(double));
                 } else {
-                    correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
-                    correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
+                    double *PL = child_base + (size_t)(2*j) * cps;
+                    double *PR = child_base + (size_t)(2*j+1) * cps;
+                    double *gR = g_child + (size_t)(2*j+1) * cgsz;
+                    if (use_fft && cache_fft) {
+                        const fftw_complex *fft_R = tc->fft_coeff[ell] + (size_t)(2*j+1)*cn;
+                        const fftw_complex *fft_L = tc->fft_coeff[ell] + (size_t)(2*j)*cn;
+                        int cwm = tc->corr_wrap_m[ell];
+                        correlate_fft_cached_pair_wrap(gp, g_eff, PL, PR, p_eff,
+                                                       gL, gR, out_needed,
+                                                       tc->fft, fft_L, fft_R,
+                                                       cached_fft_n, cwm);
+                    } else if (use_fft) {
+                        correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
+                                           gL, gR, out_needed, tc->fft,
+                                           tc->corr_fft_n[ell]);
+                    } else {
+                        correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
+                        correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
+                    }
+                }
+            }
+        } else {
+            /* Subset-pruned path: per-child hot/cold checks.
+             * Hot leaves are at positions [0, nh_child).  A child at position
+             * c is hot iff c < nh_child.  For each parent, we dispatch to
+             * pair-correlate (both hot), single-correlate (one hot), or
+             * zero-fill (both cold). */
+            int nh_child = n_hot_level[ell-1];
+            int cwm = tc->corr_wrap_m[ell];
+            for (int j = 0; j < nr_parent; j++) {
+                double *gp = g_parent + (size_t)j * pgsz;
+                double *gL = g_child + (size_t)(2*j) * cgsz;
+                int left_exists  = (2*j   < nr_child);
+                int right_exists = (2*j+1 < nr_child);
+                int left_hot  = left_exists  && (2*j   < nh_child);
+                int right_hot = right_exists && (2*j+1 < nh_child);
+
+                if (!right_exists) {
+                    /* Single child (padding leaf or cold). */
+                    if (left_hot) {
+                        int cp = (out_needed < pgsz) ? out_needed : pgsz;
+                        memcpy(gL, gp, cp * sizeof(double));
+                        if (cp < out_needed) memset(gL + cp, 0, (out_needed - cp) * sizeof(double));
+                    } else {
+                        memset(gL, 0, (size_t)cgsz * sizeof(double));
+                    }
+                } else if (left_hot && right_hot) {
+                    /* Both children hot — use pair correlate. */
+                    double *PL = child_base + (size_t)(2*j) * cps;
+                    double *PR = child_base + (size_t)(2*j+1) * cps;
+                    double *gR = g_child + (size_t)(2*j+1) * cgsz;
+                    if (use_fft && cache_fft) {
+                        const fftw_complex *fft_R = tc->fft_coeff[ell] + (size_t)(2*j+1)*cn;
+                        const fftw_complex *fft_L = tc->fft_coeff[ell] + (size_t)(2*j)*cn;
+                        correlate_fft_cached_pair_wrap(gp, g_eff, PL, PR, p_eff,
+                                                       gL, gR, out_needed,
+                                                       tc->fft, fft_L, fft_R,
+                                                       cached_fft_n, cwm);
+                    } else if (use_fft) {
+                        correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
+                                           gL, gR, out_needed, tc->fft,
+                                           tc->corr_fft_n[ell]);
+                    } else {
+                        correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
+                        correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
+                    }
+                } else if (left_hot && !right_hot) {
+                    /* Only left child hot: single-correlate gp × PR → gL. */
+                    double *PR = child_base + (size_t)(2*j+1) * cps;
+                    double *gR = g_child + (size_t)(2*j+1) * cgsz;
+                    memset(gR, 0, (size_t)cgsz * sizeof(double));
+                    if (use_fft && cache_fft) {
+                        const fftw_complex *fft_R = tc->fft_coeff[ell] + (size_t)(2*j+1)*cn;
+                        correlate_fft_cached_wrap(gp, g_eff, PR, p_eff, gL, out_needed,
+                                                  tc->fft, fft_R, cached_fft_n, cwm);
+                    } else if (use_fft) {
+                        correlate_fft(gp, g_eff, PR, p_eff, gL, out_needed,
+                                      tc->fft, tc->corr_fft_n[ell]);
+                    } else {
+                        correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
+                    }
+                } else if (!left_hot && right_hot) {
+                    /* Only right child hot: single-correlate gp × PL → gR. */
+                    double *PL = child_base + (size_t)(2*j) * cps;
+                    double *gR = g_child + (size_t)(2*j+1) * cgsz;
+                    memset(gL, 0, (size_t)cgsz * sizeof(double));
+                    if (use_fft && cache_fft) {
+                        const fftw_complex *fft_L = tc->fft_coeff[ell] + (size_t)(2*j)*cn;
+                        correlate_fft_cached_wrap(gp, g_eff, PL, p_eff, gR, out_needed,
+                                                  tc->fft, fft_L, cached_fft_n, cwm);
+                    } else if (use_fft) {
+                        correlate_fft(gp, g_eff, PL, p_eff, gR, out_needed,
+                                      tc->fft, tc->corr_fft_n[ell]);
+                    } else {
+                        correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
+                    }
+                } else {
+                    /* Both children cold — zero-fill both. */
+                    double *gR = g_child + (size_t)(2*j+1) * cgsz;
+                    memset(gL, 0, (size_t)cgsz * sizeof(double));
+                    memset(gR, 0, (size_t)cgsz * sizeof(double));
                 }
             }
         }
@@ -1814,6 +1921,20 @@ static const double *qsort_S_ptr;
 static int cmp_stack_desc(const void *a, const void *b) {
     double sa = qsort_S_ptr[*(const int *)a];
     double sb = qsort_S_ptr[*(const int *)b];
+    return (sa > sb) ? -1 : (sa < sb) ? 1 : 0;
+}
+
+/* Two-level comparator for target-locality clustering.
+ * Primary key: player's block has targets (descending — hot blocks first).
+ * Secondary key: stack size descending (preserves within-block divide direction). */
+static const uint8_t *cluster_block_has;
+static int cluster_B;
+static int cmp_cluster(const void *a, const void *b) {
+    int ia = *(const int *)a, ib = *(const int *)b;
+    int ha = cluster_block_has[ia / cluster_B];
+    int hb = cluster_block_has[ib / cluster_B];
+    if (ha != hb) return hb - ha;  /* hot blocks first */
+    double sa = qsort_S_ptr[ia], sb = qsort_S_ptr[ib];
     return (sa > sb) ? -1 : (sa < sb) ? 1 : 0;
 }
 
@@ -2151,6 +2272,50 @@ static int select_engine(int n, int k) {
     return select_engine_ex(n, k, 0);
 }
 
+/* ── Target-locality clustering ─────────────────────────────
+ * Re-sorts sort_perm so that target-containing blocks are clustered
+ * at the front, while preserving stack-size order within each group.
+ * This enables subtree-level pruning in tree_propagate_g().
+ *
+ * active_orig: boolean mask in ORIGINAL player order.
+ * S_orig: original stack sizes (used to preserve secondary sort key).
+ * Returns n_hot_blocks = number of blocks with at least one target. */
+static int hybrid_ctx_cluster_targets(HybridCtx *hc,
+                                       const uint8_t *active_orig,
+                                       const double *S_orig) {
+    int n = hc->n, B = hc->B, nblocks = hc->nblocks;
+    if (nblocks <= 1) return nblocks;
+
+    /* Determine which blocks contain at least one target */
+    uint8_t *block_has = (uint8_t *)calloc(nblocks, sizeof(uint8_t));
+    int n_hot = 0;
+    for (int i = 0; i < n; i++) {
+        if (active_orig[i]) {
+            int b = i / B;
+            if (!block_has[b]) { block_has[b] = 1; n_hot++; }
+        }
+    }
+
+    /* Early exit: all or none hot → clustering has no effect */
+    if (n_hot == 0 || n_hot == nblocks) {
+        free(block_has);
+        return n_hot;
+    }
+
+    /* Re-sort with two-level comparator */
+    cluster_block_has = block_has;
+    cluster_B = B;
+    qsort_S_ptr = S_orig;
+    qsort(hc->sort_perm, n, sizeof(int), cmp_cluster);
+
+    /* Rebuild S_sorted to match new permutation */
+    for (int i = 0; i < n; i++)
+        hc->S_sorted[i] = S_orig[hc->sort_perm[i]];
+
+    free(block_has);
+    return n_hot;
+}
+
 static double compute_equity_subset(int n, const double *S, int Q,
                                      const double *payout, int k,
                                      double *equity,
@@ -2162,7 +2327,11 @@ static double compute_equity_subset(int n, const double *S, int Q,
     int B = select_engine_ex(n, k, n_targets);
     if (B > 0) {
         HybridCtx *hc = hybrid_ctx_create(n, S, k, B);
-        /* Build sorted-order active mask */
+        /* Cluster target-containing blocks together for subtree pruning.
+         * This re-sorts sort_perm so hot blocks are at positions [0, n_hot). */
+        int n_hot_blocks = hybrid_ctx_cluster_targets(hc, active, S);
+        hc->tc->n_hot_blocks = n_hot_blocks;
+        /* Build sorted-order active mask from the (possibly re-clustered) sort_perm */
         uint8_t *sorted_active = (uint8_t *)calloc(n, sizeof(uint8_t));
         for (int i = 0; i < n; i++) sorted_active[i] = active[hc->sort_perm[i]];
         hc->active = sorted_active;
