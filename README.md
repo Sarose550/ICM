@@ -445,7 +445,7 @@ check:
 ./tools/calibrate_full.sh mydevice   # add --quick for a faster, less precise FFTW pass
 ```
 
-That's usually all you need. If you want to see (or run) each step by hand
+If you want to see (or run) each step by hand
 instead:
 
 ```bash
