@@ -425,14 +425,9 @@ static void run_contour(void) {
     printf("k,n_max,time_ms,engine,block_size,status\n");
     fflush(stdout);
 
-    int consecutive_timeouts = 0;
     for (int ki = 0; ki < n_k; ki++) {
         int k = k_values[ki];
         if (k > max_n) break;
-        if (consecutive_timeouts >= 3) {
-            fprintf(stderr, "k=%d: skipped (contour converged to n=k diagonal)\n", k);
-            continue;
-        }
 
         /* Ensure buffers are large enough */
         int need_n = (int)((double)50000000 / (k > 1 ? k : 1));
@@ -464,10 +459,6 @@ static void run_contour(void) {
         const char *engine = (B > 0) ? "hybrid" : "linear";
 
         int valid = (time_sec <= target_sec * 1.05);  /* 5% tolerance */
-        if (!valid)
-            consecutive_timeouts++;
-        else
-            consecutive_timeouts = 0;
 
         printf("%d,%d,%.0f,%s,%d,%s\n", k, n_max, time_sec * 1000.0, engine, B,
                valid ? "ok" : "floor");
@@ -475,6 +466,12 @@ static void run_contour(void) {
         fprintf(stderr, "  k=%d -> n_max=%d (%.0f ms) [%s B=%d]%s\n",
                 k, n_max, time_sec * 1000.0, engine, B,
                 valid ? "" : " FLOOR");
+
+        /* Stop after the first floor: once even n=k exceeds the 1s target,
+           all larger k will also exceed it (more payout terms = more work).
+           Printing one floor row marks the approximate crossing location. */
+        if (!valid)
+            break;
     }
 
     free(S); free(equity); free(payout);

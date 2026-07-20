@@ -380,27 +380,33 @@ Three engines with cost-based automatic dispatch:
 
 | n | k=10 | k=100 | k=n/2 | k=n | | k=10 | k=100 | k=n/2 | k=n |
 |---|------|-------|-------|-----|-|------|-------|-------|-----|
-| | **M3 Pro (recalibrating)** |||| | **Zen 4 7950X** ||||
-| 1024 | - | - | - | - | | 1.28 | 7.61 | 29.1 | 34.0 |
-| 4096 | - | - | - | - | | 7.32 | 28.3 | 161 | 168 |
-| 8192 | - | - | - | - | | 14.5 | 53.4 | 376 | 382 |
-| 16384 | - | - | - | - | | 29.6 | 112 | 866 | 835 |
-| 65536 | - | - | - | - | | 117 | 419 | 4170 | 4490 |
+| | **M3 Pro** |||| | **Zen 4 7950X** ||||
+| 1024 | 1.71 | 13.2 | 28.9 | 34.8 | | 1.28 | 7.61 | 29.1 | 34.0 |
+| 4096 | 8.18 | 52.6 | 214 | 232 | | 7.32 | 28.3 | 161 | 168 |
+| 8192 | 16.2 | 104 | 483 | 516 | | 14.5 | 53.4 | 376 | 382 |
+| 16384 | 32.5 | 208 | 1090 | 1480 | | 29.6 | 112 | 866 | 835 |
+| 65536 | 130 | 836 | 9710 | 10000 | | 117 | 419 | 4170 | 4490 |
 
-*M3 Pro numbers are being recalibrated after a hardware migration - this table will be refreshed once that run completes.*
+*M3 Pro: Apple M3 Pro (6P+6E, 12 logical cores). Zen 4: AMD Ryzen 9 7950X (16 cores).*
 
-### 16-thread parallel (ms, Q=256)
+### 12-thread parallel (ms, Q=256)
 
 | n | k=10 | k=100 | k=n/2 | k=n | | k=10 | k=100 | k=n/2 | k=n |
 |---|------|-------|-------|-----|-|------|-------|-------|-----|
-| | **M3 Pro (recalibrating)** |||| | **Zen 4 7950X** ||||
-| 1024 | - | - | - | - | | 0.125 | 0.562 | 2.23 | 2.48 |
-| 4096 | - | - | - | - | | 0.604 | 2.35 | 11.4 | 11.9 |
-| 8192 | - | - | - | - | | 1.18 | 4.86 | 26.6 | 26.9 |
-| 16384 | - | - | - | - | | 2.39 | 10.4 | 67.5 | 81.2 |
-| 65536 | - | - | - | - | | 19.5 | 45.2 | 530 | 631 |
+| | **M3 Pro** |||| | **Zen 4 7950X** ||||
+| 1024 | 0.341 | 2.27 | 3.87 | 4.96 | | 0.125 | 0.562 | 2.23 | 2.48 |
+| 4096 | 1.59 | 9.09 | 29.9 | 31.1 | | 0.604 | 2.35 | 11.4 | 11.9 |
+| 8192 | 2.71 | 17.7 | 67.3 | 73.3 | | 1.18 | 4.86 | 26.6 | 26.9 |
+| 16384 | 5.36 | 34.5 | 148 | 202 | | 2.39 | 10.4 | 67.5 | 81.2 |
+| 65536 | 21.1 | 138 | 1270 | 1310 | | 19.5 | 45.2 | 530 | 631 |
 
-*M3 Pro numbers are being recalibrated after a hardware migration - this table will be refreshed once that run completes.*
+*M3 Pro: OMP_NUM_THREADS=12 (6 performance + 6 efficiency cores). Zen 4: OMP_NUM_THREADS=16 (16 physical cores).*
+
+![1-second contour: serial vs 12-thread parallel, M3 Pro](contour_1s_m3pro.png)
+
+![12-core parallel speedup at the 1-second boundary, M3 Pro](parallel_speedup_m3pro.png)
+
+![Engine dispatch (linear vs hybrid) at the 1-second boundary, M3 Pro](engine_dispatch_m3pro.png)
 
 ![1-second contour: serial vs 16-thread parallel, Zen 4](contour_1s.png)
 

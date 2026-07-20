@@ -83,7 +83,6 @@ int main(void) {
     build_fftw_size_table();
     icm_init(NULL);
 
-    /* 200 plans sampling diverse (n, k, B) space */
     int n_values[] = {256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536};
     int n_n = 9;
     int B_values[] = {8, 16, 24, 32, 48, 64};

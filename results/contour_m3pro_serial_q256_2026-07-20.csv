@@ -1,0 +1,15 @@
+k,n_max,time_ms,engine,block_size,status
+2,1025391,964,linear,0,ok
+5,742191,990,linear,0,ok
+10,507820,964,linear,0,ok
+20,312517,973,linear,0,ok
+50,144573,986,linear,0,ok
+100,76256,995,linear,0,ok
+200,39231,988,linear,0,ok
+500,31593,983,hybrid,48,ok
+1000,22437,998,hybrid,48,ok
+2000,18531,944,hybrid,48,ok
+5000,14843,979,hybrid,64,ok
+10000,13750,993,hybrid,64,ok
+13000,13000,1005,hybrid,64,ok
+15000,15000,1150,hybrid,64,floor

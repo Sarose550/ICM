@@ -5,45 +5,63 @@ Q=256 quadrature points.
 
 ## Apple M3 Pro (ARM64, NEON+vDSP, BQ=8)
 
-> ⚠️ **Data pending:** Real M3 Pro performance benchmarks are pending
-> (requires an overnight FFTW PATIENT recalibration). Cost-model constants
-> (FMA_NS, BLOCK_FMA_NS, PAIRED_CACHED_CORR_RATIO, etc.) have been refit on
-> real M3 Pro hardware and are current — see [Cost-Model Constants](#cost-model-constants) below.
-> The performance tables below will be refreshed once recalibration completes.
+> Calibrated 2026-07-20 with FFTW PATIENT wisdom on Apple M3 Pro (6P+6E, 12 logical cores).
+> All cost-model constants refit from real M3 Pro hardware measurements.
+> Engine dispatch: `select_engine()` cost-based, B auto-selected (typically B=16).
 
-### Single-threaded (ms, uniform stacks, median of 5) — M3 Pro (recalibrating)
+### Single-threaded (ms, uniform stacks, median of 5) — M3 Pro
 
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
-1024     —      —      —      —      —      —
-4096     —      —      —      —      —      —
-8192     —      —      —      —      —      —
-16384    —      —      —      —      —      —
-32768    —      —      —      —      —      —
-65536    —      —      —      —      —      —
+64       0.095  0.343  0.441  0.126  0.216  0.440
+128      0.191  0.716  1.31   0.477  0.896  1.41
+256      0.413  1.45   3.32   1.77   3.38   5.21
+512      0.859  3.64   6.60   7.57  11.3   13.0
+1024     1.71   7.16  13.2   24.4   28.9   34.8
+2048     4.11  14.3   26.3   60.9   75.2   99.8
+4096     8.18  28.5   52.6  159    214    232
+8192    16.2   56.6  104    438    483    516
+16384   32.5  113    208   1020   1090   1480
+32768   64.9  226    418   2330   3090   4680
+65536  130    453    836   6580   9710  10000
 ```
 
-### 16-thread parallel (ms, uniform stacks, median of 5) — M3 Pro (recalibrating)
+### 12-thread parallel (ms, uniform stacks, median of 5) — M3 Pro
 
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
-1024     —      —      —      —      —      —
-4096     —      —      —      —      —      —
-8192     —      —      —      —      —      —
-16384    —      —      —      —      —      —
-32768    —      —      —      —      —      —
-65536    —      —      —      —      —      —
+64       0.054  0.092  0.110  0.057  0.071  0.120
+128      0.078  0.184  0.309  0.119  0.204  0.221
+256      0.117  0.301  0.592  0.373  0.492  0.716
+512      0.191  0.647  1.22   1.08   1.59   1.80
+1024     0.341  1.25   2.27   3.36   3.87   4.96
+2048     0.723  2.44   4.46   8.01  10.3   14.7
+4096     1.59   4.91   9.09  21.6   29.9   31.1
+8192     2.71   9.79  17.7   60.7   67.3   73.3
+16384    5.36  18.6   34.5  147    148    202
+32768   10.6   37.6   67.8  309    420    606
+65536   21.1   74.2  138    855   1270   1310
 ```
 
-### Parallel speedup — M3 Pro (recalibrating)
+### Parallel speedup — M3 Pro
 
-*(Pending — full recalibration required.)*
+At the 1-second boundary (from contour sweep, Q=256):
 
-### 1-second threshold: M3 Pro (recalibrating)
+| k | Serial n | Parallel n | Speedup |
+|---|----------|------------|---------|
+| 2 | 1,025,391 | 5,468,751 | 5.3x |
+| 100 | 76,256 | 421,890 | 5.5x |
+| 1000 | 22,437 | 162,687 | 7.3x |
+| 10000 | 13,750 | 94,375 | 6.9x |
+| 13000 | 13,000 | 98,312 | 7.6x |
 
-*(Pending — full recalibration required.)*
+Speedup varies by k due to engine dispatch: linear-only k values see ~5-6x (simple SIMD scaling),
+while hybrid-engine k values reach ~7-8x (FFT tree parallelism). M3 Pro's 6P+6E topology
+limits peak parallel speedup to ~8x vs Zen 4's ~14x on 16 homogeneous P-cores.
 
-### Dispatch: cost-based `select_engine()`, B=16 (cost-model selected)
+### 1-second threshold: n ≈ 13,000 (k=n, single-threaded), n ≈ 98,000 (k=n, 12-thread)
+
+### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=16)
 
 ---
 
@@ -167,20 +185,21 @@ and were refit on real hardware via `tools/fit_cost_model.py` (2026-07-20 sessio
 
 | Constant | Value | Notes |
 |---|---|---|
-| `FMA_NS` | 0.0782 | Scalar FMA cost. Fit against 200 sampled (n,k,B) plans, 7.7% RMS log-relative error. |
-| `WRAP_FMA_NS` | 10.0 | Per-FMA cost for wrap correction (higher: non-contiguous access pattern). |
+| `FMA_NS` | 0.0839 | Scalar FMA cost. Refit 2026-07-20 from real M3 Pro hardware. |
+| `WRAP_FMA_NS` | 0.1000 | Per-FMA cost for wrap correction (memory-latency-bound). |
 | `BLOCK_FMA_NS` | 0.0500 | FMA cost inside block build/divide (cache-resident). |
 | `BLOCK_MEM_NS` | 0.1000 | Memory cost per element in block build/divide. |
-| `PAIRED_CACHED_CORR_RATIO` | 1.6806 | Paired cached correlate cost / full FFT pipeline cost. |
-| `INDEP_PAIR_RATIO` | 1.6806 | Independent pair correlate cost / full FFT pipeline cost. Single R from fit. |
-| `FP64_DIV_NS` | 9.1272 | FP64 divide latency (Apple FDIV ~7 cycles at 4.064 GHz ≈ 1.7 ns; measured overhead higher). |
-| `LEAF_FMA_NS` | 0.2213 | FMA cost at tree-leaf schoolbook multiplies. |
-| `LEAF_BLOCK_NS` | 143.5329 | Per-block overhead at leaf level. |
-| `FFT_OVERHEAD_NS` | 0.0 | Per-call FFT overhead (converged to 0 in fit). |
+| `PAIRED_CACHED_CORR_RATIO` | 1.8205 | Paired cached correlate cost / full FFT pipeline cost. |
+| `INDEP_PAIR_RATIO` | 1.8205 | Independent pair correlate cost / full FFT pipeline cost. |
+| `FP64_DIV_NS` | 6.0449 | FP64 divide latency. |
+| `LEAF_FMA_NS` | 0.1889 | FMA cost at tree-leaf schoolbook multiplies. |
+| `LEAF_BLOCK_NS` | 74.3047 | Per-block overhead at leaf level. |
+| `FFT_OVERHEAD_NS` | 204.5517 | Per-call FFT overhead (plan lookup + buffer copies). |
 
-> ⚠️ The FFT calibration table (`calib_sizes[]`/`calib_times_ns[]`) and FFTW wisdom
-> in `devices/m3_pro/fft_config.h` are still pending a proper M3 Pro recalibration —
-> an overnight FFTW PATIENT run is planned separately.
+> FFT calibration table (`calib_sizes[]`/`calib_times_ns[]`) and FFTW wisdom
+> in `devices/m3_pro/fft_config.h` are from a genuine FFTW PATIENT calibration
+> on this Apple M3 Pro machine (2026-07-20). Cost-model constants refit via
+> `tools/fit_cost_model.py` on real M3 Pro hardware.
 
 ### Zen 4 (AMD Ryzen 9 7950X, AVX-512)
 

@@ -43,6 +43,10 @@ fftw_wisdom.dat
 !runtime_vs_n_cpu.png
 !runtime_vs_n_gpu.png
 !gpu_contour.png
+!contour_1s_m3pro.png
+!parallel_speedup_m3pro.png
+!engine_dispatch_m3pro.png
+!runtime_vs_n_cpu_m3pro.png
 zen4_*.txt
 planner_validation.csv
 gpu_limit_frontier.csv

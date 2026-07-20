@@ -25,22 +25,20 @@ else
 
 ### Final Performance
 
-> ⚠️ **Data provenance:** The timing table below is pending recalibration on
-> M3 Pro hardware (requires an overnight FFTW PATIENT run). Cost-model constants
-> (FMA_NS, PAIRED_CACHED_CORR_RATIO, etc.) have been refit on real M3 Pro
-> hardware and are current — see the [Cost-Model Constants](#cost-model-constants)
-> section in RESULTS.md.
+> **Data provenance:** Calibrated 2026-07-20 with FFTW PATIENT wisdom on Apple M3 Pro
+> (6P+6E, 12 logical cores). Cost-model constants refit from real M3 Pro hardware measurements
+> (see `devices/m3_pro/fft_config.h` and [RESULTS.md](RESULTS.md#cost-model-constants)).
 
-Single-threaded (ms, Q=256, Apple M3 Pro — recalibrating, median of 5):
+Single-threaded (ms, Q=256, Apple M3 Pro, median of 5):
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
-256      1      3      4      3      4      4
-1024     3     11     16     21     24     27
-4096     7     24     46    121    137    147
-8192    14     50    115    287    318    350
-16384   28    122    230    660    709    752
-32768   55    240    457   1511   1710   1808
-65536  135    460    937   3480   4017   4392
+256      0.413  1.45   3.32   1.77   3.38   5.21
+1024     1.71   7.16  13.2   24.4   28.9   34.8
+4096     8.18  28.5   52.6  159    214    232
+8192    16.2   56.6  104    438    483    516
+16384   32.5  113    208   1020   1090   1480
+32768   64.9  226    418   2330   3090   4680
+65536  130    453    836   6580   9710  10000
 ```
 
 ## Optimizations — What Worked (ordered by impact)
@@ -73,7 +71,7 @@ overestimates schoolbook by 4x at below-sat levels — this was a bug that cause
 FFT at tiny sizes where schoolbook was faster. The 40ns overhead was measured via
 `./bench_grid profile` (plan lookup + buffer copies not in the calibration).
 
-`FMA_NS` is device-specific: **M3 Pro = 0.0782 ns**, Zen 4 = 0.0500 ns
+`FMA_NS` is device-specific: **M3 Pro = 0.0839 ns**, Zen 4 = 0.0500 ns
 (AVX-512 scalar FMA).
 
 Note: `school_cost_flops` must be `long long` — at cps=65536, `(65536)²` overflows
@@ -138,9 +136,9 @@ refit via `tools/fit_cost_model.py` against 200 sampled (n,k,B) plans on real ha
 (2026-07-20):
 
 - `PAIRED_CACHED_CORR_RATIO`: cost of paired cached correlate / full FFT pipeline.
-  **M3 Pro: 1.6806**, Zen 4: 2.9709.
+  **M3 Pro: 1.8205**, Zen 4: 2.9709.
 - `INDEP_PAIR_RATIO`: cost of correlate_fft_pair (shared g, fresh P FFTs) / full
-  FFT pipeline. **M3 Pro: 1.6806**, Zen 4: 2.9709 (fit_cost_model.py's single R,
+  FFT pipeline. **M3 Pro: 1.8205**, Zen 4: 2.9709 (fit_cost_model.py's single R,
   applied to both ratios — the two ratios converged to the same value on both devices).
 
 All constants live as `#define`s in `fft_config.h` for per-device tuning.

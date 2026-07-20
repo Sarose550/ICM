@@ -271,6 +271,22 @@ static void write_config(const char *filename) {
 "#ifndef INDEP_PAIR_RATIO\n"
 "#define INDEP_PAIR_RATIO 1.25  /* correlate_fft_pair / full pipeline */\n"
 "#endif\n"
+"/* Hybrid-engine block/leaf constants — placeholders until\n"
+" * tools/fit_cost_model.py --write overwrites them with a real fit. */\n"
+"#ifndef FP64_DIV_NS\n"
+"#define FP64_DIV_NS 10.0  /* ns per FP64 division — re-fit via fit_cost_model.py */\n"
+"#endif\n"
+"#ifndef LEAF_FMA_NS\n"
+"#define LEAF_FMA_NS 0.25  /* ns per FMA in leaf blocks — re-fit via fit_cost_model.py */\n"
+"#endif\n"
+"#ifndef LEAF_BLOCK_NS\n"
+"#define LEAF_BLOCK_NS 100.0  /* ns per leaf block overhead — re-fit via fit_cost_model.py */\n"
+"#endif\n"
+"#ifndef BLOCK_FMA_NS\n"
+"#define BLOCK_FMA_NS 0.05  /* ns per FMA in block build — re-fit via fit_cost_model.py */\n"
+"#endif\n"
+"#ifndef BLOCK_MEM_NS\n"
+"#define BLOCK_MEM_NS 0.1  /* ns per block-build memory op — re-fit via fit_cost_model.py */\n"
 "#endif\n\n");
 
     /* Cache and bandwidth constants */

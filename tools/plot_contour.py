@@ -3,22 +3,25 @@
 Generate publication plots for ICM benchmark data.
 
 Plots generated:
-  1. contour_1s.png           — Serial vs parallel 1-second boundary (CPU)
-  2. parallel_speedup.png     — Speedup bar chart
-  3. engine_dispatch.png      — Engine coloring on contour
-  4. runtime_vs_n_cpu.png     — Runtime(n) at fixed k values, log-log (CPU)
-  5. runtime_vs_n_gpu.png     — Runtime(n) at fixed k values, log-log (GPU)
-  6. gpu_contour.png          — GPU 1-second contour from heatmap data
-  7. accuracy_convergence.png — Quadrature accuracy vs Q (log-log)
+  1. contour_1s[_<device>].png      — Serial vs parallel 1-second boundary (CPU)
+  2. parallel_speedup[_<device>].png — Speedup bar chart
+  3. engine_dispatch[_<device>].png  — Engine coloring on contour
+  4. runtime_vs_n_cpu[_<device>].png — Runtime(n) at fixed k values, log-log (CPU)
+  5. runtime_vs_n_gpu.png           — Runtime(n) at fixed k values, log-log (GPU)
+  6. gpu_contour.png                — GPU 1-second contour from heatmap data
+  7. accuracy_convergence.png       — Quadrature accuracy vs Q (log-log)
 
 Usage:
-  python3 tools/plot_contour.py
+  python3 tools/plot_contour.py                        # defaults to zen4
+  python3 tools/plot_contour.py --device zen4           # Zen4 (Ryzen 9 7950X)
+  python3 tools/plot_contour.py --device m3_pro         # M3 Pro
 
 Reads from project root:
-  contour_zen4_serial_q256.csv, contour_zen4_parallel_q256.csv,
-  bench_grid_zen4_serial.txt, gpu_heatmap_new.csv, accuracy_zen4.csv
+  contour_<device>_serial_q256.csv, contour_<device>_parallel_q256.csv,
+  bench_grid_<device>_serial.txt, gpu_heatmap_new.csv, accuracy_zen4.csv
 """
 
+import argparse
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -48,10 +51,43 @@ LINEAR_COLOR = '#9333ea'
 HYBRID_COLOR = '#059669'
 GPU_COLOR = '#f97316'
 
+# ─── Device configuration ───────────────────────────────────
+
+# Each device has a key matching the --device flag value.
+# To add a new device, add an entry here and place the corresponding
+# contour_<key>_serial_q256.csv, contour_<key>_parallel_q256.csv, and
+# bench_grid_<key>_serial.txt files at the repo root.
+
+DEVICE_CONFIGS = {
+    'zen4': {
+        'key': 'zen4',
+        'label': 'Ryzen 9 7950X',
+        'short': 'Zen 4',
+        'n_cores': 16,
+        'output_suffix': '',   # no suffix — root-level names like contour_1s.png
+        'serial_csv': 'contour_zen4_serial_q256.csv',
+        'parallel_csv': 'contour_zen4_parallel_q256.csv',
+        'bench_grid': 'bench_grid_zen4_serial.txt',
+    },
+    'm3_pro': {
+        'key': 'm3_pro',
+        'label': 'Apple M3 Pro',
+        'short': 'M3 Pro',
+        'n_cores': 12,
+        'output_suffix': '_m3pro',
+        'serial_csv': 'contour_m3pro_serial_q256.csv',
+        'parallel_csv': 'contour_m3pro_parallel_q256.csv',
+        'bench_grid': 'bench_grid_m3pro_serial.txt',
+    },
+}
+
 # ─── Data loading ────────────────────────────────────────────
 
 def load_contour(path, max_time_ms=2000):
-    """Load contour CSV. Filter out points where time > max_time_ms."""
+    """Load contour CSV. Filter out points where time > max_time_ms.
+    Keeps all 'ok' rows plus at most the first 'floor' row, then stops.
+    This trims degenerate trailing floor rows from older data that predate
+    the contour_1s.c fix (which now breaks after the first floor)."""
     k, n, engine = [], [], []
     with open(path) as f:
         reader = csv.DictReader(f)
@@ -59,9 +95,12 @@ def load_contour(path, max_time_ms=2000):
             ki, ni, ti = int(row['k']), int(row['n_max']), float(row['time_ms'])
             if ti > max_time_ms:
                 continue
+            status = row.get('status', 'ok')
             k.append(ki)
             n.append(ni)
             engine.append(row['engine'])
+            if status == 'floor':
+                break  # one floor row is enough — stop reading
     return np.array(k), np.array(n), engine
 
 
@@ -96,7 +135,7 @@ def load_gpu_heatmap(path):
 
 # ─── Plot 1: 1-second contour (CPU) ─────────────────────────
 
-def plot_contour(serial_path, parallel_path, out_path):
+def plot_contour(cfg, serial_path, parallel_path, out_path):
     ks, ns, es = load_contour(serial_path)
     kp, np_, ep = load_contour(parallel_path)
 
@@ -162,13 +201,13 @@ def plot_contour(serial_path, parallel_path, out_path):
     ax.set_yscale('log')
     ax.set_xlabel('Payout terms (k)', fontsize=13)
     ax.set_ylabel('Players (n)', fontsize=13)
-    ax.set_title('1-Second Contour: ICM Equity on Ryzen 9 7950X (Q = 256)', fontsize=14)
+    ax.set_title(f'1-Second Contour: ICM Equity on {cfg["label"]} (Q = 256)', fontsize=14)
 
     legend_elements = [
         Line2D([0], [0], color=SERIAL_COLOR, marker='o', markersize=7, linewidth=2,
                label='Serial (1 core)'),
         Line2D([0], [0], color=PARALLEL_COLOR, marker='o', markersize=7, linewidth=2,
-               label='Parallel (16 cores)'),
+               label=f'Parallel ({cfg["n_cores"]} cores)'),
         Line2D([0], [0], color='gray', marker='o', markersize=6, linestyle='none',
                label='Linear engine'),
         Line2D([0], [0], color='gray', marker='s', markersize=6, linestyle='none',
@@ -190,7 +229,7 @@ def plot_contour(serial_path, parallel_path, out_path):
 
 # ─── Plot 2: Parallel speedup ───────────────────────────────
 
-def plot_speedup(serial_path, parallel_path, out_path):
+def plot_speedup(cfg, serial_path, parallel_path, out_path):
     ks, ns, es = load_contour(serial_path)
     kp, np_, ep = load_contour(parallel_path)
 
@@ -210,7 +249,8 @@ def plot_speedup(serial_path, parallel_path, out_path):
                        rotation=45, ha='right', fontsize=9)
     ax.set_xlabel('Payout terms (k)', fontsize=12)
     ax.set_ylabel('Parallel speedup (n_parallel / n_serial)', fontsize=12)
-    ax.set_title('16-Core Parallel Speedup at 1-Second Boundary (Zen 4, Q = 256)', fontsize=12)
+    ax.set_title(f'{cfg["n_cores"]}-Core Parallel Speedup at 1-Second Boundary ({cfg["short"]}, Q = 256)',
+                 fontsize=12)
     ax.axhline(y=1.0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
     ax.set_ylim(0, max(speedups) * 1.15)
 
@@ -231,7 +271,7 @@ def plot_speedup(serial_path, parallel_path, out_path):
 
 # ─── Plot 3: Engine dispatch map ─────────────────────────────
 
-def plot_dispatch(serial_path, out_path):
+def plot_dispatch(cfg, serial_path, out_path):
     ks, ns, es = load_contour(serial_path)
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -245,7 +285,7 @@ def plot_dispatch(serial_path, out_path):
     ax.set_yscale('log')
     ax.set_xlabel('Payout terms (k)', fontsize=13)
     ax.set_ylabel('Maximum players (n) in 1 second', fontsize=13)
-    ax.set_title('Engine Dispatch at 1-Second Boundary (Serial, Zen 4)', fontsize=14)
+    ax.set_title(f'Engine Dispatch at 1-Second Boundary (Serial, {cfg["short"]})', fontsize=14)
 
     ax.legend(handles=[
         Line2D([0], [0], color=LINEAR_COLOR, marker='o', markersize=8, linestyle='none',
@@ -396,18 +436,23 @@ def plot_gpu_contour(heatmap_path, out_path):
         print(f"No GPU contour data found in {heatmap_path}")
         return
 
-    fig, ax = plt.subplots(figsize=(10, 6.5))
+    fig, ax = plt.subplots(figsize=(8, 8.5))
     ax.plot(contour_k, contour_n, 'o-', color=GPU_COLOR, markersize=6, linewidth=2)
     ax.fill_between(contour_k, contour_n, alpha=0.08, color=GPU_COLOR)
 
-    # n = k reference line (prominent)
-    lo = min(min(contour_k), min(contour_n)) * 0.5
-    hi = max(max(contour_k), max(contour_n)) * 2
+    xlo, xhi = min(contour_k) * 0.7, max(contour_k) * 1.5
+    ylo, yhi = min(contour_n) * 0.7, max(contour_n) * 1.5
+
+    # n = k reference line, clipped to the actual view so bbox_inches='tight'
+    # can't be dragged into including off-screen geometry
+    lo = min(xlo, ylo)
+    hi = max(xhi, yhi)
     k_diag = np.logspace(np.log10(lo), np.log10(hi), 200)
-    ax.plot(k_diag, k_diag, '--', color='#666666', alpha=0.6, linewidth=1.5, zorder=2)
-    mid = np.sqrt(lo * hi)
+    ax.plot(k_diag, k_diag, '--', color='#666666', alpha=0.6, linewidth=1.5,
+            zorder=2, clip_on=True)
+    mid = np.sqrt(max(xlo, ylo) * min(xhi, yhi))
     ax.text(mid * 0.8, mid * 0.55, 'n = k', fontsize=10, color='#666666',
-            alpha=0.7, rotation=38)
+            alpha=0.7, rotation=38, clip_on=True)
 
     # Mark intersection (1-second k=n threshold)
     for i in range(len(contour_k) - 1):
@@ -426,8 +471,8 @@ def plot_gpu_contour(heatmap_path, out_path):
     ax.set_title('1-Second Contour: ICM Equity on NVIDIA B200 (Q = 256)', fontsize=14)
     ax.grid(True, which='both', alpha=0.2)
 
-    ax.set_xlim(min(contour_k) * 0.7, max(contour_k) * 1.5)
-    ax.set_ylim(min(contour_n) * 0.5, max(contour_n) * 2)
+    ax.set_xlim(xlo, xhi)
+    ax.set_ylim(ylo, yhi)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
@@ -519,16 +564,27 @@ def plot_accuracy_convergence(accuracy_path, out_path):
 # ─── Main ────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    serial_csv = os.path.join(ROOT, 'contour_zen4_serial_q256.csv')
-    parallel_csv = os.path.join(ROOT, 'contour_zen4_parallel_q256.csv')
-    bench_full = os.path.join(ROOT, 'bench_grid_zen4_serial.txt')
+    parser = argparse.ArgumentParser(description='Generate ICM benchmark plots.')
+    parser.add_argument('--device', choices=['zen4', 'm3_pro'], default='zen4',
+                        help='Device to generate plots for (default: zen4)')
+    args = parser.parse_args()
+
+    cfg = DEVICE_CONFIGS[args.device]
+    suffix = cfg['output_suffix']
+
+    serial_csv = os.path.join(ROOT, cfg['serial_csv'])
+    parallel_csv = os.path.join(ROOT, cfg['parallel_csv'])
+    bench_full = os.path.join(ROOT, cfg['bench_grid'])
     gpu_heatmap = os.path.join(ROOT, 'gpu_heatmap_new.csv')
 
     # CPU contour plots
     if os.path.exists(serial_csv) and os.path.exists(parallel_csv):
-        plot_contour(serial_csv, parallel_csv, os.path.join(ROOT, 'contour_1s.png'))
-        plot_speedup(serial_csv, parallel_csv, os.path.join(ROOT, 'parallel_speedup.png'))
-        plot_dispatch(serial_csv, os.path.join(ROOT, 'engine_dispatch.png'))
+        plot_contour(cfg, serial_csv, parallel_csv,
+                     os.path.join(ROOT, f'contour_1s{suffix}.png'))
+        plot_speedup(cfg, serial_csv, parallel_csv,
+                     os.path.join(ROOT, f'parallel_speedup{suffix}.png'))
+        plot_dispatch(cfg, serial_csv,
+                      os.path.join(ROOT, f'engine_dispatch{suffix}.png'))
     else:
         print(f"Skipping CPU contour plots (missing CSV files)")
 
@@ -550,43 +606,47 @@ if __name__ == '__main__':
                     ratio_labels.append(label)
 
             plot_runtime_vs_n(data_ext,
-                              'Runtime vs n (Serial, Zen 4, Q = 256)',
-                              os.path.join(ROOT, 'runtime_vs_n_cpu.png'),
+                              f'Runtime vs n (Serial, {cfg["short"]}, Q = 256)',
+                              os.path.join(ROOT, f'runtime_vs_n_cpu{suffix}.png'),
                               k_values=fixed_k + ratio_labels)
 
-    # GPU plots
-    if os.path.exists(gpu_heatmap):
-        plot_gpu_contour(gpu_heatmap, os.path.join(ROOT, 'gpu_contour.png'))
+    # GPU plots (device-independent — only run in default zen4 mode
+    # to avoid overwriting the canonical GPU plots with duplicate runs)
+    if args.device == 'zen4':
+        if os.path.exists(gpu_heatmap):
+            plot_gpu_contour(gpu_heatmap, os.path.join(ROOT, 'gpu_contour.png'))
 
-        gpu_data = extract_gpu_runtime_data(gpu_heatmap)
-        if gpu_data:
-            all_k = sorted(set(k for _, k, _, _ in gpu_data))
-            # Pick representative fixed k values
-            target_k = []
-            for want in [2, 10, 50, 100]:
-                closest = min(all_k, key=lambda x: abs(x - want))
-                if closest not in target_k:
-                    target_k.append(closest)
+            gpu_data = extract_gpu_runtime_data(gpu_heatmap)
+            if gpu_data:
+                all_k = sorted(set(k for _, k, _, _ in gpu_data))
+                # Pick representative fixed k values
+                target_k = []
+                for want in [2, 10, 50, 100]:
+                    closest = min(all_k, key=lambda x: abs(x - want))
+                    if closest not in target_k:
+                        target_k.append(closest)
 
-            # Add k=n/4, k=n/2, k=n as synthetic labels
-            gpu_data_ext = list(gpu_data)
-            for label, ratio in [('k=n/4', 4), ('k=n/2', 2), ('k=n', 1)]:
-                pts = [(n, k, t, e) for n, k, t, e in gpu_data if k == n // ratio]
-                if pts:
-                    for n, k, t, e in pts:
-                        gpu_data_ext.append((n, label, t, e))
-                    target_k.append(label)
+                # Add k=n/4, k=n/2, k=n as synthetic labels
+                gpu_data_ext = list(gpu_data)
+                for label, ratio in [('k=n/4', 4), ('k=n/2', 2), ('k=n', 1)]:
+                    pts = [(n, k, t, e) for n, k, t, e in gpu_data if k == n // ratio]
+                    if pts:
+                        for n, k, t, e in pts:
+                            gpu_data_ext.append((n, label, t, e))
+                        target_k.append(label)
 
-            plot_runtime_vs_n(gpu_data_ext,
-                              'Runtime vs n (NVIDIA B200, Q = 256)',
-                              os.path.join(ROOT, 'runtime_vs_n_gpu.png'),
-                              k_values=target_k)
+                plot_runtime_vs_n(gpu_data_ext,
+                                  'Runtime vs n (NVIDIA B200, Q = 256)',
+                                  os.path.join(ROOT, 'runtime_vs_n_gpu.png'),
+                                  k_values=target_k)
 
-    # Accuracy convergence
-    accuracy_csv = os.path.join(ROOT, 'accuracy_zen4.csv')
-    if os.path.exists(accuracy_csv):
-        plot_accuracy_convergence(accuracy_csv, os.path.join(ROOT, 'accuracy_convergence.png'))
+        # Accuracy convergence
+        accuracy_csv = os.path.join(ROOT, 'accuracy_zen4.csv')
+        if os.path.exists(accuracy_csv):
+            plot_accuracy_convergence(accuracy_csv, os.path.join(ROOT, 'accuracy_convergence.png'))
+        else:
+            print("Skipping accuracy_convergence.png (missing accuracy_zen4.csv)")
     else:
-        print("Skipping accuracy_convergence.png (missing accuracy_zen4.csv)")
+        print("Skipping GPU/accuracy plots (non-zen4 device — only generated for zen4)")
 
     print("\nDone.")

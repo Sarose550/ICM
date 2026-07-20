@@ -103,18 +103,22 @@ All tuning constants live in `devices/<DEVICE>/fft_config.h` as `#define`s:
 
 | Constant | M3 Pro | Zen 4 | What | How to measure |
 |---|---|---|---|---|
-| `FMA_NS` | 0.0782 | 0.0500 | ns per scalar FMA | `./bench_grid profile` (schoolbook row) |
-| `FFT_OVERHEAD_NS` | 0.0 | 0.0 | Per-call FFT overhead | `./bench_grid profile` (overhead table) |
-| `PAIRED_CACHED_CORR_RATIO` | 1.6806 | 2.9709 | Paired correlate / full pipeline | `./bench_grid profile` (phase split) |
-| `INDEP_PAIR_RATIO` | 1.6806 | 2.9709 | correlate_fft_pair / full pipeline | `./bench_grid profile` (phase split) |
+| `FMA_NS` | 0.0839 | 0.0500 | ns per scalar FMA | `./bench_grid profile` (schoolbook row) |
+| `FFT_OVERHEAD_NS` | 204.5517 | 0.0 | Per-call FFT overhead | `./bench_grid profile` (overhead table) |
+| `PAIRED_CACHED_CORR_RATIO` | 1.8205 | 2.9709 | Paired correlate / full pipeline | `./bench_grid profile` (phase split) |
+| `INDEP_PAIR_RATIO` | 1.8205 | 2.9709 | correlate_fft_pair / full pipeline | `./bench_grid profile` (phase split) |
+| `WRAP_FMA_NS` | 0.1000 | 0.8612 | ns per FMA in wrap correction | fit_cost_model.py |
+| `FP64_DIV_NS` | 6.0449 | 13.4590 | FP64 divide latency | fit_cost_model.py |
+| `LEAF_FMA_NS` | 0.1889 | 0.2804 | FMA cost at tree-leaf multiplies | fit_cost_model.py |
+| `LEAF_BLOCK_NS` | 74.3047 | 42.2533 | Per-block overhead at leaf level | fit_cost_model.py |
+| `BLOCK_FMA_NS` | 0.0500 | 0.0500 | FMA cost in block build/divide | fit_cost_model.py |
+| `BLOCK_MEM_NS` | 0.1000 | 0.1000 | Memory cost per element in block | fit_cost_model.py |
 | `calib_sizes[]` / `calib_times_ns[]` | 749 entries | 749 entries | Per-size FFT costs | `tools/calibrate` |
 | `calib_lib[]` | n/a | 749 entries | FFTW(0) vs MKL(1) per size | `tools/calibrate_dual` |
 
-> **Note:** M3 Pro's cost-model constants (`FMA_NS`, `FFT_OVERHEAD_NS`, `*_RATIO`) are fitted
-> from real M3 Pro measurements (2026-07-20 crossover session, 7.7% RMS log-relative error).
-> However, the underlying `calib_times_ns[]` FFT timing table is still borrowed from an
-> prior-generation hardware — a proper overnight PATIENT `./calibrate` pass on the M3 Pro hardware
-> is pending. Only the cost-model constants above are M3-Pro-native.
+> **M3 Pro calibration (2026-07-20):** All values above are from real M3 Pro hardware —
+> FFTW PATIENT wisdom, FFT timing table, and cost-model constants have been freshly
+> recalibrated on this machine. No constants are borrowed from other hardware.
 
 Auto-tuned at runtime (no manual tuning needed):
 | Feature | What |
@@ -221,7 +225,7 @@ make calibrate && ./calibrate --quick
 # 6. Serial performance grid
 ./bench_grid > bench_grid_m3pro_serial.txt
 
-# 7. Parallel performance grid (TBD threads on M3 Pro — recalibrating)
+# 7. Parallel performance grid (12 threads on M3 Pro — 6P+6E)
 make clean && make parallel
 OMP_NUM_THREADS=12 ./bench_grid > bench_grid_m3pro_parallel.txt
 

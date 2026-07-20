@@ -76,7 +76,7 @@ echo ""
 echo "── Step 1/6: FFTW calibration (tools/calibrate.c) ──"
 echo "  This may take 10–30 minutes..."
 CALIB_BIN="$REPO_ROOT/calibrate"
-gcc -O3 -march=native -o "$CALIB_BIN" tools/calibrate.c -lfftw3 -lm
+gcc -O3 -march=native $HOMEBREW_INC -o "$CALIB_BIN" tools/calibrate.c $HOMEBREW_LIB -lfftw3 -lm
 echo "  Running: $CALIB_BIN $QUICK"
 "$CALIB_BIN" $QUICK
 echo "  ✓ calibrate complete"
