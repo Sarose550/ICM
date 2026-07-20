@@ -312,7 +312,7 @@ case for stack-ratio tails) tanh-sinh plateaus instead of converging:
 | 512 | 4.87 × 10^(-13) | 5.89 × 10^(-8) |
 | 1024 | 5.30 × 10^(-13) | 8.27 × 10^(-8) |
 
-(n=4, k=4, V1 payout; full data in `results/accuracy_m3max_20260718.csv`,
+(n=4, k=4, V1 payout; full data in `results/accuracy_convergence.csv`,
 `scheme` column.) Gauss-Legendre keeps converging toward machine precision;
 tanh-sinh stalls around 1e-7-1e-8 on this tail case and doesn't improve
 further from `Q = 512` to `Q = 1024`. This is what motivated using
@@ -321,7 +321,7 @@ Gauss-Legendre in production rather than tanh-sinh.
 **Headline result:** Gauss-Legendre quadrature converges to ~5 × 10^(-13)
 relative error by `Q = 1024` against both V1 and V2 closed forms across all
 tested distributions. The convergence is rapid - here are representative
-rows from `results/accuracy_m3max_20260718.csv` for the `gauss` scheme on
+rows from `results/accuracy_convergence.csv` for the `gauss` scheme on
 uniform stacks (V1 payout):
 
 | Q | max_rel_err (n=4, uniform, V1) |
