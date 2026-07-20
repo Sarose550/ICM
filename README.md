@@ -79,7 +79,7 @@ Rather than enumerating orderings, one can track the set of players who
 have busted so far. Let $dp_{\text{mask}}$ be the probability that exactly the
 players in the set $\text{mask}$ have been eliminated. From each state, for
 each surviving player $j$, the transition adds $dp_{\text{mask}} \cdot (S_j / \text{total remaining stack})$
-to $dp_{\text{mask} \cup \{j\}}$. There are $2^n$ states and up to
+to $dp_{\text{mask} \cup \lbrace j\rbrace}$. There are $2^n$ states and up to
 $n$ candidate transitions per state, giving $O(n \cdot 2^n)$ total work - the
 per-state cost comes from looping over surviving players, not from the
 payout structure. This is the method used by real poker tools; see GTO
@@ -332,8 +332,8 @@ for *any* $n$ because they follow from linearity of expectation over pairs
 and triples of players, not from enumerating elimination orderings:
 
 Both derivations follow from the exponential-clock model established in
-step 4. Applied to a pair $\{i, j\}$: $P(i \text{ beats } j) =
-S_i / (S_i + S_j)$. Applied to a triple $\{i, j, k\}$: $P(i \text{ beats both}) =
+step 4. Applied to a pair $\lbrace i, j\rbrace$: $P(i \text{ beats } j) =
+S_i / (S_i + S_j)$. Applied to a triple $\lbrace i, j, k\rbrace$: $P(i \text{ beats both}) =
 S_i / (S_i + S_j + S_k)$.
 
 Now write player $i$'s actual finishing position as $M$ other players
@@ -361,7 +361,7 @@ $$\begin{aligned}
 This is exactly `v1_exact()`'s formula, $O(n^2)$ to compute directly.
 
 **V2 (quadratic payout, $\pi_M = C(n-1-M, 2)$):** Apply the identity
-at $t = 2$ - one term per opponent *pair* $\{j, k\}$. By linearity of
+at $t = 2$ - one term per opponent *pair* $\lbrace j, k\rbrace$. By linearity of
 expectation:
 
 $$\begin{aligned}
@@ -372,7 +372,7 @@ $$\begin{aligned}
 
 since "$i$ beats both $j$ and $k$" is exactly "$i$ has the smallest $T$
 among the trio," which is the competing-exponentials fact above applied
-to $\{i, j, k\}$. This is exactly `v2_exact()`'s formula, $O(n^3)$ to
+to $\lbrace i, j, k\rbrace$. This is exactly `v2_exact()`'s formula, $O(n^3)$ to
 compute directly.
 
 In both cases the move from a *combinatorial identity on one realized
