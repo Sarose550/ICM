@@ -3,7 +3,7 @@
 
 # ICM -- Independent Chip Model Equity Computation
 
-High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to 65,536 players.
+High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~17,216 players / payouts in 1 second*.
 
 ## Quick Start
 
@@ -375,3 +375,6 @@ python/                      -- Python ctypes bindings
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+\* Single-threaded, AMD Ryzen 9 7950X.
