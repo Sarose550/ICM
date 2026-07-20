@@ -40,16 +40,16 @@ double ns = icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
 Returns wall-clock time in nanoseconds. All correctness tests pass at < 5e-12 relative error.
 
 **Python bindings.** `python/` provides a ctypes wrapper (`icm.equity(stacks, payouts)`)
-over the same compiled shared library — no separate implementation, no reduced
-accuracy, just a thin call-through. See [python/README.md](python/README.md)
-for setup (`make libicm`, then `import icm`).
+that calls straight into the same compiled shared library the C API uses.
+See [python/README.md](python/README.md) for setup (`make libicm`, then
+`import icm`).
 
 ## How It Works
 
 **1. The problem.** A tournament has `n` players with chip stacks
 `S_1, ..., S_n` and a payout structure `(π_1, ..., π_k)` where `k ≤ n`
 positions receive nonzero prizes. ICM computes each player's expected
-payout — the sum over finishing positions of the prize for that position
+payout - the sum over finishing positions of the prize for that position
 times the probability the player finishes there. The naive answer enumerates
 all `n!` elimination orderings, weights each by its probability under the
 Malmuth–Harville model (Harville, 1973; Malmuth, 2001), and sums the
@@ -61,7 +61,7 @@ HoldemResources.net blog post ["High Accuracy ICM Calculations for Large
 Fields"](https://www.holdemresources.net/blog/high-accuracy-mtt-icm/)
 notes, "Naive implementations of ICM can handle about 15 players, and even
 optimized versions can't calculate exact Malmuth-Harville values beyond
-25-30 players." The naive enumeration wall is around `n ≈ 15` — any attempt
+25-30 players." The naive enumeration wall is around `n ≈ 15` - any attempt
 to enumerate all orderings for 16+ players runs into years of compute time.
 
 **3. The industry-standard exact method: bitmask dynamic programming.**
@@ -70,7 +70,7 @@ have busted so far. Let `dp[mask]` be the probability that exactly the
 players in the bitmask `mask` have been eliminated. From each state, for
 each surviving player `j`, the transition adds `dp[mask] · (S_j / total
 remaining stack)` to `dp[mask | (1<<j)]`. There are `2^n` states and up to
-`n` candidate transitions per state, giving `O(n · 2^n)` total work — the
+`n` candidate transitions per state, giving `O(n · 2^n)` total work - the
 per-state cost comes from looping over surviving players, not from the
 payout structure. This is the method used by real poker tools; see GTO
 Wizard's ["Theoretical Breakthroughs in
@@ -78,7 +78,7 @@ ICM"](https://blog.gtowizard.com/theoretical-breakthroughs-in-icm/) post
 for a practical discussion and Helmuth Melcher's 2015 TU Wien diploma
 thesis ["Evaluation of Equity Models for Tournament
 Poker"](https://repositum.tuwien.at/handle/20.500.12708/79991) for the
-academic writeup. The practical wall is roughly 25–30 players — at
+academic writeup. The practical wall is roughly 25–30 players - at
 `n = 30`, `2^30` states already pushes into gigabytes of memory.
 
 **4. How real tools scale past 30 players: Monte Carlo via the "exponential
@@ -90,16 +90,16 @@ their chip stack `S_j` (an "elimination clock"), and eliminate players in
 order of increasing `T_j`. The memoryless property of the exponential
 distribution guarantees this recovers exactly the same stack-proportional
 elimination rule at every step. This gives a simple, unbiased way to
-*sample* a full elimination order in one shot — draw `n` exponentials, sort
-— instead of simulating step-by-step. Tysen Streib introduced this
+*sample* a full elimination order in one shot - draw `n` exponentials, sort
+- instead of simulating step-by-step. Tysen Streib introduced this
 technique in a TwoPlusTwo forum thread, ["New Algorithm: Calculate ICM
 Large
 Tournaments"](https://forumserver.twoplustwo.com/15/poker-theory-amp-gto/new-algorithm-calculate-icm-large-tournaments-1098489/).
 Error shrinks as `O(1/√N)` in the number of sampled tournaments `N`, so
 high precision gets expensive. (A refinement uses [Quasi-Monte Carlo
-sampling](https://en.wikipedia.org/wiki/Quasi-Monte_Carlo_method) —
+sampling](https://en.wikipedia.org/wiki/Quasi-Monte_Carlo_method) -
 deterministic low-discrepancy point sequences instead of independent random
-draws, giving closer to `O(1/N)` convergence for smooth integrands — but
+draws, giving closer to `O(1/N)` convergence for smooth integrands - but
 this repo does not build on that approach.)
 
 **5. This repo's approach: make the Monte Carlo estimate exact.** The
@@ -114,7 +114,7 @@ Q_i(x; v) = Π_{j ≠ i} (a_j(v) + b_j(v) · x)
 ```
 
 The coefficient of `x^m` in `Q_i(x; v)` captures exactly the combinatorial
-term that Monte Carlo would otherwise have to sample — the sum over all
+term that Monte Carlo would otherwise have to sample - the sum over all
 subsets of `m` other players of the product of their elimination
 probabilities times the remaining players' survival probabilities. So
 instead of drawing `N` random samples of the exponential race and
@@ -125,7 +125,7 @@ Gauss-Legendre nodes, this yields deterministic double-precision accuracy
 (relative error < 5 × 10^(-12); see Accuracy section below).
 
 The remaining computational challenge is evaluating, for *every* player `i`
-simultaneously, the coefficients of `Q_i(x; v)` — the product of everyone
+simultaneously, the coefficients of `Q_i(x; v)` - the product of everyone
 else's per-player factor. Computed naively, one player at a time, that's `n`
 separate degree-`(n-1)` products: `O(n²)` factors to multiply. The
 subproduct tree computes all `n` of them together in `O(n log n)`
@@ -150,7 +150,7 @@ of a balanced binary tree. The algorithm makes two passes over this tree:
   `(π_1, ..., π_k)`, treated as the coefficients of a polynomial `g_root(x)`.
   Then walk back down the tree. At each internal node, its parent's
   `g`-vector is combined with the *sibling's* subtree polynomial (computed
-  during the build pass) to produce the child's `g`-vector — concretely,
+  during the build pass) to produce the child's `g`-vector: concretely,
   each child's new coefficients are `g_child[m] = Σ_j P_sibling[j] · g_parent[m+j]`,
   a sliding-window dot product (a cross-correlation, computable via FFT the
   same way convolution is). Descend all the way to the leaves.
@@ -159,38 +159,38 @@ Why does folding in the sibling at every level work? A node's `g`-vector is,
 by construction, `payout(x)` convolved with the product of every leaf
 factor *outside* that node's subtree, truncated to the terms that still
 matter. Two siblings share the same parent's `g`, i.e. the same "everything
-above and to the side of both of us" — but each one is still missing the
+above and to the side of both of us" - but each one is still missing the
 *other's* subtree from its own exclusion set. Folding in the sibling's
 polynomial when descending past it is exactly what accounts for those
 missing leaves. By the time the walk reaches leaf `i`, its `g`-vector has
-picked up the sibling contribution at every level on the root-to-leaf path
-— which, level by level, is precisely the set of every other leaf in the
+picked up the sibling contribution at every level on the root-to-leaf path,
+which, level by level, is precisely the set of every other leaf in the
 tree. `g_leaf_i[0]` is then the constant term of `payout(x) * Q_i(x; v)`,
 truncated: exactly the coefficient the generating-function argument in
 step 5 needs, for every `i`, without ever having built `Q_i(x; v)` on its
 own. One build pass, one propagate pass, `O(n log n)` total work (times
-`O(log n)` per FFT-accelerated multiply/correlate) — not `n` separate
+`O(log n)` per FFT-accelerated multiply/correlate), not `n` separate
 `O(n)` products.
 
 The hybrid engine (below) runs this same two-pass algorithm over *blocks*
-of `B` players rather than individual players — a block's leaf polynomial
+of `B` players rather than individual players: a block's leaf polynomial
 is the product of its `B` players' factors, multiplied directly
-(schoolbook, not FFT — `B` is small). That collapses `n` tree leaves down
+(schoolbook, not FFT - `B` is small). That collapses `n` tree leaves down
 to `n/B`, shrinking the tree's depth and per-level FFT count. The cost is
 one extra step at the very end: a block's leave-one-out `g`-vector describes
 "everything outside this block," not any individual player inside it, so
 recovering a single player's coefficient means dividing the block's
-*complete* (non-truncated) polynomial product by that player's own factor —
+*complete* (non-truncated) polynomial product by that player's own factor,
 polynomial division, done only on this small, complete, `B`-degree product,
 where the resulting numerical amplification is bounded by `|c|^B` and safe
 in double precision for `B` up to 64. (Division elsewhere in this codebase
-is deliberately avoided — see the correctness constraint in `CLAUDE.md` —
+is deliberately avoided, see the correctness constraint in `CLAUDE.md`,
 because doing the same thing on the full, *truncated* `n`-player product is
 numerically unstable.)
 
 **Three CPU engines with cost-based dispatch.** The library picks the
 fastest engine per `(n, k)` pair via `select_engine()`, which compares a
-roofline linear-cost estimate against a calibrated hybrid-cost model — no
+roofline linear-cost estimate against a calibrated hybrid-cost model - no
 hand-tuned crossover thresholds:
 
 1. **Linear (batched):** `O(nk)` forward-backward pass. Interleaves BQ=8
@@ -204,8 +204,8 @@ hand-tuned crossover thresholds:
 
 **GPU path (cuFFTDx fused-kernel).** On NVIDIA B200/H200, `src/gpu/`
 implements a planner, execution engine, and API. The planner assigns each
-tree level to one of three tiers — schoolbook (small degrees), cuFFTDx
-fused kernels (medium), or batched cuFFT (large) — and executes via CUDA
+tree level to one of three tiers - schoolbook (small degrees), cuFFTDx
+fused kernels (medium), or batched cuFFT (large) - and executes via CUDA
 graph capture for near-zero launch overhead. See the Performance tables
 below for current throughput numbers.
 
@@ -222,12 +222,12 @@ Both derivations reuse the exponential-clock construction from step 4 above:
 order = increasing `T_j` (smallest `T` finishes 1st). One elementary fact
 about competing independent exponentials does all the work: for any subset
 of players, the probability that a particular one of them has the smallest
-`T` — i.e. finishes best — *within that subset* is that player's stack
+`T` - i.e. finishes best - *within that subset* is that player's stack
 divided by the subset's total stack. (Proof: for player `i` against a
 group, `T_i` and the minimum of everyone else's `T`s are independent, the
-latter is itself exponential with rate equal to the sum of their stacks —
+latter is itself exponential with rate equal to the sum of their stacks -
 the minimum of independent exponentials is exponential with the summed
-rate — and `P(T_i < T_other)` for two independent exponentials with rates
+rate - and `P(T_i < T_other)` for two independent exponentials with rates
 `a, b` is `a / (a + b)`.) Applied to a pair `{i, j}`: `P(i beats j) =
 S_i / (S_i + S_j)`. Applied to a triple `{i, j, k}`: `P(i beats both) =
 S_i / (S_i + S_j + S_k)`.
@@ -235,7 +235,7 @@ S_i / (S_i + S_j + S_k)`.
 Now write player `i`'s actual finishing position as `m` other players
 finishing ahead of them (`m = 0` is 1st place). For any `t`, the number of
 ways to choose `t` of the players who finish *behind* `i` is `C(n-1-m, t)`
-— an exact combinatorial identity on the realized outcome, no probability
+- an exact combinatorial identity on the realized outcome, no probability
 involved yet: it's just choosing `t` players from the `n-1-m` who rank
 below `i`. Equivalently, it's a sum of indicators over every `t`-subset `T`
 of the other `n-1` players, counting the ones `i` beats entirely:
@@ -245,23 +245,23 @@ C(n-1-m, t) = Σ_{T ⊆ others, |T| = t}  1[i finishes better than every player 
 ```
 
 - **V1 (linear payout, `payout[m] = n - m`):** Since `n - m = C(n-1-m,0) +
-  C(n-1-m,1)`, apply the identity at `t = 0` (always 1 — trivial, the
+  C(n-1-m,1)`, apply the identity at `t = 0` (always 1, trivially - the
   empty subset) and `t = 1` (one term per opponent `j`):
 
   ```
   E[payout_i] = E[1] + E[ Σ_{j≠i} 1[i beats j] ]
-              = 1 + Σ_{j≠i} P(i beats j)          ← linearity of expectation
+              = 1 + Σ_{j≠i} P(i beats j)          <- linearity of expectation
               = 1 + Σ_{j≠i} S_i / (S_i + S_j)
   ```
 
   This is exactly `v1_exact()`'s formula, `O(n²)` to compute directly.
 
 - **V2 (quadratic payout, `payout[m] = C(n-1-m, 2)`):** Apply the identity
-  at `t = 2` — one term per opponent *pair* `{j, k}`:
+  at `t = 2` - one term per opponent *pair* `{j, k}`:
 
   ```
   E[payout_i] = E[ Σ_{j<k, j,k≠i} 1[i beats j and k] ]
-              = Σ_{j<k, j,k≠i} P(i beats both j and k)   ← linearity of expectation
+              = Σ_{j<k, j,k≠i} P(i beats both j and k)   <- linearity of expectation
               = Σ_{j<k, j,k≠i} S_i / (S_i + S_j + S_k)
   ```
 
@@ -272,7 +272,7 @@ C(n-1-m, t) = Σ_{T ⊆ others, |T| = t}  1[i finishes better than every player 
 
 In both cases the move from a *combinatorial identity on one realized
 outcome* to an *exact formula for the expectation* is linearity of
-expectation, applied term-by-term to a sum of indicator variables — it
+expectation, applied term-by-term to a sum of indicator variables: it
 costs nothing to push the expectation through a sum, no matter how the
 individual indicator events are correlated with each other. Higher payout
 schedules follow the same pattern for larger `t`; V1 and V2 are the `t ≤ 2`
@@ -287,7 +287,7 @@ geometric, and an extreme 1e9:1 adversarial case.
 
 **Headline result:** Gauss-Legendre quadrature converges to ~5 × 10^(-13)
 relative error by `Q = 1024` against both V1 and V2 closed forms across all
-tested distributions. The convergence is rapid — here are representative
+tested distributions. The convergence is rapid - here are representative
 rows from `results/accuracy_m3max_20260718.csv` for the `gauss` scheme on
 uniform stacks (V1 payout):
 
@@ -305,7 +305,7 @@ At `Q = 1024`, the maximum relative error across *all* tested configurations
 (`n` up to 20, all four stack distributions, both V1 and V2) stays below
 ~2 × 10^(-12) for uniform stacks and below ~6 × 10^(-13) for the adversarial
 and 1e9:1 cases. The production default is `Q = 256`, which already delivers
-sub-2 × 10^(-12) relative error — sufficient for any practical poker
+sub-2 × 10^(-12) relative error - sufficient for any practical poker
 application.
 
 ![Accuracy convergence](accuracy_convergence.png)
@@ -327,26 +327,26 @@ Three engines with cost-based automatic dispatch:
 | n | k=10 | k=100 | k=n/2 | k=n | | k=10 | k=100 | k=n/2 | k=n |
 |---|------|-------|-------|-----|-|------|-------|-------|-----|
 | | **M3 Pro (recalibrating)** |||| | **Zen 4 7950X** ||||
-| 1024 | — | — | — | — | | 1.28 | 7.61 | 29.1 | 34.0 |
-| 4096 | — | — | — | — | | 7.32 | 28.3 | 161 | 168 |
-| 8192 | — | — | — | — | | 14.5 | 53.4 | 376 | 382 |
-| 16384 | — | — | — | — | | 29.6 | 112 | 866 | 835 |
-| 65536 | — | — | — | — | | 117 | 419 | 4170 | 4490 |
+| 1024 | - | - | - | - | | 1.28 | 7.61 | 29.1 | 34.0 |
+| 4096 | - | - | - | - | | 7.32 | 28.3 | 161 | 168 |
+| 8192 | - | - | - | - | | 14.5 | 53.4 | 376 | 382 |
+| 16384 | - | - | - | - | | 29.6 | 112 | 866 | 835 |
+| 65536 | - | - | - | - | | 117 | 419 | 4170 | 4490 |
 
-*M3 Pro numbers are being recalibrated after a hardware migration — this table will be refreshed once that run completes.*
+*M3 Pro numbers are being recalibrated after a hardware migration - this table will be refreshed once that run completes.*
 
 ### 16-thread parallel (ms, Q=256)
 
 | n | k=10 | k=100 | k=n/2 | k=n | | k=10 | k=100 | k=n/2 | k=n |
 |---|------|-------|-------|-----|-|------|-------|-------|-----|
 | | **M3 Pro (recalibrating)** |||| | **Zen 4 7950X** ||||
-| 1024 | — | — | — | — | | 0.125 | 0.562 | 2.23 | 2.48 |
-| 4096 | — | — | — | — | | 0.604 | 2.35 | 11.4 | 11.9 |
-| 8192 | — | — | — | — | | 1.18 | 4.86 | 26.6 | 26.9 |
-| 16384 | — | — | — | — | | 2.39 | 10.4 | 67.5 | 81.2 |
-| 65536 | — | — | — | — | | 19.5 | 45.2 | 530 | 631 |
+| 1024 | - | - | - | - | | 0.125 | 0.562 | 2.23 | 2.48 |
+| 4096 | - | - | - | - | | 0.604 | 2.35 | 11.4 | 11.9 |
+| 8192 | - | - | - | - | | 1.18 | 4.86 | 26.6 | 26.9 |
+| 16384 | - | - | - | - | | 2.39 | 10.4 | 67.5 | 81.2 |
+| 65536 | - | - | - | - | | 19.5 | 45.2 | 530 | 631 |
 
-*M3 Pro numbers are being recalibrated after a hardware migration — this table will be refreshed once that run completes.*
+*M3 Pro numbers are being recalibrated after a hardware migration - this table will be refreshed once that run completes.*
 
 See [RESULTS.md](RESULTS.md) for complete performance tables across platforms.
 
@@ -412,15 +412,15 @@ See `devices/b200/gpu_fft_config.h` for calibration data.
 
 ## Calibrating for a New Device
 
-If your hardware matches an already-calibrated device (`devices/m3_pro`, `devices/zen4`), you don't need to run `./calibrate` at all — build straight against the shipped wisdom and config:
+If your hardware matches an already-calibrated device (`devices/m3_pro`, `devices/zen4`), you don't need to run `./calibrate` at all - build straight against the shipped wisdom and config:
 
 ```bash
-make DEVICE=m3_pro   # or zen4 — whichever matches your machine
+make DEVICE=m3_pro   # or zen4 - whichever matches your machine
 ./bench_grid verify
 ./bench_grid crossover   # confirm dispatch decisions match measured winners on YOUR unit
 ```
 
-`fftw_wisdom.dat` and the `calib_times_ns[]` table are measured on one specific physical machine. FFTW will happily load wisdom from a different unit of the same CPU model — it just isn't guaranteed to have picked the fastest codelet for *your* silicon, and the nanosecond timings the cost model reads for FFT-vs-schoolbook and engine-dispatch decisions won't necessarily match your machine's actual behavior (different DIMM speed, microcode revision, thermal/boost profile, or memory bandwidth can all shift these numbers). `./bench_grid crossover` is the check that catches this: if every cell's dispatch decision agrees with the measured winner, the shipped calibration is good enough and you're done. Only recalibrate from scratch (below) if it disagrees — and definitely recalibrate if you're on hardware unlike anything already in `devices/`.
+`fftw_wisdom.dat` and the `calib_times_ns[]` table are measured on one specific physical machine. FFTW will happily load wisdom from a different unit of the same CPU model - it just isn't guaranteed to have picked the fastest codelet for *your* silicon, and the nanosecond timings the cost model reads for FFT-vs-schoolbook and engine-dispatch decisions won't necessarily match your machine's actual behavior (different DIMM speed, microcode revision, thermal/boost profile, or memory bandwidth can all shift these numbers). `./bench_grid crossover` is the check that catches this: if every cell's dispatch decision agrees with the measured winner, the shipped calibration is good enough and you're done. Only recalibrate from scratch (below) if it disagrees - and definitely recalibrate if you're on hardware unlike anything already in `devices/`.
 
 ```bash
 # Generate calibration data
