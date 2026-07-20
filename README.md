@@ -289,7 +289,7 @@ pass; propagate is the same shape of operation (same FFT sizes), so it's
 the same order. That's the per-quadrature-point cost; multiplying by $Q$
 quadrature points gives $O(Q \cdot n \cdot \log^2 k)$ overall.
 
-**Space complexity: $O(n \log k)$. Here's why.
+**Space complexity: $O(n \log k)$.** Here's why.
 
 The build phase constructs the subproduct tree bottom-up: level $\ell$
 (counting from the leaves) has $n/2^\ell$ nodes, each holding a polynomial
