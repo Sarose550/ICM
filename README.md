@@ -542,14 +542,14 @@ make bench_gpu_fused CUDA_ARCH=sm_90     # H100/H200
 
 Requires CUDA toolkit and cuFFTDx.
 
-**B200 performance** (Q=256, fused cuFFTDx kernels):
+**B200 performance** (Q=256, fused cuFFTDx kernels, n=k):
 
-| n | k=n | Time |
-|---|-----|------|
-| 65,536 | 65,536 | 24.75 ms |
-| 262,144 | 262,144 | 117.90 ms |
-| 1,441,792 | 1,441,792 | 866 ms |
-| 1,572,864 | 1,572,864 | 1,148 ms |
+| n | Time |
+|---|------|
+| 65,536 | 24.75 ms |
+| 262,144 | 117.90 ms |
+| 1,441,792 | 866 ms |
+| 1,572,864 | 1,148 ms |
 
 See `devices/b200/gpu_fft_config.h` for calibration data.
 
