@@ -118,3 +118,6 @@ __pycache__/
 # ── Negation: results/ directory holds reference artifacts ─────
 !results/**
 .dsar/
+
+# AI agent project instructions -- not for public repo view
+CLAUDE.md

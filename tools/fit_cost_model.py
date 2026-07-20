@@ -19,10 +19,6 @@ Model (per Q-point):
 Objective: minimize Σ(log(pred/meas))².
 
 Usage: python3 tools/fit_cost_model.py <sample_plans.csv> [config_h] [--write]
-
-Without --write, prints the fitted constants and RMS error to stdout only
-(dry run). With --write, overwrites the 9 #define values in config_h
-in-place (default config_h: devices/zen4/fft_config.h).
 """
 import sys
 import re

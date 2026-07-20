@@ -5,8 +5,7 @@ Q=256 quadrature points.
 
 ## Apple M3 Pro (ARM64, NEON+vDSP, BQ=8)
 
-> Calibrated 2026-07-20 with FFTW PATIENT wisdom on Apple M3 Pro (6P+6E, 12 logical cores).
-> All cost-model constants refit from real M3 Pro hardware measurements.
+> Calibrated with FFTW PATIENT wisdom on Apple M3 Pro (6P+6E, 12 logical cores).
 > Engine dispatch: `select_engine()` cost-based, B auto-selected (typically B=16).
 
 ### Performance (ms, uniform stacks, median of 5) — M3 Pro
@@ -105,9 +104,6 @@ limits peak parallel speedup to ~8x vs Zen 4's ~14x on 16 homogeneous P-cores.
 ---
 
 ## AMD Ryzen 9 7950X (Zen 4, AVX-512, FFTW+MKL dual dispatch)
-
-> Full serial + parallel grids collected 2026-07-20 with the corrected engine
-> dispatch (see `results/bench_grid_zen4_{serial,parallel}_2026-07-20.txt`).
 
 ### Performance (ms, uniform stacks, median of 5) — Zen 4
 
@@ -258,13 +254,13 @@ fft_n    fwd(ns)  pw(ns)   ifft(ns) f_fwd  f_pw   f_ifft
 
 These constants drive `select_engine()`, `select_best_B()`, per-level FFT-vs-schoolbook
 decisions, and the m-wrap correction cost model. They live in `devices/<device>/fft_config.h`
-and were refit on real hardware via `tools/fit_cost_model.py` (2026-07-20 session).
+and were refit on real hardware via `tools/fit_cost_model.py`.
 
 ### M3 Pro (Apple Silicon, ARM64)
 
 | Constant | Value | Notes |
 |---|---|---|
-| `FMA_NS` | 0.0839 | Scalar FMA cost. Refit 2026-07-20 from real M3 Pro hardware. |
+| `FMA_NS` | 0.0839 | Scalar FMA cost. Fit from real M3 Pro hardware measurements. |
 | `WRAP_FMA_NS` | 0.1000 | Per-FMA cost for wrap correction (memory-latency-bound). |
 | `BLOCK_FMA_NS` | 0.0500 | FMA cost inside block build/divide (cache-resident). |
 | `BLOCK_MEM_NS` | 0.1000 | Memory cost per element in block build/divide. |
@@ -276,8 +272,8 @@ and were refit on real hardware via `tools/fit_cost_model.py` (2026-07-20 sessio
 | `FFT_OVERHEAD_NS` | 0.0000 | Per-call FFT overhead — baked into `calib_times_ns[]` (full pipeline), not double-counted. |
 
 > FFT calibration table (`calib_sizes[]`/`calib_times_ns[]`) and FFTW wisdom
-> in `devices/m3_pro/fft_config.h` are from a genuine FFTW PATIENT calibration
-> on this Apple M3 Pro machine (2026-07-20). Cost-model constants refit via
+> in `devices/m3_pro/fft_config.h` are from an FFTW PATIENT calibration
+> on an Apple M3 Pro machine. Cost-model constants refit via
 > `tools/fit_cost_model.py` on real M3 Pro hardware.
 
 ### Zen 4 (AMD Ryzen 9 7950X, AVX-512)

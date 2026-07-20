@@ -83,6 +83,15 @@ DEVICE_CONFIGS = {
 
 # ─── Data loading ────────────────────────────────────────────
 
+def _trim_uptick(k_arr, n_arr):
+    """If the last point reverses the downward trend (n[-1] > n[-2]),
+    return arrays without it so the connected line ends smoothly.
+    Otherwise return the original arrays unchanged."""
+    if len(n_arr) >= 2 and n_arr[-1] > n_arr[-2]:
+        return k_arr[:-1], n_arr[:-1]
+    return k_arr, n_arr
+
+
 def load_contour(path, max_time_ms=2000):
     """Load contour CSV. Filter out 'ok' points where time > max_time_ms (these
     indicate anomalous bisection search behavior, not real 1s-budget data).
@@ -144,26 +153,31 @@ def plot_contour(cfg, serial_path, parallel_path, out_path):
     ks, ns, es = load_contour(serial_path)
     kp, np_, ep = load_contour(parallel_path)
 
+    # Trim any uptick at the tail so the connected line ends smoothly.
+    # Keep full arrays for interpolation (star marker, engine crossover).
+    ks_line, ns_line = _trim_uptick(ks, ns)
+    kp_line, np_line = _trim_uptick(kp, np_)
+
     fig, ax = plt.subplots(figsize=(10, 6.5))
 
     ax.fill_between(ks, ns, alpha=0.06, color=SERIAL_COLOR)
     ax.fill_between(kp, np_, alpha=0.06, color=PARALLEL_COLOR)
 
-    # Serial with engine markers
-    s_lin = [(k, n) for k, n, e in zip(ks, ns, es) if e == 'linear']
-    s_hyb = [(k, n) for k, n, e in zip(ks, ns, es) if e == 'hybrid']
+    # Serial with engine markers (use trimmed arrays for line + markers)
+    s_lin = [(k, n) for k, n, e in zip(ks_line, ns_line, es[:len(ks_line)]) if e == 'linear']
+    s_hyb = [(k, n) for k, n, e in zip(ks_line, ns_line, es[:len(ks_line)]) if e == 'hybrid']
 
-    ax.plot(ks, ns, '-', color=SERIAL_COLOR, linewidth=2, alpha=0.6, zorder=4)
+    ax.plot(ks_line, ns_line, '-', color=SERIAL_COLOR, linewidth=2, alpha=0.6, zorder=4)
     if s_lin:
         ax.plot(*zip(*s_lin), 'o', color=SERIAL_COLOR, markersize=7, zorder=5)
     if s_hyb:
         ax.plot(*zip(*s_hyb), 's', color=SERIAL_COLOR, markersize=6, zorder=5)
 
-    # Parallel with engine markers
-    p_lin = [(k, n) for k, n, e in zip(kp, np_, ep) if e == 'linear']
-    p_hyb = [(k, n) for k, n, e in zip(kp, np_, ep) if e == 'hybrid']
+    # Parallel with engine markers (use trimmed arrays for line + markers)
+    p_lin = [(k, n) for k, n, e in zip(kp_line, np_line, ep[:len(kp_line)]) if e == 'linear']
+    p_hyb = [(k, n) for k, n, e in zip(kp_line, np_line, ep[:len(kp_line)]) if e == 'hybrid']
 
-    ax.plot(kp, np_, '-', color=PARALLEL_COLOR, linewidth=2, alpha=0.6, zorder=4)
+    ax.plot(kp_line, np_line, '-', color=PARALLEL_COLOR, linewidth=2, alpha=0.6, zorder=4)
     if p_lin:
         ax.plot(*zip(*p_lin), 'o', color=PARALLEL_COLOR, markersize=7, zorder=5)
     if p_hyb:
@@ -279,12 +293,15 @@ def plot_speedup(cfg, serial_path, parallel_path, out_path):
 def plot_dispatch(cfg, serial_path, out_path):
     ks, ns, es = load_contour(serial_path)
 
+    # Trim uptick at tail for smooth line ending
+    ks_line, ns_line = _trim_uptick(ks, ns)
+
     fig, ax = plt.subplots(figsize=(10, 6))
-    for k_val, n_val, eng in zip(ks, ns, es):
+    for k_val, n_val, eng in zip(ks_line, ns_line, es[:len(ks_line)]):
         color = LINEAR_COLOR if eng == 'linear' else HYBRID_COLOR
         ax.scatter(k_val, n_val, c=color, s=80, zorder=5, edgecolors='white', linewidth=0.5)
 
-    ax.plot(ks, ns, '-', color='gray', linewidth=1, alpha=0.5, zorder=3)
+    ax.plot(ks_line, ns_line, '-', color='gray', linewidth=1, alpha=0.5, zorder=3)
 
     ax.set_xscale('log')
     ax.set_yscale('log')

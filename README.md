@@ -5,6 +5,15 @@
 
 High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~17,216 players / payouts in 1 second*.
 
+## What is ICM?
+
+The Independent Chip Model (ICM) is a tournament equity model that converts
+chip stacks into real-money expected payouts by accounting for the payout
+structure. In a poker tournament, chips do not have a fixed dollar value
+— your last chip is worth far less than your first — and ICM computes each
+player's fair expected share of the prize pool. For a general introduction,
+see the [ICM Wikipedia page](https://en.wikipedia.org/wiki/Independent_Chip_Model).
+
 ## Quick Start
 
 ```bash
@@ -89,7 +98,13 @@ stack") has an equivalent continuous-time formulation. Assign each player
 their chip stack `S_j` (an "elimination clock"), and eliminate players in
 order of increasing `T_j`. The memoryless property of the exponential
 distribution guarantees this recovers exactly the same stack-proportional
-elimination rule at every step. This gives a simple, unbiased way to
+elimination rule at every step. Concretely, for any subset of players, the
+probability that a particular player $i$ finishes best within that subset
+— i.e., has the smallest $T$ — is $S_i$ divided by the subset's total stack.
+(Proof: $T_i$ and the minimum of everyone else's $T$'s are independent; the
+minimum of independent exponentials is itself exponential with rate equal
+to the sum of their rates; and for two independent exponentials with rates
+$a, b$, $P(T_a < T_b) = a / (a + b)$.) This gives a simple, unbiased way to
 *sample* a full elimination order in one shot - draw `n` exponentials, sort
 - instead of simulating step-by-step. Tysen Streib introduced this
 technique in a TwoPlusTwo forum thread, ["New Algorithm: Calculate ICM
@@ -102,25 +117,67 @@ deterministic low-discrepancy point sequences instead of independent random
 draws, giving closer to $O(1/N)$ convergence for smooth integrands - but
 this repo does not build on that approach.)
 
-**5. This repo's approach: make the Monte Carlo estimate exact.** The
-exponential-clock model above yields an integral representation of "player
-`i` finishes in position `r`." Substituting $v = e^{-t}$ turns the
-combinatorial sum inside that integral into the coefficient of a generating
-function. For player $i$, define:
+**5. This repo's approach: make the Monte Carlo estimate exact.** Start
+from step 4's construction: $T_1, \ldots, T_n$ independent,
+$T_j \sim \text{Exponential}(\text{rate} = S_j)$, and the finishing order is
+the order of increasing $T_j$.
 
-$$a_j(v) = v^{S_j}, \quad b_j(v) = 1 - v^{S_j}$$
-$$Q_i(x; v) = \prod_{j \neq i} \bigl(a_j(v) + b_j(v) \cdot x\bigr)$$
+Fix player $i$ and condition on $T_i = t$. For each other player $j \neq i$,
+independently: $j$ finishes *before* $i$ iff $T_j < t$, which happens with
+probability $b_j(t) = 1 - e^{-S_j t}$ (the $\text{Exponential}(S_j)$ CDF at $t$);
+$j$ finishes *after* $i$ with probability $a_j(t) = e^{-S_j t}$. Because the
+$T_j$ are independent, the probability of any specific pattern of "who
+finishes before $i$" is the product of the individual probabilities. Now
+build the polynomial
 
-The coefficient of $x^m$ in $Q_i(x; v)$ captures exactly the combinatorial
-term that Monte Carlo would otherwise have to sample - the sum over all
-subsets of `m` other players of the product of their elimination
-probabilities times the remaining players' survival probabilities. So
-instead of drawing `N` random samples of the exponential race and
-averaging, this repo evaluates the exact 1-D integral over `v` via
+$$Q_i(x; t) = \prod_{j \neq i} \bigl(a_j(t) + b_j(t) \cdot x\bigr).$$
+
+Expanding this product, each factor contributes either $a_j(t)$ (player $j$
+finishes after $i$, contributes $x^0$) or $b_j(t) \cdot x$ (player $j$
+finishes before $i$, contributes $x^1$). The coefficient of $x^r$ in
+$Q_i(x; t)$ is therefore exactly $P(\text{exactly } r \text{ of the other
+players finish before } i \mid T_i = t)$ — i.e.
+$P(i \text{ finishes in position } r \mid T_i = t)$.
+
+Uncondition: $T_i$ has density $S_i e^{-S_i t}$, so
+
+$$P(i \text{ finishes in position } r) = \int_0^\infty S_i e^{-S_i t} \cdot [x^r]\, Q_i(x; t) \, dt,$$
+
+where $[x^r] Q$ denotes the coefficient of $x^r$ in $Q$. This is the
+integral representation the exponential-clock model promised.
+
+Now change variables: let $v = e^{-t}$. Then $a_j(t) = e^{-S_j t} = v^{S_j}$
+and $b_j(t) = 1 - v^{S_j}$, so define
+
+$$a_j(v) = v^{S_j}, \quad b_j(v) = 1 - v^{S_j},$$
+$$Q_i(x; v) = \prod_{j \neq i} \bigl(a_j(v) + b_j(v) \cdot x\bigr).$$
+
+For the measure, $dv = -e^{-t} dt = -v \, dt$, so $dt = -dv/v$, and
+$e^{-S_i t} = v^{S_i}$. Substituting and flipping the integration bounds
+($t: 0 \to \infty$ becomes $v: 1 \to 0$, and the minus sign from $dt = -dv/v$
+cancels the bound flip):
+
+$$P(i \text{ finishes in position } r) = \int_0^1 S_i \, v^{S_i - 1} \cdot [x^r]\, Q_i(x; v) \, dv.$$
+
+The coefficient of $x^r$ in $Q_i(x; v)$ captures exactly the combinatorial
+term that Monte Carlo would otherwise have to sample — the sum over all
+subsets of $r$ other players of the product of their elimination
+probabilities times the remaining players' survival probabilities.
+
+Finally, the expected payout is the sum over positions:
+$E[\text{payout}_i] = \sum_r \text{payout}[r] \cdot P(i \text{ finishes in position } r)$.
+Pulling the finite sum inside the integral and recognizing
+$\sum_r \text{payout}[r] \cdot [x^r] Q_i(x; v) = \langle \text{payout}, Q_i(x; v) \rangle$
+(the dot product used in the subproduct-tree section below):
+
+$$E[\text{payout}_i] = \int_0^1 S_i \, v^{S_i - 1} \, \langle \text{payout}, Q_i(x; v) \rangle \, dv.$$
+
+So instead of drawing $N$ random samples of the exponential race and
+averaging, this repo evaluates the exact 1-D integral over $v$ via
 quadrature (after a change of variables $v = \Phi(y)$ using the standard
-normal CDF to make the integrand decay rapidly). With `Q = 256`
+normal CDF to make the integrand decay rapidly). With $Q = 256$
 Gauss-Legendre nodes, this yields deterministic double-precision accuracy
-(relative error < 5 × 10^(-12); see Accuracy section below).
+(relative error $< 5 \times 10^{-12}$; see Accuracy section below).
 
 The remaining computational challenge is evaluating, for *every* player `i`
 simultaneously, the coefficients of `Q_i(x; v)` - the product of everyone
@@ -197,9 +254,8 @@ recovering a single player's coefficient means dividing the block's
 polynomial division, done only on this small, complete, `B`-degree product,
 where the resulting numerical amplification is bounded by $|c|^B$ and safe
 in double precision for $B$ up to 64. (Division elsewhere in this codebase
-is deliberately avoided, see the correctness constraint in `CLAUDE.md`,
-because doing the same thing on the full, *truncated* `n`-player product is
-numerically unstable.)
+is deliberately avoided because doing the same thing on the full,
+*truncated* `n`-player product is numerically unstable.)
 
 **Complexity: $O(Q \cdot n \cdot \log^2 k)$.** Derive this by summing the cost of
 each tree level directly. There are $L = \log_2 n$ levels; at level $\ell$ there
@@ -221,6 +277,29 @@ Adding both regimes: $O(n \log^2 k) + O(n \log k) = O(n \log^2 k)$ for the build
 pass; propagate is the same shape of operation (same FFT sizes), so it's
 the same order. That's the per-quadrature-point cost; multiplying by $Q$
 quadrature points gives $O(Q \cdot n \cdot \log^2 k)$ overall.
+
+**Space complexity: $O(n \log k)$.** — actually just $O(n \log k)$ per
+quadrature point, same as the time complexity's leading spatial factor, and
+here's why.
+
+The build phase constructs the subproduct tree bottom-up: level $\ell$
+(counting from the leaves) has $n/2^\ell$ nodes, each holding a polynomial
+truncated to degree $\min(2^\ell, k)$ (never more than $k$, since the payout
+vector only has $k$ nonzero terms to read out later). The top-down propagate
+pass needs every level's build-phase polynomials available as it descends,
+so — unlike a pass you could discard as you go — the whole tree has to be
+held in memory simultaneously, not just one level at a time.
+
+Summing storage across levels: for levels where $2^\ell \leq k$, each level
+costs $(n/2^\ell) \cdot 2^\ell = n$, and there are $\log k$ such levels — that
+alone contributes $O(n \log k)$. For levels where $2^\ell > k$ (i.e., past the
+point where a node's polynomial saturates at degree $k$), the per-level cost
+is $(n/2^\ell) \cdot k$, which shrinks geometrically as $\ell$ increases, so
+those levels collectively contribute only $O(n)$ more — dominated by the
+first (smallest $\ell$) term in that regime. So the total is
+$O(n \log k) + O(n) = O(n \log k)$ per quadrature point. Since quadrature
+points are processed sequentially and reuse the same memory, the overall
+space requirement remains $O(n \log k)$ — it does not multiply by $Q$.
 
 **Three CPU engines with cost-based dispatch.** The library picks the
 fastest engine per `(n, k)` pair via `select_engine()`, which compares a
@@ -251,18 +330,8 @@ special payout structures, not against a slow general-purpose reference
 for *any* `n` because they follow from linearity of expectation over pairs
 and triples of players, not from enumerating elimination orderings:
 
-Both derivations reuse the exponential-clock construction from step 4 above:
-`T_1, ..., T_n` independent, `T_j ~ Exponential(rate = S_j)`, and finishing
-order = increasing `T_j` (smallest `T` finishes 1st). One elementary fact
-about competing independent exponentials does all the work: for any subset
-of players, the probability that a particular one of them has the smallest
-`T` - i.e. finishes best - *within that subset* is that player's stack
-divided by the subset's total stack. (Proof: for player `i` against a
-group, `T_i` and the minimum of everyone else's `T`s are independent, the
-latter is itself exponential with rate equal to the sum of their stacks -
-the minimum of independent exponentials is exponential with the summed
-rate - and $P(T_i < T_{\text{other}})$ for two independent exponentials with rates
-$a, b$ is $a / (a + b)$.) Applied to a pair $\{i, j\}$: $P(i \text{ beats } j) =
+Both derivations follow from the exponential-clock model established in
+step 4. Applied to a pair $\{i, j\}$: $P(i \text{ beats } j) =
 S_i / (S_i + S_j)$. Applied to a triple $\{i, j, k\}$: $P(i \text{ beats both}) =
 S_i / (S_i + S_j + S_k)$.
 

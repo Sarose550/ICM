@@ -25,10 +25,6 @@ else
 
 ### Final Performance
 
-> **Data provenance:** Calibrated 2026-07-20 with FFTW PATIENT wisdom on Apple M3 Pro
-> (6P+6E, 12 logical cores). Cost-model constants refit from real M3 Pro hardware measurements
-> (see `devices/m3_pro/fft_config.h` and [RESULTS.md](RESULTS.md#cost-model-constants)).
-
 Single-threaded (ms, Q=256, Apple M3 Pro, median of 5):
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
@@ -132,8 +128,7 @@ indep_cost = calib[build_size]                          // build (full pipeline)
 ```
 
 These ratios are derived from the measured FFT phase split (see RESULTS.md) and
-refit via `tools/fit_cost_model.py` against 200 sampled (n,k,B) plans on real hardware
-(2026-07-20):
+refit via `tools/fit_cost_model.py` against 200 sampled (n,k,B) plans on real hardware:
 
 - `PAIRED_CACHED_CORR_RATIO`: cost of paired cached correlate / full FFT pipeline.
   **M3 Pro: 1.8205**, Zen 4: 2.9709.
@@ -240,7 +235,7 @@ Save FFTW_MEASURE results to `fftw_wisdom.dat`. Subsequent runs skip benchmarkin
 | Karatsuba | 1.5x slower at all sizes | FMA hardware: schoolbook `c[i+j] += a[i]*b[j]` is one FMA; Karatsuba trades multiplies for adds but both cost 1 cycle |
 | CRT cyclic+negacyclic | 17% more expensive | r2c(2k) ≈ c2c(k) via Hermitian symmetry; explicit CRT adds overhead for negacyclic twiddle |
 | Composite FFT sizes (ESTIMATE) | Slower | FFTW_ESTIMATE for non-power-of-2 produces suboptimal plans. Fixed: PATIENT wisdom + MEASURE plans make composites 10-30% faster than next power-of-2 |
-| Checkpointed linear | 4% gain | Streaming access already prefetcher-friendly on M3 Pro/Max (400 GB/s) |
+| Checkpointed linear | 4% gain | Streaming access already prefetcher-friendly on M3 Pro (400 GB/s) |
 | Apple vDSP for inner loops | 2x slower | Per-call overhead at small k exceeds vectorization benefit |
 | PGO / -Ofast | Hurt or neutral | PGO profile mismatch; -Ofast breaks FP64 precision |
 | Batched divide on M3 Pro | No improvement | OoO execution already pipelines independent serial chains |
@@ -267,13 +262,13 @@ The propagation starts with g_root = payout and correlates with the root's TWO
 CHILDREN. It never reads the root polynomial itself. Skipping the root multiply
 saves the single most expensive FFT in the entire tree (the largest polynomial size).
 
-## Why Blocking the Linear Engine Doesn't Help (on M3 Pro/Max)
+## Why Blocking the Linear Engine Doesn't Help (on M3 Pro)
 
 The linear forward-backward stores all n rows (O(nk) memory). The forward pass
 writes sequentially; the backward pass reads in reverse. Both are streaming access
 patterns that the hardware prefetcher handles perfectly at 400 GB/s.
 
-Checkpointing reduces memory to O(√n·k) but adds 33% recomputation. On M3 Pro/Max
+Checkpointing reduces memory to O(√n·k) but adds 33% recomputation. On M3 Pro
 (unified memory at ~400 GB/s),
 the recomputation costs more than the cache miss savings because streaming is
 already fast. On bandwidth-limited hardware (Zen 4 at 80 GB/s), checkpointing
@@ -308,7 +303,7 @@ cost models, and dispatch logic are fully parameterized by the constants in that
 
 ## Porting to AMD Zen 4 (Ryzen 7950X)
 
-### Key Architectural Differences from M3 Pro/Max
+### Key Architectural Differences from M3 Pro
 - **SIMD**: AVX-512 (8 FP64/vector) vs NEON (2 FP64/vector)
 - **Memory BW**: ~60 GB/s DDR5 vs 400 GB/s unified
 - **L1 cache**: 32KB vs 192KB
@@ -381,7 +376,7 @@ Edit the `#define`s at the top of the file with measured values:
 ```
 
 **Important**: `L2_CACHE_SIZE` controls the checkpointing interval in the batched
-linear engine (`ckpt_interval_batched`). Zen 4's 1MB L2 vs M3 Pro/Max's 32MB means
+linear engine (`ckpt_interval_batched`). Zen 4's 1MB L2 vs M3 Pro's 32MB means
 checkpointing activates much earlier, which is critical — without it, the linear
 engine would stream through DRAM at 60 GB/s instead of L2 at ~1 TB/s.
 
@@ -542,179 +537,3 @@ gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
     -fopenmp -Isrc -Idevices/zen4 -o bench_grid bench/bench.c -ldl -lm
 ```
-
-## Porting to NVIDIA H200 GPU
-
-### Fundamental Architecture Change
-The H200 is a throughput processor: 16896 CUDA cores, 4.8 TB/s HBM3e bandwidth,
-~34 TFLOPS FP64 (CUDA cores), ~67 TFLOPS FP64 (tensor cores). This is a full
-rewrite (~2000 lines CUDA), not a port. The algorithmic core (tree structure,
-truncated propagation) stays the same — all infrastructure changes.
-
-**Key physics:** FFTs are bandwidth-bound, not compute-bound. Each element is
-read/written ~3 times (forward FFT, pointwise, inverse FFT). The H200's advantage
-over H100 is primarily 4.8 vs 3.35 TB/s bandwidth (~1.4x), not TFLOPS. FP64
-penalty vs FP32 is only 2x on CUDA cores but largely hidden by bandwidth limits.
-
-The linear engine is inherently sequential (forward-backward pass) — only the
-tree-based engines apply on GPU.
-
-### Step 1: Implement tree engine in CUDA (level-parallel)
-
-The tree's level-by-level structure maps to GPU: all node operations at each
-level are independent. Each level is one batched cuFFT call + pointwise kernel,
-with synchronization between levels.
-
-- **Build (bottom-up):** one batched operation per level.
-- **Propagation (top-down):** same structure, batched correlates.
-
-### Step 2: Replace FFTW with cuFFT batched plans
-
-At each tree level, batch `Q × nn[ell]` independent FFTs into one cuFFT call.
-
-```c
-int N = padded_poly_size;  // must be power of 2 on GPU
-int batch = Q * nn[ell];   // e.g., 256 * 4096 = 1M FFTs
-
-cufftHandle plan;
-cufftCreate(&plan);
-size_t workSize;
-int n_arr[] = {N};
-cufftMakePlanMany(plan, 1, n_arr,
-    NULL, 1, N,           // input: contiguous, idist=N
-    NULL, 1, N/2+1,       // output: contiguous, odist=N/2+1
-    CUFFT_D2Z, batch, &workSize);
-cufftExecD2Z(plan, d_input, d_output);
-```
-
-**FFT size selection.** cuFFT has optimized radix kernels for 7-smooth sizes
-(2^a·3^b·5^c·7^d), with power-of-2 fastest, then 3, 5, 7. Non-smooth sizes
-(large prime factors) fall back to Bluestein's algorithm (~3x overhead).
-The performance gradient between pow2 and nearby smooth composites determines
-whether m-wrap and composite size selection are worthwhile on GPU — if the
-penalty is only 10-30% (like FFTW on CPU), the cyclic m-wrap trick still helps;
-if it's 2x+, stick to pow2-only. **Benchmark:** compare cuFFT at pow2 vs nearby
-7-smooth sizes (e.g., 1024 vs 960, 2048 vs 1920) on the target GPU.
-
-**Shared work areas** across tree levels to reduce memory:
-```c
-cufftSetAutoAllocation(plan, 0);  // disable per-plan allocation
-cufftSetWorkArea(plan, d_shared_workspace);  // reuse one buffer
-```
-
-### Step 3: Schoolbook vs FFT crossover on GPU
-
-Research (CUMODP library) suggests the schoolbook→FFT crossover on GPU is at
-**degree ~4096**, far higher than CPU's ~32. This is because:
-- Schoolbook maps well to shared-memory CUDA kernels (coalesced access, no
-  global memory traffic beyond initial load)
-- cuFFT has per-call overhead and memory access patterns less suited to small sizes
-- At the bottom tree levels, there are millions of tiny independent multiplies
-  (Q × nn[ell]) giving abundant parallelism for schoolbook kernels
-
-**Benchmark:** time shared-memory schoolbook kernel vs cuFFT batched at sizes
-16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 with realistic batch counts.
-
-### Step 4: Hybrid block size on GPU
-
-The much higher schoolbook→FFT crossover fundamentally changes the hybrid strategy.
-On CPU, B=16-32 (cost-model selected). On GPU, B=64 to B=256 may be optimal:
-
-- B=64: eliminates 6 bottom tree levels, each needing a kernel launch + sync
-- B=256: eliminates 8 levels. Block products are degree-256 polynomials,
-  still well within the GPU schoolbook crossover
-- The block build (n/B × Q independent chains of B schoolbook multiplies)
-  and block divide (same structure) both have ample GPU parallelism
-- Fewer tree levels = fewer `cudaDeviceSynchronize` barriers
-
-**Benchmark:** sweep B = 8, 16, 32, 64, 128, 256. Measure total time including
-kernel launch overhead. At small B, launch overhead dominates. At large B,
-block products get expensive.
-
-### Step 5: Reducing kernel launch overhead
-
-Each tree level requires at least 3 kernel launches (forward FFT, pointwise
-multiply, inverse FFT) plus synchronization. For a 15-level tree: ~45 launches.
-
-**Option A: CUDA Graphs.** Capture the entire tree as a graph, replay with ~2.5μs
-total launch overhead (vs ~135μs without). cuFFT supports CUDA Graphs on
-single-GPU plans. Tree structure is fixed per (n, k), so graphs can be reused
-across quadrature points.
-```c
-cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
-for (int level = 0; level < num_levels; level++) {
-    cufftSetStream(fwd_plan[level], stream);
-    cufftExecD2Z(fwd_plan[level], ...);
-    pointwise_multiply<<<...>>>(...);
-    cufftSetStream(inv_plan[level], stream);
-    cufftExecZ2D(inv_plan[level], ...);
-}
-cudaStreamEndCapture(stream, &graph);
-cudaGraphInstantiate(&exec_graph, graph, NULL, NULL, 0);
-// Replay with O(1) overhead:
-cudaGraphLaunch(exec_graph, stream);
-```
-
-**Option B: cuFFT LTO callbacks.** Fuse pointwise multiply into the inverse FFT's
-load callback, eliminating one full memory pass (~20% of the FFT-multiply-IFFT
-pipeline):
-```c
-// Device callback: multiply during IFFT load
-__device__ cufftDoubleComplex cufftJITCallbackLoadDoubleComplex(
-    void *dataIn, size_t offset, void *callerInfo, void *sharedPointer) {
-    cufftDoubleComplex a = ((cufftDoubleComplex *)dataIn)[offset];
-    cufftDoubleComplex b = ((cufftDoubleComplex *)callerInfo)[offset];
-    cufftDoubleComplex r;
-    r.x = a.x * b.x - a.y * b.y;
-    r.y = a.x * b.y + a.y * b.x;
-    return r;
-}
-```
-Compile to LTO-IR with `nvcc -dlto -dc`, embed with `bin2c`.
-
-**Note:** CUDA Graphs and cuFFT callbacks currently conflict for out-of-place
-transforms. Choose one based on benchmarking: graphs save launch overhead,
-callbacks save memory bandwidth.
-
-### Step 6: Quadrature loop on-device
-
-Process all Q=256 quadrature points simultaneously. Keep everything on-device:
-- Compute `a[j] = exp(S[j] * logv[q])` for all (j, q) in one kernel
-  (n×Q independent exp calls, use CUDA math library).
-- Never transfer per-quad-point data to/from host.
-- Each quad point needs its own copy of the polynomial arrays.
-  Batch dimension is folded into the cuFFT batch count.
-
-### Step 7: Memory layout
-
-cuFFT requires contiguous unit-stride input for optimal coalescing.
-
-**Recommended:** `poly[level][batch][coeff]` where `batch = q * nn[ell] + node`.
-All polynomials at a given level packed contiguously, each of length N (padded
-to pow2). cuFFT parameters: `istride=1, idist=N, batch=Q*nn[ell]`.
-
-Out-of-place transforms (separate real input and complex output buffers) are
-cleaner than in-place for a polynomial tree — no padding worries.
-
-Memory footprint for n=8192 k=8192 Q=256: tree storage ~14MB/quad × 256 ≈ 3.5GB.
-Fits in 141GB HBM. At n=131072 k=131072: ~200MB/quad × 256 ≈ 50GB. Still fits.
-Larger problems: process Q in chunks of 32-64.
-
-### Step 8: Tune and validate
-
-| Parameter | CPU value | GPU: benchmark |
-|-----------|-----------|---------------|
-| Schoolbook→FFT crossover | cps ≈ 32 | Expect ~4096; benchmark 16-8192 |
-| Hybrid B | 8 | Sweep 8, 32, 64, 128, 256 |
-| FFT sizes | 7-smooth | Benchmark pow2 vs 7-smooth composites; determines if m-wrap applies |
-| Launch strategy | N/A | CUDA Graphs vs LTO callbacks — benchmark both |
-| Q batch size | 256 (all) | Largest Q fitting HBM; benchmark chunk sizes |
-| Work area sharing | N/A | `cufftSetAutoAllocation(0)` + shared buffer |
-
-### Reference implementations
-- **CUMODP** (cumodp.org): GPU subproduct tree for modular polynomial arithmetic.
-  Achieves ~43% of peak bandwidth. Key paper: "On the Parallelization of Subproduct
-  Tree Techniques Targeting Many-Core Architectures" (Springer, 2014).
-
-Run correctness verification against CPU reference at n=256, 1024, 8192
-before benchmarking.
