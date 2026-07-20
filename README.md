@@ -184,8 +184,8 @@ exactly the mechanism below:
 `g_leaf_i[0]` is then `⟨payout, Q_i(x; v)⟩`, truncated to its constant term:
 exactly the coefficient the generating-function argument in step 5 needs,
 for every `i`, without ever having built `Q_i(x; v)` on its own. One build
-pass, one propagate pass, `O(n log n)` total work (times `O(log n)` per
-FFT-accelerated multiply/correlate), not `n` separate `O(n)` products.
+pass, one propagate pass, not `n` separate `O(n)` products (the exact
+complexity is derived below).
 
 The hybrid engine (below) runs this same two-pass algorithm over *blocks*
 of `B` players rather than individual players: a block's leaf polynomial
@@ -202,6 +202,37 @@ in double precision for `B` up to 64. (Division elsewhere in this codebase
 is deliberately avoided, see the correctness constraint in `CLAUDE.md`,
 because doing the same thing on the full, *truncated* `n`-player product is
 numerically unstable.)
+
+**Complexity: `O(Q · n · log²k)`.** Derive this by summing the cost of
+each tree level directly. There are `L = log₂n` levels; at level `ℓ` there
+are `n/2^ℓ` nodes, and every node's polynomial (and every `g`-vector during
+propagate) is truncated to size `s_ℓ = min(2^ℓ, k)` - nothing past `k`
+terms of the payout can ever matter downstream. Each node's FFT-based
+multiply/correlate at level `ℓ` costs `O(s_ℓ log s_ℓ)`, so the total cost
+at level `ℓ` is `(n/2^ℓ) · O(s_ℓ log s_ℓ)`. Two regimes:
+
+- *Below saturation* (`2^ℓ ≤ k`, so `s_ℓ = 2^ℓ`): cost at level `ℓ` is
+  `(n/2^ℓ) · O(2^ℓ · ℓ) = O(n · ℓ)`. Summed over `ℓ = 1, ..., log k`, this
+  is `O(n · (log k)²)` (a triangular sum).
+- *Above saturation* (`2^ℓ > k`, so `s_ℓ = k`, capped): cost at level `ℓ`
+  is `(n/2^ℓ) · O(k log k)`. The node count `n/2^ℓ` shrinks geometrically
+  going up the tree, so the entire remaining tail of levels sums to just
+  `O(n log k)` - not an extra factor of `log n`.
+
+Adding both regimes: `O(n log²k) + O(n log k) = O(n log²k)` for the build
+pass; propagate is the same shape of operation (same FFT sizes), so it's
+the same order. That's the per-quadrature-point cost; multiplying by `Q`
+quadrature points gives `O(Q · n · log²k)` overall.
+
+The leading factor has to be `n`, not `k`: every one of the `n` players
+needs processing at least once, so the true cost is `Ω(n)` regardless of
+`k`, and any bound with a *smaller* leading factor (like `k · log²n`, which
+can fall below `n` itself once `k` is small relative to `n`) isn't actually
+a valid upper bound. The log-squared factor belongs to `k`: it's a
+truncation-depth effect (how much of the tree keeps growing before payout
+truncation caps it), not a tree-depth effect - which is exactly why the
+hybrid engine's `n → n/B` leaf-count reduction above helps constant factors
+but doesn't change this asymptotic shape.
 
 **Three CPU engines with cost-based dispatch.** The library picks the
 fastest engine per `(n, k)` pair via `select_engine()`, which compares a
