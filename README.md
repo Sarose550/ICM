@@ -224,16 +224,6 @@ pass; propagate is the same shape of operation (same FFT sizes), so it's
 the same order. That's the per-quadrature-point cost; multiplying by `Q`
 quadrature points gives `O(Q · n · log²k)` overall.
 
-The leading factor has to be `n`, not `k`: every one of the `n` players
-needs processing at least once, so the true cost is `Ω(n)` regardless of
-`k`, and any bound with a *smaller* leading factor (like `k · log²n`, which
-can fall below `n` itself once `k` is small relative to `n`) isn't actually
-a valid upper bound. The log-squared factor belongs to `k`: it's a
-truncation-depth effect (how much of the tree keeps growing before payout
-truncation caps it), not a tree-depth effect - which is exactly why the
-hybrid engine's `n → n/B` leaf-count reduction above helps constant factors
-but doesn't change this asymptotic shape.
-
 **Three CPU engines with cost-based dispatch.** The library picks the
 fastest engine per `(n, k)` pair via `select_engine()`, which compares a
 roofline linear-cost estimate against a calibrated hybrid-cost model - no
