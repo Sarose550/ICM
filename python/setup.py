@@ -44,10 +44,10 @@ class BuildSharedLib(build_ext):
 
         lib_path = build_dir / lib_name
 
-        # Determine device (default m3_max on macOS, zen4 on Linux)
+        # Determine device (default m3_pro on macOS, zen4 on Linux)
         device = os.environ.get("ICM_DEVICE")
         if device is None:
-            device = "m3_max" if system == "Darwin" else "zen4"
+            device = "m3_pro" if system == "Darwin" else "zen4"
 
         device_dir = project_root / "devices" / device
 

@@ -499,8 +499,8 @@ static inline __attribute__((always_inline)) void correlate_school(const double 
    FFT KERNELS — polynomial multiply and correlate via FFTW
    ══════════════════════════════════════════════════════════════ */
 
-/* FFT vs schoolbook is now decided per-level in tree_ctx_create_ex2()
- * using calibrated FFT times from fft_config.h. No global crossover. */
+/* FFT vs schoolbook is decided per-level in tree_ctx_create_ex2()
+ * using calibrated FFT times from fft_config.h. */
 
 static inline int next_pow2(int n) {
     int p = 1; while (p < n) p <<= 1; return p;
@@ -595,7 +595,6 @@ static inline __attribute__((always_inline)) void polymul_fft_cyclic(const doubl
                                 FFTCache *fc,
                                 int fft_n, int wrap_m) {
     int d = na / 2;
-    int conv_len = 2 * d;
     FFTPlan *plan = fft_cache_get(fc, fft_n);
     fft_n = plan->fft_n;
     int cn = fft_n / 2 + 1;
@@ -662,7 +661,6 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     fft_n = plan->fft_n;
     int cn = fft_n / 2 + 1;
     double inv = 1.0 / fft_n;
-    int conv_len = na + nb - 1;
 
     /* FFT(a) */
     int copy_a = (na < fft_n) ? na : fft_n;
@@ -706,57 +704,6 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
         if (i < fft_out) c[i] -= high;
         if (pos < k) c[pos] = high;
     }
-}
-
-/* Polynomial multiply mod x^k using FFT.
- * c[0..k-1] = (a[0..na-1] * b[0..nb-1]) mod x^k
- * Optionally caches FFT(a) and FFT(b) into fft_a_out/fft_b_out for reuse.
- * target_fft_n: if > 0, use this FFT size instead of the minimum. */
-static inline __attribute__((always_inline)) void polymul_fft_modk(const double *a, int na,
-                             const double *b, int nb,
-                             double *c, int k,
-                             FFTCache *fc,
-                             fftw_complex *fft_a_out,
-                             fftw_complex *fft_b_out,
-                             int fft_n) {
-    FFTPlan *plan = fft_cache_get(fc, fft_n);
-    fft_n = plan->fft_n;
-    int cn = fft_n / 2 + 1;
-    double inv = 1.0 / fft_n;
-
-    /* FFT(a): copy data then zero-pad remainder only */
-    memcpy(plan->rbuf, a, na * sizeof(double));
-    if (na < fft_n) memset(plan->rbuf + na, 0, (fft_n - na) * sizeof(double));
-    fft_exec_fwd(plan);
-    if (fft_a_out)
-        memcpy(fft_a_out, plan->cbuf, cn * sizeof(fftw_complex));
-
-    /* FFT(b): copy then zero-pad */
-    memcpy(fc->rbuf2, b, nb * sizeof(double));
-    if (nb < fft_n) memset(fc->rbuf2 + nb, 0, (fft_n - nb) * sizeof(double));
-    fft_exec_fwd2(plan, fc);
-    /* Cache FFT(b) if requested */
-    if (fft_b_out)
-        memcpy(fft_b_out, fc->cbuf2, cn * sizeof(fftw_complex));
-
-    /* Pointwise complex multiply: cbuf = cbuf * cbuf2 */
-    for (int i = 0; i < cn; i++) {
-        double re = plan->cbuf[i][0] * fc->cbuf2[i][0]
-                  - plan->cbuf[i][1] * fc->cbuf2[i][1];
-        double im = plan->cbuf[i][0] * fc->cbuf2[i][1]
-                  + plan->cbuf[i][1] * fc->cbuf2[i][0];
-        plan->cbuf[i][0] = re;
-        plan->cbuf[i][1] = im;
-    }
-
-    fft_exec_inv(plan);
-
-    int conv_len = na + nb - 1;
-    int out_len = (conv_len < k) ? conv_len : k;
-    for (int i = 0; i < out_len; i++)
-        c[i] = plan->rbuf[i] * inv;
-    if (k > conv_len)
-        memset(c + conv_len, 0, (k - conv_len) * sizeof(double));
 }
 
 /* Correlate via FFT (from scratch — FFTs both g and P):
@@ -1079,9 +1026,6 @@ typedef struct {
     int corr_fft_n[MAX_TREE_LEVELS];         /* FFT size for correlate */
     int corr_wrap_m[MAX_TREE_LEVELS];        /* wrap coefficient count for cyclic correlate */
     int use_fft[MAX_TREE_LEVELS];            /* 1 = use FFT, 0 = schoolbook (per-level decision) */
-    int n_hot_blocks;                        /* 0 = all hot (full-equity fast path); >0 = number
-                                                of target-containing leaf blocks clustered at
-                                                the front (subset pruning). */
 } TreeCtx;
 
 /* Create tree context. leaf_degree=1 for standard tree, B for hybrid.
@@ -1278,8 +1222,6 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
         tc->fft_cache_ok[ell] = 0;
         if (ell == 0 || ell == tc->L - 1 || !tc->use_fft[ell]) continue;
         if (tc->build_fft_n[ell] != tc->corr_fft_n[ell]) continue;  /* independent won */
-        int cps = tc->psz[ell-1];
-        int pgsz = tc->psz[ell];
         int corr_fft_n = tc->corr_fft_n[ell];
         int cn = corr_fft_n / 2 + 1;
         int n_children = tc->nn[ell-1];
@@ -1314,6 +1256,7 @@ static void tree_ctx_destroy(TreeCtx *tc) {
  * The FFT plans inside the cloned FFTCache share the same FFTW plan objects
  * but have independent buffers, which is safe because fftw_execute_* with
  * explicit buffers is thread-safe. We create independent FFTCache + buffers. */
+#ifdef _OPENMP
 static FFTCache *fft_cache_clone(const FFTCache *src) {
     if (!src) return NULL;
     FFTCache *fc = (FFTCache *)calloc(1, sizeof(FFTCache));
@@ -1367,7 +1310,9 @@ static FFTCache *fft_cache_clone(const FFTCache *src) {
     fc->cbuf3 = fftw_malloc((fc->max_fft_n/2 + 1) * sizeof(fftw_complex));
     return fc;
 }
+#endif
 
+#ifdef _OPENMP
 static TreeCtx *tree_ctx_clone(const TreeCtx *src) {
     TreeCtx *tc = (TreeCtx *)calloc(1, sizeof(TreeCtx));
     memcpy(tc, src, sizeof(TreeCtx));
@@ -1387,6 +1332,7 @@ static TreeCtx *tree_ctx_clone(const TreeCtx *src) {
     }
     return tc;
 }
+#endif
 
 /* ── Shared tree build + propagate (used by both tree and hybrid engines) ── */
 
@@ -1446,15 +1392,15 @@ static void tree_build_levels(TreeCtx *tc) {
  * k: number of payout terms (original, not padded).
  * Returns pointer to leaf-level g vectors.
  *
- * When tc->n_hot_blocks > 0 (subset pruning), hot blocks are clustered at
- * leaf positions [0, n_hot_blocks).  Internal nodes whose entire leaf range
- * is >= n_hot_blocks are "cold": their g-buffers are never read downstream,
- * so we skip correlate calls into them and zero-fill instead.  This saves
- * one correlate per cold internal node.
- *
- * The fast path (n_hot_blocks == 0, full-equity) is branch-free beyond the
- * initial check and uses the original pair-correlate loop unchanged. */
-static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
+ * hot_mask: per-level hot/cold bitmaps, or NULL for full equity (all nodes hot).
+ * When non-NULL, hot_mask[ell][j] == 1 iff node j at level ell is hot
+ * (needs real computation — at least one target player in its subtree).
+ * Cold nodes are zero-filled; their correlate calls are skipped entirely.
+ * The hot_mask is built bottom-up from per-block target presence WITHOUT
+ * reordering sort_perm, preserving the exact global stack-descending order
+ * the hybrid engine's per-block divide depends on for numerical stability. */
+static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
+                                 uint8_t *const *hot_mask) {
     int L = tc->L;
     int *psz = tc->psz, *nn = tc->nn;
     size_t *plev_off = tc->plev_off;
@@ -1468,15 +1414,6 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
     memset(g_parent, 0, (size_t)nn[top] * root_gsz * sizeof(double));
     int copy = (k < root_gsz) ? k : root_gsz;
     memcpy(g_parent, payout, copy * sizeof(double));
-
-    /* ── Subset pruning: precompute hot-node counts per level ── */
-    int n_hot = tc->n_hot_blocks;
-    int n_hot_level[MAX_TREE_LEVELS];
-    if (n_hot > 0) {
-        n_hot_level[0] = n_hot;
-        for (int ell = 1; ell < tc->L; ell++)
-            n_hot_level[ell] = (n_hot_level[ell-1] + 1) / 2;
-    }
 
     for (int ell = top; ell >= 1; ell--) {
         int pgsz = psz[ell], cgsz = psz[ell-1], cps = psz[ell-1];
@@ -1497,8 +1434,8 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
         int nr_parent = tc->n_real[ell];
         int nr_child = tc->n_real[ell-1];
 
-        /* Fast path: full-equity or all children hot. */
-        if (n_hot == 0 || n_hot_level[ell-1] >= nr_child) {
+        if (hot_mask == NULL || hot_mask[0] == NULL) {
+            /* Full-equity fast path: all nodes hot, branch-free loop. */
             for (int j = 0; j < nr_parent; j++) {
                 double *gp = g_parent + (size_t)j * pgsz;
                 double *gL = g_child + (size_t)(2*j) * cgsz;
@@ -1529,20 +1466,20 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout) {
                 }
             }
         } else {
-            /* Subset-pruned path: per-child hot/cold checks.
-             * Hot leaves are at positions [0, nh_child).  A child at position
-             * c is hot iff c < nh_child.  For each parent, we dispatch to
-             * pair-correlate (both hot), single-correlate (one hot), or
-             * zero-fill (both cold). */
-            int nh_child = n_hot_level[ell-1];
+            /* Subset-pruned path: per-child hot/cold lookups via bitmask.
+             * A child at position c is hot iff hot_mask[ell-1][c] != 0.
+             * This works for scattered targets — any block with ≥1 target
+             * in its NATURAL sorted position is hot, regardless of where
+             * it sits in the tree. No reordering needed. */
+            const uint8_t *hm_child = hot_mask[ell-1];
             int cwm = tc->corr_wrap_m[ell];
             for (int j = 0; j < nr_parent; j++) {
                 double *gp = g_parent + (size_t)j * pgsz;
                 double *gL = g_child + (size_t)(2*j) * cgsz;
                 int left_exists  = (2*j   < nr_child);
                 int right_exists = (2*j+1 < nr_child);
-                int left_hot  = left_exists  && (2*j   < nh_child);
-                int right_hot = right_exists && (2*j+1 < nh_child);
+                int left_hot  = left_exists  && hm_child[2*j];
+                int right_hot = right_exists && hm_child[2*j+1];
 
                 if (!right_exists) {
                     /* Single child (padding leaf or cold). */
@@ -1637,7 +1574,7 @@ static void engine_tree_ctx(int n, const double *a,
     }
 
     tree_build_levels(tc);
-    double *g_leaf = tree_propagate_g(tc, k, payout);
+    double *g_leaf = tree_propagate_g(tc, k, payout, NULL);
 
     int lgsz = psz[0];
     for (int j = 0; j < n; j++)
@@ -1658,12 +1595,14 @@ static NaiveCtx *naive_ctx_create(int n, int k) {
 }
 static void naive_ctx_destroy(NaiveCtx *nc) { free(nc->ws); free(nc); }
 
+#ifdef _OPENMP
 static NaiveCtx *naive_ctx_clone(const NaiveCtx *src, int n, int k) {
     (void)k;
     NaiveCtx *nc = (NaiveCtx *)calloc(1, sizeof(NaiveCtx));
     nc->ws = (double *)malloc(((size_t)(n + 1) + n) * sizeof(double));
     return nc;
 }
+#endif
 
 static void engine_naive_ctx(int n, const double *a,
                              const double *payout, int k,
@@ -1717,7 +1656,7 @@ typedef struct {
 
 /* L2 cache size per core (bytes). Used for batched linear checkpointing. */
 #ifndef L2_CACHE_SIZE
-#define L2_CACHE_SIZE 1048576  /* 1MB for Zen 4; 32MB for M3 Max */
+#define L2_CACHE_SIZE 1048576  /* 1MB for Zen 4; 32MB for M3 Pro */
 #endif
 
 /* Bandwidth constants for roofline cost model (measured by calibrate).
@@ -1752,8 +1691,6 @@ static int ckpt_interval(int n) {
     return C;
 }
 
-/* ckpt_interval_batched is now in linear_batched_impl.inc (parameterized by BQ) */
-
 static LinearCtx *linear_ctx_create(int n, int k) {
     LinearCtx *lc = (LinearCtx *)calloc(1, sizeof(LinearCtx));
     if ((size_t)n * k > CKPT_THRESHOLD) {
@@ -1768,12 +1705,14 @@ static LinearCtx *linear_ctx_create(int n, int k) {
 }
 static void linear_ctx_destroy(LinearCtx *lc) { free(lc->ws); free(lc); }
 
+#ifdef _OPENMP
 static LinearCtx *linear_ctx_clone(const LinearCtx *src) {
     LinearCtx *lc = (LinearCtx *)calloc(1, sizeof(LinearCtx));
     lc->ws_size = src->ws_size;
     lc->ws = (double *)malloc(lc->ws_size * sizeof(double));
     return lc;
 }
+#endif
 
 static inline void apply_factor(const double *restrict g_in,
                                 double *restrict g_out,
@@ -1914,6 +1853,12 @@ typedef struct {
     double *inner_sorted; /* pre-allocated permutation buffer (n doubles) */
     uint8_t *active;      /* per-player mask (sorted order). NULL = all. */
     int owns_sorted;      /* 1 if this ctx owns sort_perm/S_sorted (0 for clones) */
+    /* Per-level hot/cold bitmaps for subset pruning (NULL = all hot).
+     * hot_mask[ell][j] == 1 if node j at level ell is hot (needs computation).
+     * Computed bottom-up from per-block target presence, WITHOUT reordering
+     * sort_perm, so the global stack-descending order is preserved exactly. */
+    uint8_t *hot_mask_data;
+    uint8_t *hot_mask[MAX_TREE_LEVELS];
 } HybridCtx;
 
 /* Comparator for qsort: sort player indices by stack size descending. */
@@ -1921,20 +1866,6 @@ static const double *qsort_S_ptr;
 static int cmp_stack_desc(const void *a, const void *b) {
     double sa = qsort_S_ptr[*(const int *)a];
     double sb = qsort_S_ptr[*(const int *)b];
-    return (sa > sb) ? -1 : (sa < sb) ? 1 : 0;
-}
-
-/* Two-level comparator for target-locality clustering.
- * Primary key: player's block has targets (descending — hot blocks first).
- * Secondary key: stack size descending (preserves within-block divide direction). */
-static const uint8_t *cluster_block_has;
-static int cluster_B;
-static int cmp_cluster(const void *a, const void *b) {
-    int ia = *(const int *)a, ib = *(const int *)b;
-    int ha = cluster_block_has[ia / cluster_B];
-    int hb = cluster_block_has[ib / cluster_B];
-    if (ha != hb) return hb - ha;  /* hot blocks first */
-    double sa = qsort_S_ptr[ia], sb = qsort_S_ptr[ib];
     return (sa > sb) ? -1 : (sa < sb) ? 1 : 0;
 }
 
@@ -1978,6 +1909,7 @@ static void hybrid_ctx_destroy(HybridCtx *hc) {
     free(hc);
 }
 
+#ifdef _OPENMP
 static HybridCtx *hybrid_ctx_clone(const HybridCtx *src, int n) {
     HybridCtx *hc = (HybridCtx *)calloc(1, sizeof(HybridCtx));
     hc->B = src->B;
@@ -1994,6 +1926,7 @@ static HybridCtx *hybrid_ctx_clone(const HybridCtx *src, int n) {
     hc->owns_sorted = 0;
     return hc;
 }
+#endif
 
 /* Hybrid engine: block build + tree + bidirectional divide */
 static void engine_hybrid_core(int n, const double *a,
@@ -2037,7 +1970,7 @@ static void engine_hybrid_core(int n, const double *a,
     }
 
     tree_build_levels(tc);
-    double *g_leaf = tree_propagate_g(tc, k, payout);
+    double *g_leaf = tree_propagate_g(tc, k, payout, hc->hot_mask);
     int g_need = tc->g_needed[0];
 
     /* ── Step 3: Within-block divide + fused dot product ── */
@@ -2136,7 +2069,10 @@ static void engine_hybrid_ctx(int n, const double *a,
 
 typedef enum { EK_TREE, EK_NAIVE, EK_LINEAR, EK_HYBRID } EngineKind;
 
-/* Clone a context by engine kind. The clone has independent workspace. */
+/* Clone a context by engine kind. The clone has independent workspace.
+ * Only used by the OpenMP parallel path (run_engine_ctx_ex) to give each
+ * thread its own workspace; guarded out entirely in serial builds. */
+#ifdef _OPENMP
 static void *ctx_clone(const void *ctx, EngineKind ek, int n, int k) {
     switch (ek) {
     case EK_TREE:   return tree_ctx_clone((const TreeCtx *)ctx);
@@ -2155,6 +2091,7 @@ static void ctx_destroy(void *ctx, EngineKind ek) {
     case EK_HYBRID: hybrid_ctx_destroy((HybridCtx *)ctx); break;
     }
 }
+#endif
 
 /* ══════════════════════════════════════════════════════════════
    INTEGRATION WRAPPER (OpenMP parallel over quadrature points)
@@ -2272,70 +2209,93 @@ static int select_engine(int n, int k) {
     return select_engine_ex(n, k, 0);
 }
 
-/* ── Target-locality clustering ─────────────────────────────
- * Re-sorts sort_perm so that target-containing blocks are clustered
- * at the front, while preserving stack-size order within each group.
- * This enables subtree-level pruning in tree_propagate_g().
+/* ── Hot/cold bitmap construction ──────────────────────────
+ * Builds per-level hot/cold bitmaps from the ALREADY-SORTED active mask
+ * (sorted_active is indexed by sort_perm, i.e. in stack-descending order).
+ * NO reordering of sort_perm — the global stack-descending order from
+ * hybrid_ctx_create() is preserved exactly, which is essential for
+ * numerical stability of the hybrid engine's per-block divide step.
  *
- * active_orig: boolean mask in ORIGINAL player order.
- * S_orig: original stack sizes (used to preserve secondary sort key).
- * Returns n_hot_blocks = number of blocks with at least one target. */
-static int hybrid_ctx_cluster_targets(HybridCtx *hc,
-                                       const uint8_t *active_orig,
-                                       const double *S_orig) {
+ * Leaf level: block b is hot if any player in positions [b*B, (b+1)*B)
+ * is a target. Upper levels: a node is hot iff either child is hot.
+ * Bitmaps are stored in hc->hot_mask[0..L-1], allocated as a flat buffer
+ * (hc->hot_mask_data). The caller must free hot_mask_data after use. */
+static void hybrid_ctx_build_hot_mask(HybridCtx *hc,
+                                       const uint8_t *sorted_active) {
     int n = hc->n, B = hc->B, nblocks = hc->nblocks;
-    if (nblocks <= 1) return nblocks;
+    int L = hc->tc->L;
 
-    /* Determine which blocks contain at least one target */
-    uint8_t *block_has = (uint8_t *)calloc(nblocks, sizeof(uint8_t));
-    int n_hot = 0;
-    for (int i = 0; i < n; i++) {
-        if (active_orig[i]) {
-            int b = i / B;
-            if (!block_has[b]) { block_has[b] = 1; n_hot++; }
+    /* Allocate flat buffer: sum_{ell=0}^{L-1} nn[ell] bytes */
+    size_t total = 0;
+    for (int ell = 0; ell < L; ell++)
+        total += (size_t)hc->tc->nn[ell];
+    hc->hot_mask_data = (uint8_t *)calloc(total, sizeof(uint8_t));
+
+    /* Set per-level pointers */
+    uint8_t *ptr = hc->hot_mask_data;
+    for (int ell = 0; ell < L; ell++) {
+        hc->hot_mask[ell] = ptr;
+        ptr += hc->tc->nn[ell];
+    }
+
+    /* Leaf level (ell=0): block b is hot if it contains any target */
+    uint8_t *hm0 = hc->hot_mask[0];
+    for (int b = 0; b < nblocks; b++) {
+        int start = b * B, end = start + B;
+        if (end > n) end = n;
+        int hot = 0;
+        for (int j = start; j < end; j++) {
+            if (sorted_active[j]) { hot = 1; break; }
+        }
+        hm0[b] = (uint8_t)hot;
+    }
+    /* Padding leaf nodes (b >= nblocks) stay cold (calloc zeroed) */
+
+    /* Propagate upward: parent hot iff either child is hot */
+    for (int ell = 1; ell < L; ell++) {
+        const uint8_t *src = hc->hot_mask[ell-1];
+        uint8_t *dst = hc->hot_mask[ell];
+        int nc = hc->tc->nn[ell-1];
+        int np = hc->tc->nn[ell];
+        for (int j = 0; j < np; j++) {
+            int left  = (2*j     < nc) ? src[2*j]   : 0;
+            int right = (2*j+1   < nc) ? src[2*j+1] : 0;
+            dst[j] = (uint8_t)(left | right);
         }
     }
-
-    /* Early exit: all or none hot → clustering has no effect */
-    if (n_hot == 0 || n_hot == nblocks) {
-        free(block_has);
-        return n_hot;
-    }
-
-    /* Re-sort with two-level comparator */
-    cluster_block_has = block_has;
-    cluster_B = B;
-    qsort_S_ptr = S_orig;
-    qsort(hc->sort_perm, n, sizeof(int), cmp_cluster);
-
-    /* Rebuild S_sorted to match new permutation */
-    for (int i = 0; i < n; i++)
-        hc->S_sorted[i] = S_orig[hc->sort_perm[i]];
-
-    free(block_has);
-    return n_hot;
 }
 
 static double compute_equity_subset(int n, const double *S, int Q,
                                      const double *payout, int k,
                                      double *equity,
                                      const int *targets, int n_targets) {
-    /* Build active mask */
+    /* Build active mask in original player order */
     uint8_t *active = (uint8_t *)calloc(n, sizeof(uint8_t));
     for (int i = 0; i < n_targets; i++) active[targets[i]] = 1;
 
     int B = select_engine_ex(n, k, n_targets);
     if (B > 0) {
         HybridCtx *hc = hybrid_ctx_create(n, S, k, B);
-        /* Cluster target-containing blocks together for subtree pruning.
-         * This re-sorts sort_perm so hot blocks are at positions [0, n_hot). */
-        int n_hot_blocks = hybrid_ctx_cluster_targets(hc, active, S);
-        hc->tc->n_hot_blocks = n_hot_blocks;
-        /* Build sorted-order active mask from the (possibly re-clustered) sort_perm */
+
+        /* Build sorted-order active mask from the UNMODIFIED sort_perm
+         * (plain global stack-descending, identical to icm_equity order).
+         * NO reordering — this is the fix for the Zen4/AVX-512 stability bug. */
         uint8_t *sorted_active = (uint8_t *)calloc(n, sizeof(uint8_t));
         for (int i = 0; i < n; i++) sorted_active[i] = active[hc->sort_perm[i]];
         hc->active = sorted_active;
+
+        /* Build per-level hot/cold bitmaps for tree-level pruning.
+         * Hot blocks are identified in their NATURAL sorted positions —
+         * any block containing ≥1 target is hot regardless of where it
+         * sits in the tree. No contiguous clustering needed. */
+        hybrid_ctx_build_hot_mask(hc, sorted_active);
+
         double t = run_engine_ctx(n, S, Q, payout, k, equity, engine_hybrid_ctx, hc);
+
+        free(hc->hot_mask_data);
+        hc->hot_mask_data = NULL;
+        for (int ell = 0; ell < hc->tc->L; ell++)
+            hc->hot_mask[ell] = NULL;
         free(sorted_active);
         hc->active = NULL;
         hybrid_ctx_destroy(hc);
@@ -2447,7 +2407,6 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
     double *inner_buf = (double *)malloc((size_t)BQ * n * sizeof(double));
 
     int n_batches_e = Q / BQ;
-    int leftover_e = Q - n_batches_e * BQ;
 
     double t0 = now_ns();
     for (int b = 0; b < n_batches_e; b++) {

@@ -1,6 +1,6 @@
 /* force_hybrid_test.c — Directly measure hybrid engine at k=1638 bypassing dispatch.
  *
- * Build: gcc -O3 -march=native -Isrc -Idevices/m3_max -I/opt/homebrew/include
+ * Build: gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include
  *        -o tools/force_hybrid_test tools/force_hybrid_test.c
  *        -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */

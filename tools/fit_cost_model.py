@@ -24,6 +24,7 @@ import sys
 import re
 import numpy as np
 from scipy.optimize import minimize
+import argparse
 
 # ── Parameter indices ──
 P_BLOCK_FMA   = 0  # ns per FMA in block build
@@ -47,9 +48,9 @@ BOUNDS = [
     (0.05, 2.0),     # C_block_fma: ~0.13 ns (FMA throughput)
     (0.1,  20.0),    # C_block_mem: streaming + L1 latency
     (0.1,  10.0),    # C_wrap: memory-latency-bound FMA
-    (0.5,  2.0),     # R: paired cached correlate ratio
+    (0.5,  5.0),     # R: paired cached correlate ratio
     (0.05, 2.0),     # C_school: schoolbook per-FMA
-    (0.5,  10.0),    # C_div: FP64 division throughput ~4-6 ns
+    (0.5,  30.0),    # C_div: FP64 division throughput ~4-6 ns
     (0.01, 1.0),     # C_leaf_fma: Horner per-FMA
     (1.0,  500.0),   # C_leaf_block: per-block setup
     (0.0,  50000.0), # C_overhead: per-Q-point fixed cost
@@ -272,13 +273,96 @@ def report(params, plans, calib):
     return rms
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 tools/fit_cost_model.py <sample_plans.csv> [fft_config.h]")
-        sys.exit(1)
+# Mapping from fit parameter name -> fft_config.h macro name(s)
+# R maps to BOTH PAIRED_CACHED_CORR_RATIO and INDEP_PAIR_RATIO (same value).
+FIT_TO_MACRO = [
+    ('C_block_fma',  ['BLOCK_FMA_NS']),
+    ('C_block_mem',  ['BLOCK_MEM_NS']),
+    ('C_wrap',       ['WRAP_FMA_NS']),
+    ('R',            ['PAIRED_CACHED_CORR_RATIO', 'INDEP_PAIR_RATIO']),
+    ('C_school',     ['FMA_NS']),
+    ('C_div',        ['FP64_DIV_NS']),
+    ('C_leaf_fma',   ['LEAF_FMA_NS']),
+    ('C_leaf_block', ['LEAF_BLOCK_NS']),
+    ('C_overhead',   ['FFT_OVERHEAD_NS']),
+]
 
-    plans_path = sys.argv[1]
-    config_path = sys.argv[2] if len(sys.argv) > 2 else 'devices/zen4/fft_config.h'
+
+def write_constants_to_header(params, config_path):
+    """Rewrite fft_config.h in-place with fitted constants.
+
+    Finds each #ifndef MACRO / #define MACRO value / #endif block and replaces
+    just the numeric value, preserving all surrounding structure and comments.
+    Prints a diff-style summary of old→new for each macro touched.
+    """
+    with open(config_path, 'r') as f:
+        text = f.read()
+
+    # Map fit param index -> value
+    fit_vals = {PARAM_NAMES[i]: params[i] for i in range(N_PARAMS)}
+
+    changes = []
+
+    for fit_name, macro_names in FIT_TO_MACRO:
+        new_val = fit_vals[fit_name]
+        for macro_name in macro_names:
+            # Match: #ifndef MACRO_NAME\n#define MACRO_NAME <value> [comment]\n#endif
+            pattern = (
+                r'(#ifndef\s+' + re.escape(macro_name) + r'\s*\n'
+                r'#define\s+' + re.escape(macro_name) + r'\s+)'
+                r'([\d.eE+\-]+)'
+                r'([^\n]*\n#endif)'
+            )
+            match = re.search(pattern, text)
+            if not match:
+                print(f"  ⚠ WARNING: #ifndef/#define/#endif block for {macro_name} not found — skipping")
+                continue
+
+            old_val_str = match.group(2)
+            old_val = float(old_val_str)
+            new_val_str = f"{new_val:.4f}"
+
+            # Only replace if the value actually changes
+            if abs(old_val - new_val) < 1e-8:
+                changes.append((macro_name, old_val, new_val, False))
+                continue
+
+            # Replace just the value
+            replacement = match.group(1) + new_val_str + match.group(3)
+            text = text[:match.start()] + replacement + text[match.end():]
+
+            changes.append((macro_name, old_val, new_val, True))
+
+    # Write back
+    with open(config_path, 'w') as f:
+        f.write(text)
+
+    # Print diff summary
+    print(f"\n{'='*70}")
+    print(f"WROTE {config_path} — {len(changes)} macro(s) touched")
+    print(f"{'='*70}")
+    for macro_name, old_val, new_val, changed in changes:
+        marker = '*' if changed else ' '
+        print(f" {marker} {macro_name:30s} {old_val:12.4f} → {new_val:12.4f}"
+              + (" (unchanged)" if not changed else ""))
+
+    n_changed = sum(1 for _, _, _, c in changes if c)
+    print(f"\n{n_changed} macro(s) updated, "
+          f"{len(changes) - n_changed} macro(s) already matched.")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Fit physics-based cost model for hybrid tree engine.')
+    parser.add_argument('plans_csv', help='Path to sample_plans CSV')
+    parser.add_argument('config_h', nargs='?', default='devices/zen4/fft_config.h',
+                        help='Path to fft_config.h (default: devices/zen4/fft_config.h)')
+    parser.add_argument('--write', action='store_true',
+                        help='Rewrite fft_config.h in-place with fitted constants')
+    args = parser.parse_args()
+
+    plans_path = args.plans_csv
+    config_path = args.config_h
 
     print(f"Loading calibration from {config_path}")
     calib = load_calib(config_path)
@@ -311,6 +395,9 @@ def main():
         print(f"  Check phase breakdown for systematic bias.")
     else:
         print(f"\n✓ RMS error {rms:.2f}% meets <1% target.")
+
+    if args.write:
+        write_constants_to_header(params, config_path)
 
 
 if __name__ == '__main__':

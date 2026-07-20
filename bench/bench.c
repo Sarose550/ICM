@@ -9,14 +9,14 @@
  * Compile (serial, macOS / Apple Silicon):
  *   gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
  *       -o bench bench/bench.c \
- *       -Isrc -Idevices/m3_max -I/opt/homebrew/include \
+ *       -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  *
  * Compile (parallel, macOS with libomp):
  *   gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
  *       -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include \
  *       -o bench bench/bench.c \
- *       -Isrc -Idevices/m3_max -I/opt/homebrew/include \
+ *       -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
  *       -L/opt/homebrew/lib -L/opt/homebrew/opt/libomp/lib \
  *       -lfftw3 -lfftw3_threads -lm -framework Accelerate -lomp
  *
@@ -32,6 +32,28 @@
 
 /* Include the library source directly for access to internal types */
 #include "icm.c"
+
+/* ══════════════════════════════════════════════════════════════
+   FORMATTING
+   ══════════════════════════════════════════════════════════════ */
+
+/* Format a millisecond timing to 3 significant figures in fixed-point
+ * notation (never scientific) — e.g. 3 -> "3.00", 16 -> "16.0", 4392 -> "4390". */
+static void fmt_ms_3sf(double v, char *buf, size_t bufsz) {
+    if (v <= 0) { snprintf(buf, bufsz, "0.00"); return; }
+    int exp = (int)floor(log10(v));
+    int decimals = 2 - exp;
+    if (decimals >= 0) {
+        snprintf(buf, bufsz, "%.*f", decimals, v);
+    } else {
+        double scale = pow(10, -decimals);
+        snprintf(buf, bufsz, "%.0f", round(v / scale) * scale);
+    }
+}
+
+/* Benchmark repetition convention */
+#define BENCH_REPS 5
+#define MEDIAN5(arr) do { qsort(arr, BENCH_REPS, sizeof(double), dbl_cmp); } while(0)
 
 /* ══════════════════════════════════════════════════════════════
    STACKS GENERATION
@@ -282,7 +304,8 @@ static void run_profile(void) {
             TreeCtx *tc = tree_ctx_create(n, k);
             double t = run_engine_ctx(n, S, Q, payout, k, eq,
                                       engine_tree_ctx, tc) / 1e6;
-            printf("  tree:   %7.0f ms\n", t);
+            char tbuf[32]; fmt_ms_3sf(t, tbuf, sizeof(tbuf));
+            printf("  tree:   %7s ms\n", tbuf);
             tree_ctx_destroy(tc);
         }
 
@@ -292,7 +315,8 @@ static void run_profile(void) {
             memset(eq, 0, n * sizeof(double));
             double t = run_engine_ctx(n, S, Q, payout, k, eq,
                                       engine_hybrid_ctx, hctx) / 1e6;
-            printf("  hyb8:  %7.0f ms\n", t);
+            char tbuf[32]; fmt_ms_3sf(t, tbuf, sizeof(tbuf));
+            printf("  hyb8:  %7s ms\n", tbuf);
             hybrid_ctx_destroy(hctx);
         }
 
@@ -301,7 +325,8 @@ static void run_profile(void) {
             LinearCtx *lc = linear_ctx_create(n, k);
             memset(eq, 0, n * sizeof(double));
             double t = run_linear_batched(n, S, Q, payout, k, eq, lc) / 1e6;
-            printf("  linear: %7.0f ms\n", t);
+            char tbuf[32]; fmt_ms_3sf(t, tbuf, sizeof(tbuf));
+            printf("  linear: %7s ms\n", tbuf);
             linear_ctx_destroy(lc);
         }
 
@@ -311,7 +336,8 @@ static void run_profile(void) {
             memset(eq, 0, n * sizeof(double));
             double t = run_engine_ctx(n, S, Q, payout, k, eq,
                                       engine_naive_ctx, nc) / 1e6;
-            printf("  naive:  %7.0f ms\n", t);
+            char tbuf[32]; fmt_ms_3sf(t, tbuf, sizeof(tbuf));
+            printf("  naive:  %7s ms\n", tbuf);
             naive_ctx_destroy(nc);
         }
 
@@ -330,12 +356,13 @@ static int dbl_cmp(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    int verify_only = (argc > 1 && strcmp(argv[1], "verify") == 0);
-    int quick       = (argc > 1 && strcmp(argv[1], "quick") == 0);
-    int profile     = (argc > 1 && strcmp(argv[1], "profile") == 0);
-    int crossover   = (argc > 1 && strcmp(argv[1], "crossover") == 0);
-    int threshold   = (argc > 1 && strcmp(argv[1], "threshold") == 0);
-    int single      = (argc > 1 && strcmp(argv[1], "bench") == 0);
+    int verify_only  = (argc > 1 && strcmp(argv[1], "verify") == 0);
+    int quick        = (argc > 1 && strcmp(argv[1], "quick") == 0);
+    int profile      = (argc > 1 && strcmp(argv[1], "profile") == 0);
+    int crossover    = (argc > 1 && strcmp(argv[1], "crossover") == 0);
+    int threshold    = (argc > 1 && strcmp(argv[1], "threshold") == 0);
+    int single       = (argc > 1 && strcmp(argv[1], "bench") == 0);
+    int subset_speed = (argc > 1 && strcmp(argv[1], "subset-speed") == 0);
 
 #ifdef _OPENMP
     /* Make FFTW planner thread-safe before any plan creation */
@@ -508,6 +535,82 @@ int main(int argc, char **argv) {
             if (i == 0) base = t;
             printf("%-8d %-8.0f %.2fx\n", n, t, t / base);
             fflush(stdout);
+        }
+        return 0;
+    }
+
+    /* ── Subset speed benchmark: icm_equity_subset vs full icm_equity ── */
+    if (subset_speed) {
+        int Q = 256;
+        int ns[] = {1024, 4096, 16384, 65536};
+        int n_ns = 4;
+        double ratios[] = {0.01, 0.05, 0.10, 0.25, 0.50, 1.00};
+        int n_ratios = 6;
+        const char *ratio_labels[] = {"1%", "5%", "10%", "25%", "50%", "100%"};
+
+        printf("=== SUBSET SPEED BENCHMARK (Q=%d, k=n/4, median of %d runs) ===\n\n",
+               Q, BENCH_REPS);
+        printf("%-8s %-8s %-8s %-12s %-12s %-10s\n",
+               "n", "n_tgts", "ratio", "subset_ms", "full_ms", "speedup");
+        for (int i = 0; i < 60; i++) printf("-");
+        printf("\n");
+
+        for (int ni = 0; ni < n_ns; ni++) {
+            int n = ns[ni];
+            int k = n / 4;
+            if (k < 1) k = 1;
+
+            double *S = (double *)malloc(n * sizeof(double));
+            make_stacks(n, 0, S);
+            double *payout = (double *)malloc(k * sizeof(double));
+            for (int m = 0; m < k; m++) payout[m] = (double)(n - m);
+            double *equity = (double *)calloc(n, sizeof(double));
+
+            /* Time full icm_equity (same n,k for all ratios — done once per n) */
+            /* warmup */
+            icm_equity(n, S, Q, payout, k, equity);
+            double full_samples[BENCH_REPS];
+            for (int r = 0; r < BENCH_REPS; r++) {
+                full_samples[r] = icm_equity(n, S, Q, payout, k, equity) / 1e6;
+            }
+            MEDIAN5(full_samples);
+            double full_ms = full_samples[BENCH_REPS / 2];
+
+            for (int ri = 0; ri < n_ratios; ri++) {
+                int n_targets = (int)(n * ratios[ri]);
+                if (n_targets < 1) n_targets = 1;
+
+                /* Evenly-spaced target indices for deterministic coverage */
+                int *targets = (int *)malloc(n_targets * sizeof(int));
+                for (int t = 0; t < n_targets; t++) {
+                    targets[t] = (int)((double)t * n / n_targets);
+                }
+
+                /* Time subset */
+                /* warmup */
+                icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
+                double sub_samples[BENCH_REPS];
+                for (int r = 0; r < BENCH_REPS; r++) {
+                    sub_samples[r] = icm_equity_subset(n, S, Q, payout, k, equity,
+                                                       targets, n_targets) / 1e6;
+                }
+                MEDIAN5(sub_samples);
+                double sub_ms = sub_samples[BENCH_REPS / 2];
+
+                double speedup = full_ms / sub_ms;
+
+                char sbuf[32], fbuf[32];
+                fmt_ms_3sf(sub_ms, sbuf, sizeof(sbuf));
+                fmt_ms_3sf(full_ms, fbuf, sizeof(fbuf));
+
+                printf("%-8d %-8d %-8s %-12s %-12s %-10.2fx\n",
+                       n, n_targets, ratio_labels[ri], sbuf, fbuf, speedup);
+                fflush(stdout);
+
+                free(targets);
+            }
+            printf("\n");
+            free(S); free(payout); free(equity);
         }
         return 0;
     }
@@ -700,14 +803,10 @@ int main(int argc, char **argv) {
     };
     int n_ks = 6;
 
-    /* Median of BENCH_REPS: sort and take middle element */
-    #define BENCH_REPS 5
-    #define MEDIAN5(arr) do { qsort(arr, BENCH_REPS, sizeof(double), dbl_cmp); } while(0)
-
     printf("%-6s", "n");
-    for (int ki = 0; ki < n_ks; ki++) printf("  %-30s", kspecs[ki].label);
+    for (int ki = 0; ki < n_ks; ki++) printf("  %-34s", kspecs[ki].label);
     printf("\n");
-    for (int i = 0; i < 6 + n_ks * 32; i++) printf("-");
+    for (int i = 0; i < 6 + n_ks * 36; i++) printf("-");
     printf("\n");
     printf("(median of %d runs per engine per cell)\n\n", BENCH_REPS);
 
@@ -786,20 +885,23 @@ int main(int argc, char **argv) {
             for (int e = 0; e < 4; e++)
                 if (times[e] > 0 && times[e] < best_t) { best_t = times[e]; best = e; }
 
-            char cell[32];
+            char cell[48];
             if (best >= 0) {
-                char detail[80] = "";
+                char detail[96] = "";
                 int dlen = 0;
                 for (int e = 0; e < 4; e++)
-                    if (times[e] > 0)
+                    if (times[e] > 0) {
+                        char ebuf[32]; fmt_ms_3sf(times[e], ebuf, sizeof(ebuf));
                         dlen += snprintf(detail+dlen, sizeof(detail)-dlen,
-                                         "%s%.0f ", names[e], times[e]);
-                snprintf(cell, sizeof(cell), "%s:%-4.0f(%s)",
-                         names[best], best_t, detail);
+                                         "%s%s ", names[e], ebuf);
+                    }
+                char bbuf[32]; fmt_ms_3sf(best_t, bbuf, sizeof(bbuf));
+                snprintf(cell, sizeof(cell), "%s:%-6s(%s)",
+                         names[best], bbuf, detail);
             } else {
                 snprintf(cell, sizeof(cell), "---");
             }
-            printf("  %-30s", cell);
+            printf("  %-34s", cell);
             fflush(stdout);
 
             free(payout); free(eq);

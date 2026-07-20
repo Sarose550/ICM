@@ -6,7 +6,7 @@
  *   Prints PID then runs. Attach: /usr/bin/sample <pid> <duration> -f /tmp/profile.txt
  *
  * Build:
- *   gcc -O3 -march=native -Isrc -Idevices/m3_max -I/opt/homebrew/include \
+ *   gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
  *       -o tools/profile_harness tools/profile_harness.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */

@@ -106,5 +106,5 @@ pytest tests/ -v
 ## Environment Variables
 
 - `ICM_LIB_PATH`: Override the shared library path (e.g., `/custom/path/libicm.dylib`).
-- `ICM_DEVICE`: Device profile for building (`m3_max`, `zen4`, etc.).
-  Defaults to `m3_max` on macOS, `zen4` on Linux.
+- `ICM_DEVICE`: Device profile for building (`m3_pro`, `zen4`, etc.).
+  Defaults to `m3_pro` on macOS, `zen4` on Linux.

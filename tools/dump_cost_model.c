@@ -1,6 +1,6 @@
 /* dump_cost_model.c — Print cost model estimates for comparison with reality.
  *
- * Build: gcc -O3 -march=native -Isrc -Idevices/m3_max -I/opt/homebrew/include
+ * Build: gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include
  *        -o tools/dump_cost_model tools/dump_cost_model.c
  *        -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */

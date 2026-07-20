@@ -24,9 +24,14 @@ micro_fft_vs_seq
 build/
 
 # Generated data (from calibration/benchmarking)
+# fft_config.h / fftw_wisdom.dat are ignored at repo root (raw ./calibrate
+# output before being copied to a device dir) but tracked under devices/*/
+# — those are the hand-validated, committed source of truth per device.
 calibration.csv
 fft_config.h
 fftw_wisdom.dat
+!devices/*/fft_config.h
+!devices/*/fftw_wisdom.dat
 **/cpu_*.csv
 **/*.png
 zen4_*.txt

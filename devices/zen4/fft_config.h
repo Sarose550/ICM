@@ -158,20 +158,25 @@ static const int calib_lib[N_CALIBRATED_SIZES] = {
 /* calib_times_ns now measures the full polymul_fft_wrap pipeline
  * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.
  * Wrap correction is modeled separately with WRAP_FMA_NS. */
+/* FMA_NS / WRAP_FMA_NS / *_RATIO fit via tools/fit_cost_model.py against
+ * 200 sampled (n,k,B) plans on the real Zen4 hardware (2026-07-20),
+ * 6.0% RMS log-relative error. Replaces prior unvalidated estimates that
+ * caused select_engine() to always dispatch hybrid (see crossover
+ * validation session, HANDOFF.md). */
 #ifndef FMA_NS
-#define FMA_NS 0.25  /* ns per scalar FMA — re-measure via ./bench_grid profile */
+#define FMA_NS 0.0500
 #endif
 #ifndef FFT_OVERHEAD_NS
-#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline) */
+#define FFT_OVERHEAD_NS 0.0  /* fit_cost_model.py's C_OVERHEAD converged to ~0 */
 #endif
 #ifndef WRAP_FMA_NS
-#define WRAP_FMA_NS 4.0  /* ns per FMA in wrap correction (memory-latency-bound) */
+#define WRAP_FMA_NS 0.8612
 #endif
 #ifndef PAIRED_CACHED_CORR_RATIO
-#define PAIRED_CACHED_CORR_RATIO 1.03  /* paired cached correlate / full pipeline */
+#define PAIRED_CACHED_CORR_RATIO 2.9709
 #endif
 #ifndef INDEP_PAIR_RATIO
-#define INDEP_PAIR_RATIO 1.25  /* correlate_fft_pair / full pipeline */
+#define INDEP_PAIR_RATIO 2.9709  /* fit_cost_model.py's single R, applied to both ratios */
 #endif
 
 /* ── Cache hierarchy ── */
@@ -258,17 +263,17 @@ static void best_fft_config(int L, int *out_size, int *out_wrap_m, int len_P) {
 
 /* ── Device constants (from previous calibration, to be updated by OLS fit) ── */
 #ifndef FP64_DIV_NS
-#define FP64_DIV_NS 2.0
+#define FP64_DIV_NS 13.4590
 #endif
 #ifndef LEAF_FMA_NS
-#define LEAF_FMA_NS 0.016
+#define LEAF_FMA_NS 0.2804
 #endif
 #ifndef LEAF_BLOCK_NS
-#define LEAF_BLOCK_NS 7.6
+#define LEAF_BLOCK_NS 42.2533
 #endif
 #ifndef BLOCK_FMA_NS
-#define BLOCK_FMA_NS 0.051
+#define BLOCK_FMA_NS 0.0500
 #endif
 #ifndef BLOCK_MEM_NS
-#define BLOCK_MEM_NS 10.8
+#define BLOCK_MEM_NS 0.1000
 #endif

@@ -11,12 +11,12 @@
 #   make contour_1s         # contour sweep tool (serial)
 #   make contour_1s_par     # contour sweep tool (parallel)
 
-DEVICE ?= m3_max
+DEVICE ?= m3_pro
 
 .DEFAULT_GOAL := all
 
 CC = gcc
-CFLAGS = -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function
+CFLAGS = -O3 -march=native -Wall
 INCLUDES = -Isrc -Idevices/$(DEVICE)
 LDFLAGS = -lfftw3 -lm
 NVCC ?= nvcc
@@ -209,7 +209,10 @@ test_gpu_cost_model: tools/test_gpu_cost_model.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_cost_model.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
 
 test_cpu_cost_model: tools/test_cpu_cost_model.c src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tools/test_cpu_cost_model.c $(LDFLAGS)
+	# -Wno-unused-function: this tool only exercises a subset of icm.c
+	# (no naive-engine path), so some functions used elsewhere in the
+	# codebase are legitimately unreferenced from this translation unit.
+	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -o $@ tools/test_cpu_cost_model.c $(LDFLAGS)
 
 .PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model campaign_b200
 

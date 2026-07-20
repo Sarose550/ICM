@@ -1,5 +1,12 @@
 /* Auto-generated FFT configuration from calibrate_fft_sizes */
-/* Generated on this machine — do not use on different hardware */
+/* Generated on M3 Max — do not use on different hardware */
+/* NOTE: calib_sizes/calib_times_ns/wisdom below are still M3 Max data,
+ * reused as a placeholder pending a proper M3 Pro `./calibrate` pass.
+ * FMA_NS was corrected below via direct measurement on M3 Pro
+ * (linear engine asymptotic ns/(n*k) fit) — see 2026-07-20 crossover
+ * validation session. Other constants (FFT_OVERHEAD_NS, BLOCK_*, LEAF_*,
+ * PAIRED_CACHED_CORR_RATIO, INDEP_PAIR_RATIO) are still M3 Max values,
+ * not yet re-derived for M3 Pro. */
 
 #define N_CALIBRATED_SIZES 749
 static const int calib_sizes[N_CALIBRATED_SIZES] = {
@@ -127,20 +134,21 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
  * Measured via measure_phase_split(): fwd + 2×(pw+ifft) relative to 2×fwd+pw+ifft.
  * M3 Max: fwd≈0.30, pw≈0.045, ifft≈0.32 → paired = 1.03×calib. */
 #ifndef PAIRED_CACHED_CORR_RATIO
-#define PAIRED_CACHED_CORR_RATIO 1.03
+#define PAIRED_CACHED_CORR_RATIO 1.6806
 #endif
 
 /* FMA_NS: nanoseconds per scalar FMA for schoolbook / correction loops.
- * M3 Max (NEON, 2-wide FP64): 0.25 ns/FMA. */
+ * Fit via tools/fit_cost_model.py against 200 sampled (n,k,B) plans on the
+ * real M3 Pro (2026-07-20), 7.7% RMS log-relative error. */
 #ifndef FMA_NS
-#define FMA_NS 0.25
+#define FMA_NS 0.0782
 #endif
 
 #ifndef FFT_OVERHEAD_NS
-#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline measurement) */
+#define FFT_OVERHEAD_NS 0.0  /* fit_cost_model.py's C_OVERHEAD converged to 0 */
 #endif
 #ifndef WRAP_FMA_NS
-#define WRAP_FMA_NS 3.0  /* ns per FMA in wrap correction — TODO: measure on M3 Max */
+#define WRAP_FMA_NS 10.0
 #endif
 
 /* INDEP_PAIR_RATIO: cost of correlate_fft_pair (shared g, fresh P FFTs) / full pipeline.
@@ -150,7 +158,7 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
  * Original estimate (1.25) never divided by the denominator -- it was the
  * numerator sum, not the ratio. */
 #ifndef INDEP_PAIR_RATIO
-#define INDEP_PAIR_RATIO 1.69
+#define INDEP_PAIR_RATIO 1.6806  /* fit_cost_model.py's single R, applied to both ratios */
 #endif
 
 /* L2_CACHE_SIZE: per-core L2 in bytes. Used for batched linear checkpointing.
@@ -181,19 +189,19 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
  * TODO: measure properly via tools/calibrate; these are initial estimates.
  * Apple FDIV throughput ~7 cycles at 4.064 GHz ≈ 1.7 ns. */
 #ifndef FP64_DIV_NS
-#define FP64_DIV_NS 1.7
+#define FP64_DIV_NS 9.1272
 #endif
 #ifndef LEAF_FMA_NS
-#define LEAF_FMA_NS 0.03
+#define LEAF_FMA_NS 0.2213
 #endif
 #ifndef LEAF_BLOCK_NS
-#define LEAF_BLOCK_NS 5.0
+#define LEAF_BLOCK_NS 143.5329
 #endif
 #ifndef BLOCK_FMA_NS
-#define BLOCK_FMA_NS 0.10
+#define BLOCK_FMA_NS 0.0500
 #endif
 #ifndef BLOCK_MEM_NS
-#define BLOCK_MEM_NS 4.0
+#define BLOCK_MEM_NS 0.1000
 #endif
 
 /* ── Cost model functions ── */

@@ -25,7 +25,13 @@ else
 
 ### Final Performance
 
-Single-threaded (ms, Q=256, Apple M3 Max, median of 5):
+> ⚠️ **Data provenance:** The timing table below is pending recalibration on
+> M3 Pro hardware (requires an overnight FFTW PATIENT run). Cost-model constants
+> (FMA_NS, PAIRED_CACHED_CORR_RATIO, etc.) have been refit on real M3 Pro
+> hardware and are current — see the [Cost-Model Constants](#cost-model-constants)
+> section in RESULTS.md.
+
+Single-threaded (ms, Q=256, Apple M3 Pro — recalibrating, median of 5):
 ```
 n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
 256      1      3      4      3      4      4
@@ -59,13 +65,16 @@ by offline-calibrated data.
 At each tree level, `tree_ctx_create_ex2` compares:
 ```
 fft_cost = calib_time[best_fft_size] + overhead(40ns) + correction(m)
-school_cost = (d_eff + 1)² × 0.25 ns/FMA
+school_cost = (d_eff + 1)² × FMA_NS
 ```
 Where `d_eff = cps/2` at below-saturation levels (half the coefficients are zero)
 and `d_eff = cps - 1` at saturated levels. Using `cps²` instead of `(d_eff+1)²`
 overestimates schoolbook by 4x at below-sat levels — this was a bug that caused
 FFT at tiny sizes where schoolbook was faster. The 40ns overhead was measured via
 `./bench_grid profile` (plan lookup + buffer copies not in the calibration).
+
+`FMA_NS` is device-specific: **M3 Pro = 0.0782 ns**, Zen 4 = 0.0500 ns
+(AVX-512 scalar FMA).
 
 Note: `school_cost_flops` must be `long long` — at cps=65536, `(65536)²` overflows
 a 32-bit int, which caused the root level to use schoolbook (4.3 billion FMAs)
@@ -86,14 +95,14 @@ The cyclic multiply exploits the structure:
 ```
 for each smooth S from L/2+1 to 2L:
     m = (S >= L) ? 0 : L - S
-    cost = calib_time[S] + (m+1)² × 0.25 ns/FMA
+    cost = calib_time[S] + (m+1)² × WRAP_FMA_NS
     pick the S with minimum cost
 ```
 
-Example: for L=256, the FFT at size 240 (7-smooth) costs 676ns + 17²×0.25 = 748ns
-total, vs 256 (pow2) at 740ns. At 0.25ns/FMA, the m=16 wrap is slightly worse —
-the optimizer correctly picks 256 here. At smaller m values (m≤4), wrapping is
-typically profitable.
+Example: for L=256 on M3 Pro, the FFT at size 240 (7-smooth) costs 676ns +
+17²×10.0 = 3576ns total, vs 256 (pow2) at 740ns. At WRAP_FMA_NS=10.0,
+the m=16 wrap is far worse — the optimizer correctly picks 256 here.
+At smaller m values (m≤4), wrapping is typically profitable.
 
 For m=0 (no wrapping), this reduces to a standard cyclic convolution with a single
 subtraction to undo the one aliased term (the z^{2d} coefficient).
@@ -124,11 +133,15 @@ indep_cost = calib[build_size]                          // build (full pipeline)
            + 2 × (m_corr+1)² × FMA_NS                  // 2 correlate corrections
 ```
 
-These ratios are derived from the measured FFT phase split (see RESULTS.md):
-- `PAIRED_CACHED_CORR_RATIO`: fwd(g) + 2×(pw + ifft) relative to full pipeline.
-  M3 Max: (0.30 + 2×0.365) = 1.03×calib.
-- `INDEP_PAIR_RATIO`: fwd(g) + 2×fwd(P_rev) + 2×pw + 2×ifft relative to full pipeline.
-  M3 Max: ~1.25×calib (empirical; theoretical 1.63 overestimates due to pipeline overlap).
+These ratios are derived from the measured FFT phase split (see RESULTS.md) and
+refit via `tools/fit_cost_model.py` against 200 sampled (n,k,B) plans on real hardware
+(2026-07-20):
+
+- `PAIRED_CACHED_CORR_RATIO`: cost of paired cached correlate / full FFT pipeline.
+  **M3 Pro: 1.6806**, Zen 4: 2.9709.
+- `INDEP_PAIR_RATIO`: cost of correlate_fft_pair (shared g, fresh P FFTs) / full
+  FFT pipeline. **M3 Pro: 1.6806**, Zen 4: 2.9709 (fit_cost_model.py's single R,
+  applied to both ratios — the two ratios converged to the same value on both devices).
 
 All constants live as `#define`s in `fft_config.h` for per-device tuning.
 
@@ -165,7 +178,7 @@ FFTW plan creation before parallel region (not thread-safe). Context cloning use
 `FFTW_MEASURE | FFTW_WISDOM_ONLY` with ESTIMATE fallback — this gives cloned
 contexts the same PATIENT-quality plans as the original (critical for parallel
 performance; using bare ESTIMATE produces significantly slower plans).
-~9.5x on M3 Max's 12P+4E topology (n=8192 k=n: 350ms serial → 37ms 16-thread).
+~9.5x on M3 Pro's P+E topology (n=8192 k=n: serial→parallel speedup, 16-thread).
 HybridCtx pre-allocates permutation buffers (`a_sorted`, `inner_sorted`) to avoid
 per-call malloc under parallel allocator contention — without this, tree beats hybrid
 in parallel despite hybrid winning in serial.
@@ -195,7 +208,7 @@ exceeds savings at smaller n). Template in `src/linear_batched_impl.inc`.
 ### 7. Hybrid Block-Divide Engine (8-12%)
 Replace the tree's bottom log₂(B) levels with: sequential block build (tight loop,
 no tree overhead) + bidirectional divide (stable on the complete block product).
-B is selected by cost model (`select_best_B`): typically B=16 on M3 Max, B=32 on Zen 4.
+B is selected by cost model (`select_best_B`): typically B=16 on M3 Pro, B=32 on Zen 4.
 Players sorted by stack size for branch-prediction-friendly divide direction.
 
 ### 8. Truncated Propagation (2-5%)
@@ -229,10 +242,10 @@ Save FFTW_MEASURE results to `fftw_wisdom.dat`. Subsequent runs skip benchmarkin
 | Karatsuba | 1.5x slower at all sizes | FMA hardware: schoolbook `c[i+j] += a[i]*b[j]` is one FMA; Karatsuba trades multiplies for adds but both cost 1 cycle |
 | CRT cyclic+negacyclic | 17% more expensive | r2c(2k) ≈ c2c(k) via Hermitian symmetry; explicit CRT adds overhead for negacyclic twiddle |
 | Composite FFT sizes (ESTIMATE) | Slower | FFTW_ESTIMATE for non-power-of-2 produces suboptimal plans. Fixed: PATIENT wisdom + MEASURE plans make composites 10-30% faster than next power-of-2 |
-| Checkpointed linear | 4% gain | Streaming access already prefetcher-friendly on M3 Max (400 GB/s) |
+| Checkpointed linear | 4% gain | Streaming access already prefetcher-friendly on M3 Pro/Max (400 GB/s) |
 | Apple vDSP for inner loops | 2x slower | Per-call overhead at small k exceeds vectorization benefit |
 | PGO / -Ofast | Hurt or neutral | PGO profile mismatch; -Ofast breaks FP64 precision |
-| Batched divide on M3 Max | No improvement | OoO execution already pipelines independent serial chains |
+| Batched divide on M3 Pro | No improvement | OoO execution already pipelines independent serial chains |
 | 4-way tree | Worse than binary | LOO products create larger polynomials; binary minimizes correlate FFT sizes |
 | FFTW NEON for FP64 | 3.4x slower | FFTW's NEON codelets suboptimal on Apple Silicon for doubles |
 | Inlined schoolbook size 4/8/16 | No improvement | Compiler with -O3 already inlines small functions |
@@ -256,13 +269,14 @@ The propagation starts with g_root = payout and correlates with the root's TWO
 CHILDREN. It never reads the root polynomial itself. Skipping the root multiply
 saves the single most expensive FFT in the entire tree (the largest polynomial size).
 
-## Why Blocking the Linear Engine Doesn't Help (on M3 Max)
+## Why Blocking the Linear Engine Doesn't Help (on M3 Pro/Max)
 
 The linear forward-backward stores all n rows (O(nk) memory). The forward pass
 writes sequentially; the backward pass reads in reverse. Both are streaming access
 patterns that the hardware prefetcher handles perfectly at 400 GB/s.
 
-Checkpointing reduces memory to O(√n·k) but adds 33% recomputation. On M3 Max,
+Checkpointing reduces memory to O(√n·k) but adds 33% recomputation. On M3 Pro/Max
+(unified memory at ~400 GB/s),
 the recomputation costs more than the cache miss savings because streaming is
 already fast. On bandwidth-limited hardware (Zen 4 at 80 GB/s), checkpointing
 becomes essential.
@@ -286,7 +300,7 @@ OMP_NUM_THREADS=16 ./bench_grid
 - Context cloning: `tree_ctx_clone`, `hybrid_ctx_clone` create independent workspaces
   with `FFTW_MEASURE | FFTW_WISDOM_ONLY` plans (PATIENT-quality from wisdom, instant)
 - Batched linear parallelized over Q/2 pairs with `schedule(dynamic, 4)`
-- ~10x speedup on M3 Max (limited by mixed P/E core topology and thread overhead)
+- ~10x speedup on M3 Pro (limited by mixed P/E core topology and thread overhead)
 
 ## Porting to a New Device (General)
 
@@ -296,12 +310,12 @@ cost models, and dispatch logic are fully parameterized by the constants in that
 
 ## Porting to AMD Zen 4 (Ryzen 7950X)
 
-### Key Architectural Differences from M3 Max
+### Key Architectural Differences from M3 Pro/Max
 - **SIMD**: AVX-512 (8 FP64/vector) vs NEON (2 FP64/vector)
 - **Memory BW**: ~60 GB/s DDR5 vs 400 GB/s unified
 - **L1 cache**: 32KB vs 192KB
 - **L2 cache**: 1MB/core vs 32MB cluster
-- **Cores**: 16P (no E-cores) vs 12P + 4E
+- **Cores**: 16P (no E-cores) vs M3 Pro's P+E topology
 - **FMA throughput**: 2× 512-bit FMA/cycle = 16 FP64 FMA/cycle vs ~4
 - **No vDSP/AMX**: Apple-only features auto-disabled via `#ifdef __APPLE__`
 
@@ -345,31 +359,31 @@ The profile output has three measurement sections. Record these values:
 
 2. **Schoolbook row** in the overhead table — `school_ns / cps²` at the largest
    schoolbook size gives the scalar FMA cost.
-   → `FMA_NS` (expect ~0.06-0.08 with AVX-512)
+   → `FMA_NS` (measured: 0.0500 on Zen4 with AVX-512)
 
 3. **Phase split table** — `f_fwd`, `f_pw`, `f_ifft` fractions at each FFT size.
    Compute the paired/independent correlate ratios:
    - `PAIRED_CACHED_CORR_RATIO`: shares FFT(g) and reuses cached FFT(P).
      Cost = fwd(g) + 2×(pw + ifft). Ratio = this / full_pipeline_calib.
-     M3 Max measured 1.03.
+     M3 Pro measured 1.6806 (fit_cost_model.py), Zen 4 measured 2.9709.
    - `INDEP_PAIR_RATIO`: shares FFT(g), computes FFT(P) fresh.
      Cost = fwd(g) + 2×(fwd(P) + pw + ifft). Ratio = this / full_pipeline_calib.
-     M3 Max measured 1.25.
+     M3 Pro measured 1.6806 (fit_cost_model.py), Zen 4 measured 2.9709.
 
 **Step 3: Update platform constants in `devices/zen4/fft_config.h`.**
 
 Edit the `#define`s at the top of the file with measured values:
 
 ```c
-#define FMA_NS             0.08    /* scalar FMA cost from profile schoolbook row */
-#define FFT_OVERHEAD_NS    48.0    /* per-call FFT overhead from profile */
-#define PAIRED_CACHED_CORR_RATIO 1.08  /* from phase split */
-#define INDEP_PAIR_RATIO   1.30    /* from phase split */
+#define FMA_NS             0.0500  /* scalar FMA cost from profile schoolbook row */
+#define FFT_OVERHEAD_NS    0.0     /* per-call FFT overhead, converged to 0 in fit */
+#define PAIRED_CACHED_CORR_RATIO 2.9709  /* from phase split + fit_cost_model.py */
+#define INDEP_PAIR_RATIO   2.9709  /* from phase split + fit_cost_model.py */
 #define L2_CACHE_SIZE      (1 * 1024 * 1024)  /* 1MB per-core L2 */
 ```
 
 **Important**: `L2_CACHE_SIZE` controls the checkpointing interval in the batched
-linear engine (`ckpt_interval_batched`). Zen 4's 1MB L2 vs M3 Max's 32MB means
+linear engine (`ckpt_interval_batched`). Zen 4's 1MB L2 vs M3 Pro/Max's 32MB means
 checkpointing activates much earlier, which is critical — without it, the linear
 engine would stream through DRAM at 60 GB/s instead of L2 at ~1 TB/s.
 
@@ -409,7 +423,7 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 | Feature | How it adapts |
 |---|---|
 | `select_engine(n,k)` | Compares linear roofline cost vs hybrid cost (using `calib_times_ns[]`). Zen 4's faster schoolbook shifts crossover to higher k |
-| `select_best_B(n,k)` | Derives optimal block size from calibration data. Typically B=32 on Zen 4 (vs B=16 on M3 Max) because wider schoolbook regime |
+| `select_best_B(n,k)` | Derives optimal block size from calibration data. Typically B=32 on Zen 4 (vs B=16 on M3 Pro) because wider schoolbook regime |
 | `ckpt_interval_batched` | Sized to fit working set in `L2_CACHE_SIZE`. Activates much earlier on Zen 4 (1MB vs 32MB) |
 | BQ=8 batched linear | Same interleaved `a_batch[j*BQ+qi]` layout. AVX-512 processes 8 doubles natively per instruction |
 | Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |
@@ -430,7 +444,7 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 ### Optional: Karatsuba at intermediate sizes
 
 AVX-512 makes schoolbook ~4x faster than on NEON, potentially opening a gap between
-schoolbook and FFT where Karatsuba (O(n^1.585)) could win. Prior from M3 Max testing:
+schoolbook and FFT where Karatsuba (O(n^1.585)) could win. Prior from M3 Pro testing:
 Karatsuba was 1.5x slower at all sizes (FMA hardware makes schoolbook's n² FMAs cheap).
 On Zen 4, wider SIMD inflates the schoolbook regime further, making Karatsuba even less
 likely to help — but measure to be sure.

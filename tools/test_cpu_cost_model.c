@@ -3,7 +3,7 @@
  * Tests best_fft_config, best_fft_config_joint, select_best_B,
  * select_engine, and tree_ctx_create_ex2 from the CPU implementation.
  *
- * Build: make test_cpu_cost_model DEVICE=zen4  (or m3_max)
+ * Build: make test_cpu_cost_model DEVICE=zen4  (or m3_pro)
  * Run:   ./test_cpu_cost_model
  *
  * We #include "icm.c" to access static functions directly.

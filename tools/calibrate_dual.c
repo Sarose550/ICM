@@ -214,7 +214,7 @@ int main(int argc, char **argv) {
     const char *wisdom_paths[] = {
         WISDOM_FILE,
         "devices/zen4/fftw_wisdom.dat",
-        "devices/m3_max/fftw_wisdom.dat",
+        "devices/m3_pro/fftw_wisdom.dat",
         NULL
     };
     if (have_fftw && fftw_lib.import_wisdom) {

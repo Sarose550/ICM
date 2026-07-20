@@ -46,7 +46,7 @@ static inline double blended_bw(double bytes) {
  * it performs ~4*n*k fused multiply-add operations per quadrature point
  * (forward: ~1*n*k, backward: ~3*n*k).  The arithmetic intensity of the
  * inner loop (~0.5 FMA/byte) exceeds the machine balance point on modern
- * hardware (e.g. M3 Max: ~0.06 FMA/byte at 350 GB/s, ~4 TFLOPS), so
+ * hardware (e.g. ~0.06 FMA/byte at ~350 GB/s, ~4 TFLOPS), so
  * memory bandwidth is not the bottleneck.
  *
  * When checkpointing is required (working set > L2), there is an additional
@@ -60,8 +60,7 @@ static inline double blended_bw(double bytes) {
  * (from fft_config.h).
  */
 static inline double linear_roofline_cost(int n, int k, int batch_width) {
-    /* Core compute: ~4*n*k FMAs per Q-point (empirically verified within 6%
-     * against measured n=16384 at k=1638,2048,4096 on M3 Max). */
+    /* Core compute: ~4*n*k FMAs per Q-point (empirically verified within 6%). */
     double compute_ns = 4.0 * n * k * FMA_NS;
 
     int C = (int)((size_t)L2_CACHE_SIZE / ((size_t)k * batch_width * sizeof(double)));

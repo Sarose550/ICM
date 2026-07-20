@@ -27,19 +27,19 @@ static void emit_plan(int n, int k, int B) {
     TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
     if (!tc) { fprintf(stderr, "tree_ctx failed n=%d B=%d\n", n, B); goto cleanup; }
 
-    /* Run icm_equity with forced B (3 reps, median) */
-    char env_buf[32];
-    snprintf(env_buf, sizeof(env_buf), "%d", B);
-    setenv("ICM_FORCE_B", env_buf, 1);
-
+    /* Run the hybrid engine directly at the requested B (3 reps, median).
+     * NOT via icm_equity()/select_engine() — dispatch is cost-model-driven
+     * and may pick linear instead, which would silently corrupt the sample
+     * (this is a calibration tool: it must measure hybrid at *this* B). */
     int Q = 256;
     double times[3];
     for (int rep = 0; rep < 3; rep++) {
+        HybridCtx *hc = hybrid_ctx_create(n, S, k, B);
         double t0 = now_ns();
-        icm_equity(n, S, Q, payout, k, equity);
+        run_engine_ctx(n, S, Q, payout, k, equity, engine_hybrid_ctx, hc);
         times[rep] = now_ns() - t0;
+        hybrid_ctx_destroy(hc);
     }
-    unsetenv("ICM_FORCE_B");
 
     /* Median */
     for (int i = 0; i < 3; i++)

@@ -5,7 +5,7 @@
  * Reports convergence of V1 and V2 equities against exact closed-form values.
  *
  * Compile (macOS / Apple Silicon):
- *   gcc -O3 -march=native -Isrc -Idevices/m3_max -I/opt/homebrew/include \
+ *   gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
  *       -o accuracy_bench tools/accuracy_bench.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */

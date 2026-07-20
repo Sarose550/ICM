@@ -1,6 +1,6 @@
 /* check_engine.c — Verify which engine is being used for the anomalous case.
  *
- * Build: gcc -O3 -march=native -Isrc -Idevices/m3_max -I/opt/homebrew/include
+ * Build: gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include
  *        -o tools/check_engine tools/check_engine.c
  *        -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */
