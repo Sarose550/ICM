@@ -16,12 +16,14 @@ Usage:
   python3 tools/plot_contour.py --device zen4           # Zen4 (Ryzen 9 7950X)
   python3 tools/plot_contour.py --device m3_pro         # M3 Pro
 
-Reads from project root:
-  contour_<device>_serial_q256.csv, contour_<device>_parallel_q256.csv,
-  bench_grid_<device>_serial.txt, gpu_heatmap_new.csv, accuracy_zen4.csv
+Reads from results/ (most recent dated file per pattern, no manual copying
+needed):
+  contour_<device>_serial_q256_*.csv, contour_<device>_parallel_q256_*.csv,
+  bench_grid_<device>_serial_*.txt, gpu_heatmap_*.csv, accuracy_convergence.csv
 """
 
 import argparse
+import glob
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -34,6 +36,17 @@ from matplotlib.patches import Patch
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SCRIPT_DIR)
+RESULTS = os.path.join(ROOT, 'results')
+
+
+def find_latest(pattern):
+    """Return the most-recently-modified file in results/ matching pattern,
+    or None if nothing matches. Lets callers point at a dated-file glob
+    (e.g. 'bench_grid_zen4_serial_*.txt') instead of a single fixed name."""
+    matches = glob.glob(os.path.join(RESULTS, pattern))
+    if not matches:
+        return None
+    return max(matches, key=os.path.getmtime)
 
 # Style
 plt.rcParams.update({
@@ -54,9 +67,10 @@ GPU_COLOR = '#f97316'
 # ─── Device configuration ───────────────────────────────────
 
 # Each device has a key matching the --device flag value.
-# To add a new device, add an entry here and place the corresponding
-# contour_<key>_serial_q256.csv, contour_<key>_parallel_q256.csv, and
-# bench_grid_<key>_serial.txt files at the repo root.
+# To add a new device, add an entry here. Filenames are glob patterns
+# resolved against results/ via find_latest() -- the most recently
+# modified match wins, so dated files (e.g. from CLAUDE.md's benchmarking
+# recipes) work without any renaming or copying.
 
 DEVICE_CONFIGS = {
     'zen4': {
@@ -65,9 +79,9 @@ DEVICE_CONFIGS = {
         'short': 'Zen 4',
         'n_cores': 16,
         'output_suffix': '',   # no suffix — root-level names like contour_1s.png
-        'serial_csv': 'contour_zen4_serial_q256.csv',
-        'parallel_csv': 'contour_zen4_parallel_q256.csv',
-        'bench_grid': 'bench_grid_zen4_serial.txt',
+        'serial_csv': 'contour_zen4_serial_q256*.csv',
+        'parallel_csv': 'contour_zen4_parallel_q256*.csv',
+        'bench_grid': 'bench_grid_zen4_serial*.txt',
     },
     'm3_pro': {
         'key': 'm3_pro',
@@ -75,9 +89,9 @@ DEVICE_CONFIGS = {
         'short': 'M3 Pro',
         'n_cores': 12,
         'output_suffix': '_m3pro',
-        'serial_csv': 'contour_m3pro_serial_q256.csv',
-        'parallel_csv': 'contour_m3pro_parallel_q256.csv',
-        'bench_grid': 'bench_grid_m3pro_serial.txt',
+        'serial_csv': 'contour_m3pro_serial_q256*.csv',
+        'parallel_csv': 'contour_m3pro_parallel_q256*.csv',
+        'bench_grid': 'bench_grid_m3pro_serial*.txt',
     },
 }
 
@@ -594,24 +608,24 @@ if __name__ == '__main__':
     cfg = DEVICE_CONFIGS[args.device]
     suffix = cfg['output_suffix']
 
-    serial_csv = os.path.join(ROOT, cfg['serial_csv'])
-    parallel_csv = os.path.join(ROOT, cfg['parallel_csv'])
-    bench_full = os.path.join(ROOT, cfg['bench_grid'])
-    gpu_heatmap = os.path.join(ROOT, 'gpu_heatmap_new.csv')
+    serial_csv = find_latest(cfg['serial_csv'])
+    parallel_csv = find_latest(cfg['parallel_csv'])
+    bench_full = find_latest(cfg['bench_grid'])
+    gpu_heatmap = find_latest('gpu_heatmap_*.csv')
 
     # CPU contour plots
-    if os.path.exists(serial_csv) and os.path.exists(parallel_csv):
+    if serial_csv and parallel_csv:
         plot_contour(cfg, serial_csv, parallel_csv,
-                     os.path.join(ROOT, f'contour_1s{suffix}.png'))
+                     os.path.join(RESULTS, f'contour_1s{suffix}.png'))
         plot_speedup(cfg, serial_csv, parallel_csv,
-                     os.path.join(ROOT, f'parallel_speedup{suffix}.png'))
+                     os.path.join(RESULTS, f'parallel_speedup{suffix}.png'))
         plot_dispatch(cfg, serial_csv,
-                      os.path.join(ROOT, f'engine_dispatch{suffix}.png'))
+                      os.path.join(RESULTS, f'engine_dispatch{suffix}.png'))
     else:
         print(f"Skipping CPU contour plots (missing CSV files)")
 
     # CPU runtime vs n — include fixed k and ratio k (n/4, n/2, n)
-    if os.path.exists(bench_full):
+    if bench_full:
         data = extract_runtime_data_from_bench_grid(bench_full)
         if data:
             all_k = sorted(set(k for _, k, _, _ in data))
@@ -629,14 +643,14 @@ if __name__ == '__main__':
 
             plot_runtime_vs_n(data_ext,
                               f'Runtime vs n (Serial, {cfg["short"]}, Q = 256)',
-                              os.path.join(ROOT, f'runtime_vs_n_cpu{suffix}.png'),
+                              os.path.join(RESULTS, f'runtime_vs_n_cpu{suffix}.png'),
                               k_values=fixed_k + ratio_labels)
 
     # GPU plots (device-independent — only run in default zen4 mode
     # to avoid overwriting the canonical GPU plots with duplicate runs)
     if args.device == 'zen4':
-        if os.path.exists(gpu_heatmap):
-            plot_gpu_contour(gpu_heatmap, os.path.join(ROOT, 'gpu_contour.png'))
+        if gpu_heatmap:
+            plot_gpu_contour(gpu_heatmap, os.path.join(RESULTS, 'gpu_contour.png'))
 
             gpu_data = extract_gpu_runtime_data(gpu_heatmap)
             if gpu_data:
@@ -659,15 +673,15 @@ if __name__ == '__main__':
 
                 plot_runtime_vs_n(gpu_data_ext,
                                   'Runtime vs n (NVIDIA B200, Q = 256)',
-                                  os.path.join(ROOT, 'runtime_vs_n_gpu.png'),
+                                  os.path.join(RESULTS, 'runtime_vs_n_gpu.png'),
                                   k_values=target_k)
 
         # Accuracy convergence
-        accuracy_csv = os.path.join(ROOT, 'accuracy_zen4.csv')
+        accuracy_csv = os.path.join(RESULTS, 'accuracy_convergence.csv')
         if os.path.exists(accuracy_csv):
-            plot_accuracy_convergence(accuracy_csv, os.path.join(ROOT, 'accuracy_convergence.png'))
+            plot_accuracy_convergence(accuracy_csv, os.path.join(RESULTS, 'accuracy_convergence.png'))
         else:
-            print("Skipping accuracy_convergence.png (missing accuracy_zen4.csv)")
+            print("Skipping accuracy_convergence.png (missing accuracy_convergence.csv)")
     else:
         print("Skipping GPU/accuracy plots (non-zen4 device — only generated for zen4)")
 

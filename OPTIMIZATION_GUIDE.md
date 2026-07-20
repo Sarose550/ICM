@@ -298,8 +298,13 @@ OMP_NUM_THREADS=16 ./bench_grid
 ## Porting to a New Device (General)
 
 The codebase is designed for easy porting. All device-specific tuning lives in
-`devices/<DEVICE>/fft_config.h` - no changes to `src/icm.c` needed. The engines,
+`devices/<DEVICE>/fft_config.h` — no changes to `src/icm.c` needed. The engines,
 cost models, and dispatch logic are fully parameterized by the constants in that header.
+
+For the GPU planner (B200), the equivalent tuning lives in
+`devices/b200/gpu_fft_config.h`, and GPU cost-model constants (`C_wrap`,
+`C_school`, `R`, `C_gap`) are fit via `tools/fit_gpu_cost_model.py` (see
+"GPU Cost Model (B200)" below).
 
 ## Porting to AMD Zen 4 (Ryzen 7950X)
 
@@ -537,3 +542,28 @@ gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
     -fopenmp -Isrc -Idevices/zen4 -o bench_grid bench/bench.c -ldl -lm
 ```
+
+## GPU Cost Model (B200)
+
+The GPU planner uses a separate cost model from the CPU. Unlike the CPU's
+9-parameter physics-based model, the GPU model fits only 4 constants —
+`C_wrap`, `C_school`, `R`, `C_gap` — with all other costs (compute-a,
+block-build, leaf-extract, accumulate) interpolated from empirical kernel
+benchmarks and cuFFT/cuFFTDx calibration tables in
+`devices/b200/gpu_fft_config.h`.
+
+The 4 fitted parameters are tuned via `tools/fit_gpu_cost_model.py`:
+
+```bash
+python3 tools/fit_gpu_cost_model.py gpu_sample_plans.csv devices/b200/gpu_fft_config.h [bench_kernels.csv]
+```
+
+The script uses differential evolution to minimize log-relative error
+across sampled (n,k,B) plans. The GPU calibration pipeline is:
+1. `calibrate_gpu.cu` — measure per-size cuFFT pipeline times →
+   `devices/b200/gpu_fft_config.h`
+2. `gpu_sample_plans.cu` — sample planner decisions → `gpu_sample_plans.csv`
+3. `bench_kernels` — measure individual kernel costs → `bench_kernels_b200.csv`
+4. `fit_gpu_cost_model.py` — fit C_wrap, C_school, R, C_gap from the above
+
+Or run the full campaign: `./tools/run_b200_campaign.sh`.

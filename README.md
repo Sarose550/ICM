@@ -48,6 +48,16 @@ double ns = icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
 
 Returns wall-clock time in nanoseconds. All correctness tests pass at < 5e-12 relative error.
 
+**Subset equity.** `icm_equity_subset()` computes equities for only a chosen
+subset of players (`targets`) instead of all `n`. It prunes the hybrid
+engine's propagate pass with a per-level hot/cold bitmask marking which
+tree branches can contain a target player, skipping cold branches entirely
+- the sort order used by the rest of the engine is untouched, so this is
+purely a pruning optimization, not a different algorithm. Worthwhile when
+you only need a handful of players' equities out of a large field; the
+speedup is workload-dependent (larger `n`, smaller target fraction helps
+most).
+
 **Python bindings.** `python/` provides a ctypes wrapper (`icm.equity(stacks, payouts)`)
 that calls straight into the same compiled shared library the C API uses.
 See [python/README.md](python/README.md) for setup (`make libicm`, then
@@ -431,7 +441,7 @@ and 1e9:1 cases. The production default is `Q = 256`, which already delivers
 sub- $2 \times 10^{-12}$ relative error - sufficient for any practical poker
 application.
 
-![Accuracy convergence](accuracy_convergence.png)
+![Accuracy convergence](results/accuracy_convergence.png)
 
 ## Performance
 
@@ -471,19 +481,19 @@ Three engines with cost-based automatic dispatch:
 
 *M3 Pro: OMP_NUM_THREADS=12 (6 performance + 6 efficiency cores). Zen 4: OMP_NUM_THREADS=16 (16 physical cores).*
 
-![1-second contour: serial vs 12-thread parallel, M3 Pro](contour_1s_m3pro.png)
+![1-second contour: serial vs 12-thread parallel, M3 Pro](results/contour_1s_m3pro.png)
 
-![12-core parallel speedup at the 1-second boundary, M3 Pro](parallel_speedup_m3pro.png)
+![12-core parallel speedup at the 1-second boundary, M3 Pro](results/parallel_speedup_m3pro.png)
 
-![Engine dispatch (linear vs hybrid) at the 1-second boundary, M3 Pro](engine_dispatch_m3pro.png)
+![Engine dispatch (linear vs hybrid) at the 1-second boundary, M3 Pro](results/engine_dispatch_m3pro.png)
 
-![1-second contour: serial vs 16-thread parallel, Zen 4](contour_1s.png)
+![1-second contour: serial vs 16-thread parallel, Zen 4](results/contour_1s.png)
 
-![16-core parallel speedup at the 1-second boundary, Zen 4](parallel_speedup.png)
+![16-core parallel speedup at the 1-second boundary, Zen 4](results/parallel_speedup.png)
 
-![Engine dispatch (linear vs hybrid) at the 1-second boundary, Zen 4](engine_dispatch.png)
+![Engine dispatch (linear vs hybrid) at the 1-second boundary, Zen 4](results/engine_dispatch.png)
 
-![1-second contour, NVIDIA B200](gpu_contour.png)
+![1-second contour, NVIDIA B200](results/gpu_contour.png)
 
 **GPU scaling.** The B200 pushes well past the CPU ceiling: where the CPU
 engines handle up to ~17,000 players in one second (single-threaded), the B200
