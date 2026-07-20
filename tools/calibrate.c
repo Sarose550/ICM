@@ -9,7 +9,12 @@
  * The generated fft_config.h should be placed in devices/<DEVICE>/fft_config.h.
  *
  * Usage:
+ *   # macOS (Homebrew FFTW)
+ *   gcc -O3 -march=native -I/opt/homebrew/include -o calibrate tools/calibrate.c \
+ *       -L/opt/homebrew/lib -lfftw3 -lm
+ *   # Linux
  *   gcc -O3 -march=native -o calibrate tools/calibrate.c -lfftw3 -lm
+ *
  *   ./calibrate                   # full calibration (may take 10-30 minutes)
  *   ./calibrate --wisdom-only     # only generate wisdom (skip timing)
  *   ./calibrate --quick           # fewer reps (faster, less accurate)

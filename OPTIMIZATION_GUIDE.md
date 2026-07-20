@@ -315,7 +315,7 @@ cost models, and dispatch logic are fully parameterized by the constants in that
 - **L2 cache**: 1MB/core vs 32MB cluster
 - **Cores**: 16P (no E-cores) vs M3 Pro's P+E topology
 - **FMA throughput**: 2× 512-bit FMA/cycle = 16 FP64 FMA/cycle vs ~4
-- **No vDSP/AMX**: Apple-only features auto-disabled via `#ifdef __APPLE__`
+- **No vDSP**: Apple-only FFT dispatch auto-disabled via `#ifdef __APPLE__`
 
 ### Complete step-by-step porting guide
 
@@ -427,7 +427,6 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 | Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |
 | `best_fft_config()` | Picks optimal FFT size + wrap correction from Zen 4-specific calibration table |
 | vDSP dispatch | Auto-disabled (not Apple Silicon). All FFTs use FFTW |
-| AMX schoolbook | Auto-disabled (not Apple Silicon). All schoolbook uses scalar FMA |
 
 ### What does NOT auto-adapt (needs measurement)
 

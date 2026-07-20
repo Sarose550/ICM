@@ -84,23 +84,28 @@ DEVICE_CONFIGS = {
 # ─── Data loading ────────────────────────────────────────────
 
 def load_contour(path, max_time_ms=2000):
-    """Load contour CSV. Filter out points where time > max_time_ms.
-    Keeps all 'ok' rows plus at most the first 'floor' row, then stops.
-    This trims degenerate trailing floor rows from older data that predate
-    the contour_1s.c fix (which now breaks after the first floor)."""
+    """Load contour CSV. Filter out 'ok' points where time > max_time_ms (these
+    indicate anomalous bisection search behavior, not real 1s-budget data).
+    Always includes the row where n_max <= k (the true n=k crossing) regardless
+    of its measured time, then stops — floor-row probes intentionally use a
+    generous timeout to confirm the crossing, so their time is expected to
+    exceed max_time_ms and must not be filtered out."""
     k, n, engine = [], [], []
     with open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
             ki, ni, ti = int(row['k']), int(row['n_max']), float(row['time_ms'])
+            # Always keep the crossing row, regardless of time.
+            if ni <= ki:
+                k.append(ki)
+                n.append(ni)
+                engine.append(row['engine'])
+                break
             if ti > max_time_ms:
                 continue
-            status = row.get('status', 'ok')
             k.append(ki)
             n.append(ni)
             engine.append(row['engine'])
-            if status == 'floor':
-                break  # one floor row is enough — stop reading
     return np.array(k), np.array(n), engine
 
 
@@ -180,8 +185,8 @@ def plot_contour(cfg, serial_path, parallel_path, out_path):
         # Find where contour crosses n=k (interpolate)
         for i in range(len(k_arr) - 1):
             # contour: n_arr[i] at k_arr[i]. n=k line: n=k.
-            # crossing when n_arr goes from > k to < k
-            if n_arr[i] >= k_arr[i] and n_arr[i+1] < k_arr[i+1]:
+            # crossing when n_arr goes from >= k to <= k
+            if n_arr[i] >= k_arr[i] and n_arr[i+1] <= k_arr[i+1]:
                 # Linear interp in log space
                 frac = (np.log(k_arr[i]) - np.log(n_arr[i])) / \
                        ((np.log(n_arr[i+1]) - np.log(n_arr[i])) - (np.log(k_arr[i+1]) - np.log(k_arr[i])))
@@ -215,7 +220,7 @@ def plot_contour(cfg, serial_path, parallel_path, out_path):
     ]
     ax.legend(handles=legend_elements, loc='upper right', fontsize=9.5, framealpha=0.9)
 
-    ax.set_xlim(1.5, max(ks) * 1.5)
+    ax.set_xlim(1.5, max(max(ks), max(kp)) * 1.5)
     y_lo = min(min(ns), min(np_)) * 0.5
     y_hi = max(max(ns), max(np_)) * 2
     ax.set_ylim(y_lo, y_hi)
@@ -456,7 +461,7 @@ def plot_gpu_contour(heatmap_path, out_path):
 
     # Mark intersection (1-second k=n threshold)
     for i in range(len(contour_k) - 1):
-        if contour_n[i] >= contour_k[i] and contour_n[i+1] < contour_k[i+1]:
+        if contour_n[i] >= contour_k[i] and contour_n[i+1] <= contour_k[i+1]:
             frac = (np.log(contour_k[i]) - np.log(contour_n[i])) / \
                    ((np.log(contour_n[i+1]) - np.log(contour_n[i])) - (np.log(contour_k[i+1]) - np.log(contour_k[i])))
             k_cross = np.exp(np.log(contour_k[i]) + frac * (np.log(contour_k[i+1]) - np.log(contour_k[i])))

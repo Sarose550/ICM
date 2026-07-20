@@ -19,6 +19,7 @@ make parallel
 make DEVICE=zen4
 
 # Calibrate a new device (generates fft_config.h + fftw_wisdom.dat)
+# macOS: add -I/opt/homebrew/include -L/opt/homebrew/lib (Homebrew FFTW)
 gcc -O3 -march=native -o calibrate tools/calibrate.c -lfftw3 -lm
 ./calibrate
 
@@ -104,7 +105,7 @@ All tuning constants live in `devices/<DEVICE>/fft_config.h` as `#define`s:
 | Constant | M3 Pro | Zen 4 | What | How to measure |
 |---|---|---|---|---|
 | `FMA_NS` | 0.0839 | 0.0500 | ns per scalar FMA | `./bench_grid profile` (schoolbook row) |
-| `FFT_OVERHEAD_NS` | 204.5517 | 0.0 | Per-call FFT overhead | `./bench_grid profile` (overhead table) |
+| `FFT_OVERHEAD_NS` | 0.0 | 0.0 | Per-call FFT overhead (baked into `calib_times_ns[]`, not double-counted) | `./bench_grid profile` (overhead table) |
 | `PAIRED_CACHED_CORR_RATIO` | 1.8205 | 2.9709 | Paired correlate / full pipeline | `./bench_grid profile` (phase split) |
 | `INDEP_PAIR_RATIO` | 1.8205 | 2.9709 | correlate_fft_pair / full pipeline | `./bench_grid profile` (phase split) |
 | `WRAP_FMA_NS` | 0.1000 | 0.8612 | ns per FMA in wrap correction | fit_cost_model.py |

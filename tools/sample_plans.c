@@ -7,7 +7,13 @@
  * Output CSV: n,k,B,Q,total_ms,per_qp_ns,L,levels_json
  * where levels_json encodes per-level: ell,nr,fft_n,wrap_m,cps,use_fft,cache_ok,corr_fft_n,corr_wrap_m
  *
- * Build: gcc -O3 -march=native -Isrc -Idevices/zen4 -o sample_plans tools/sample_plans.c -lfftw3 -lm -ldl
+ * Build (DEVICE = target device dir under devices/, e.g. zen4 or m3_pro):
+ *   # macOS
+ *   gcc -O3 -march=native -Isrc -Idevices/<DEVICE> -I/opt/homebrew/include \
+ *       -o sample_plans tools/sample_plans.c -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
+ *   # Linux
+ *   gcc -O3 -march=native -Isrc -Idevices/<DEVICE> \
+ *       -o sample_plans tools/sample_plans.c -lfftw3 -lm -ldl -lmvec
  */
 #include "icm.c"
 #include <stdio.h>

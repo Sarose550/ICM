@@ -69,8 +69,8 @@ Rather than enumerating orderings, one can track the set of players who
 have busted so far. Let `dp[mask]` be the probability that exactly the
 players in the bitmask `mask` have been eliminated. From each state, for
 each surviving player `j`, the transition adds `dp[mask] · (S_j / total
-remaining stack)` to `dp[mask | (1<<j)]`. There are `2^n` states and up to
-`n` candidate transitions per state, giving `O(n · 2^n)` total work - the
+remaining stack)` to `dp[mask | (1<<j)]`. There are $2^n$ states and up to
+$n$ candidate transitions per state, giving $O(n \cdot 2^n)$ total work - the
 per-state cost comes from looping over surviving players, not from the
 payout structure. This is the method used by real poker tools; see GTO
 Wizard's ["Theoretical Breakthroughs in
@@ -79,7 +79,7 @@ for a practical discussion and Helmuth Melcher's 2015 TU Wien diploma
 thesis ["Evaluation of Equity Models for Tournament
 Poker"](https://repositum.tuwien.at/handle/20.500.12708/79991) for the
 academic writeup. The practical wall is roughly 25–30 players - at
-`n = 30`, `2^30` states already pushes into gigabytes of memory.
+$n = 30$, $2^{30}$ states already pushes into gigabytes of memory.
 
 **4. How real tools scale past 30 players: Monte Carlo via the "exponential
 clock" framing.** The Malmuth–Harville elimination rule ("at each step, the
@@ -95,31 +95,29 @@ elimination rule at every step. This gives a simple, unbiased way to
 technique in a TwoPlusTwo forum thread, ["New Algorithm: Calculate ICM
 Large
 Tournaments"](https://forumserver.twoplustwo.com/15/poker-theory-amp-gto/new-algorithm-calculate-icm-large-tournaments-1098489/).
-Error shrinks as `O(1/√N)` in the number of sampled tournaments `N`, so
+Error shrinks as $O(1/\sqrt{N})$ in the number of sampled tournaments $N$, so
 high precision gets expensive. (A refinement uses [Quasi-Monte Carlo
 sampling](https://en.wikipedia.org/wiki/Quasi-Monte_Carlo_method) -
 deterministic low-discrepancy point sequences instead of independent random
-draws, giving closer to `O(1/N)` convergence for smooth integrands - but
+draws, giving closer to $O(1/N)$ convergence for smooth integrands - but
 this repo does not build on that approach.)
 
 **5. This repo's approach: make the Monte Carlo estimate exact.** The
 exponential-clock model above yields an integral representation of "player
-`i` finishes in position `r`." Substituting `v = e^(-t)` turns the
+`i` finishes in position `r`." Substituting $v = e^{-t}$ turns the
 combinatorial sum inside that integral into the coefficient of a generating
-function. For player `i`, define:
+function. For player $i$, define:
 
-```
-a_j(v) = v^(S_j),    b_j(v) = 1 - v^(S_j)
-Q_i(x; v) = Π_{j ≠ i} (a_j(v) + b_j(v) · x)
-```
+$$a_j(v) = v^{S_j}, \quad b_j(v) = 1 - v^{S_j}$$
+$$Q_i(x; v) = \prod_{j \neq i} \bigl(a_j(v) + b_j(v) \cdot x\bigr)$$
 
-The coefficient of `x^m` in `Q_i(x; v)` captures exactly the combinatorial
+The coefficient of $x^m$ in $Q_i(x; v)$ captures exactly the combinatorial
 term that Monte Carlo would otherwise have to sample - the sum over all
 subsets of `m` other players of the product of their elimination
 probabilities times the remaining players' survival probabilities. So
 instead of drawing `N` random samples of the exponential race and
 averaging, this repo evaluates the exact 1-D integral over `v` via
-quadrature (after a change of variables `v = Φ(y)` using the standard
+quadrature (after a change of variables $v = \Phi(y)$ using the standard
 normal CDF to make the integrand decay rapidly). With `Q = 256`
 Gauss-Legendre nodes, this yields deterministic double-precision accuracy
 (relative error < 5 × 10^(-12); see Accuracy section below).
@@ -127,43 +125,43 @@ Gauss-Legendre nodes, this yields deterministic double-precision accuracy
 The remaining computational challenge is evaluating, for *every* player `i`
 simultaneously, the coefficients of `Q_i(x; v)` - the product of everyone
 else's per-player factor. Computed naively, one player at a time, that's `n`
-separate degree-`(n-1)` products: `O(n²)` factors to multiply. The
-subproduct tree computes all `n` of them together in `O(n log n)`
+separate degree-$(n-1)$ products: $O(n^2)$ factors to multiply. The
+subproduct tree computes all $n$ of them together in $O(n \log n)$
 multiplications (each accelerated further by FFT convolution, which
-multiplies two degree-`d` polynomials in `O(d log d)` time instead of the
-schoolbook `O(d²)`; see Wikipedia's article on the [Fast Fourier
+multiplies two degree-$d$ polynomials in $O(d \log d)$ time instead of the
+schoolbook $O(d^2)$; see Wikipedia's article on the [Fast Fourier
 Transform](https://en.wikipedia.org/wiki/Fast_Fourier_transform) for why
 that's faster). Here's how.
 
 **6. Computing all `n` leave-one-out products at once: the subproduct tree.**
 Restated in linear-algebra terms, this is a dot-product problem. Represent a
 truncated polynomial by its coefficient vector, and define the pairing
-`⟨f, g⟩ = Σ_m f[m]·g[m]` (an ordinary dot product). What every player `i`
-actually needs is `⟨payout, Q_i(x; v)⟩` - the payout vector dotted against
+$\langle f, g \rangle = \sum_m f[m] \cdot g[m]$ (an ordinary dot product). What every player $i$
+actually needs is $\langle \text{payout}, Q_i(x; v) \rangle$ - the payout vector dotted against
 the product of everyone else's factor. Built one player at a time, that
-requires `n` separate `O(n)`-degree products before the dot product is even
-possible: `O(n²)` total.
+requires $n$ separate $O(n)$-degree products before the dot product is even
+possible: $O(n^2)$ total.
 
-Here is the shortcut. "Multiply by a fixed polynomial `P`", `T_P(f) = P·f`
+Here is the shortcut. "Multiply by a fixed polynomial $P$", $T_P(f) = P \cdot f$
 (truncated), is a *linear* operator on coefficient vectors. Under the
-dot-product pairing above, its adjoint - the operator `T_P*` satisfying
-`⟨T_P(f), g⟩ = ⟨f, T_P*(g)⟩` for every `f, g` - is exactly a
-*cross-correlation* with `P`: `T_P*(g)[m] = Σ_j P[j]·g[m+j]`. This falls
-straight out of writing `T_P` as a matrix: it's a convolution (Toeplitz-style)
+dot-product pairing above, its adjoint - the operator $T_P^*$ satisfying
+$\langle T_P(f), g \rangle = \langle f, T_P^*(g) \rangle$ for every $f, g$ - is exactly a
+*cross-correlation* with $P$: $T_P^*(g)[m] = \sum_j P[j] \cdot g[m+j]$. This falls
+straight out of writing $T_P$ as a matrix: it's a convolution (Toeplitz-style)
 matrix, and the transpose of a convolution matrix is a correlation matrix.
 
-Arrange the `n` players' factors `P_j(x) = a_j(v) + b_j(v)·x` as the leaves
+Arrange the $n$ players' factors $P_j(x) = a_j(v) + b_j(v) \cdot x$ as the leaves
 of a balanced binary tree. Building the tree bottom-up is just composing a
-chain of these `T_P` operators, one per level. `Q_i` - "everyone except leaf
-`i`" - is what that chain computes if you skip every `T_P` on leaf `i`'s own
+chain of these $T_P$ operators, one per level. $Q_i$ - "everyone except leaf
+$i$" - is what that chain computes if you skip every $T_P$ on leaf $i$'s own
 root-to-leaf path. Adjoints reverse the order of composition
-(`(A∘B)* = B*∘A*`), so applying the *adjoints* of that same chain, starting
-from `payout` at the root and walking downward, computes `⟨payout, Q_i⟩`
+($(A \circ B)^* = B^* \circ A^*$), so applying the *adjoints* of that same chain, starting
+from $\text{payout}$ at the root and walking downward, computes $\langle \text{payout}, Q_i \rangle$
 directly - one adjoint per level, shared across every leaf, branching only
 where paths diverge. Concretely, at any node the "own subtree" the walk is
 about to enter is one child; the part it must still account for is the
 *other* child, i.e. the sibling. So the adjoint applied at each step down is
-`T_{P_sibling}*` - correlation with the sibling's polynomial - which is
+$T_{P_{\text{sibling}}}^*$ - correlation with the sibling's polynomial - which is
 exactly the mechanism below:
 
 - *Build (bottom-up).* Each internal node's polynomial is the product of its
@@ -174,17 +172,17 @@ exactly the mechanism below:
   its subtree - this is the `T_P` chain being composed.
 
 - *Propagate (top-down).* Seed the root with the payout vector itself,
-  `(π_1, ..., π_k)`, treated as the coefficients of a polynomial `g_root(x)`.
-  Then walk back down the tree, applying `T_{P_sibling}*` at each level:
+  $(\pi_1, \ldots, \pi_k)$, treated as the coefficients of a polynomial $g_{\text{root}}(x)$.
+  Then walk back down the tree, applying $T_{P_{\text{sibling}}}^*$ at each level:
   each child's new coefficients are
-  `g_child[m] = Σ_j P_sibling[j] · g_parent[m+j]` - the cross-correlation
+  $g_{\text{child}}[m] = \sum_j P_{\text{sibling}}[j] \cdot g_{\text{parent}}[m+j]$ - the cross-correlation
   derived above, computable via FFT the same way convolution is. Descend
   all the way to the leaves.
 
-`g_leaf_i[0]` is then `⟨payout, Q_i(x; v)⟩`, truncated to its constant term:
+$g_{\text{leaf}_i}[0]$ is then $\langle \text{payout}, Q_i(x; v) \rangle$, truncated to its constant term:
 exactly the coefficient the generating-function argument in step 5 needs,
-for every `i`, without ever having built `Q_i(x; v)` on its own. One build
-pass, one propagate pass, not `n` separate `O(n)` products (the exact
+for every $i$, without ever having built $Q_i(x; v)$ on its own. One build
+pass, one propagate pass, not $n$ separate $O(n)$ products (the exact
 complexity is derived below).
 
 The hybrid engine (below) runs this same two-pass algorithm over *blocks*
@@ -197,39 +195,39 @@ one extra step at the very end: a block's leave-one-out `g`-vector describes
 recovering a single player's coefficient means dividing the block's
 *complete* (non-truncated) polynomial product by that player's own factor,
 polynomial division, done only on this small, complete, `B`-degree product,
-where the resulting numerical amplification is bounded by `|c|^B` and safe
-in double precision for `B` up to 64. (Division elsewhere in this codebase
+where the resulting numerical amplification is bounded by $|c|^B$ and safe
+in double precision for $B$ up to 64. (Division elsewhere in this codebase
 is deliberately avoided, see the correctness constraint in `CLAUDE.md`,
 because doing the same thing on the full, *truncated* `n`-player product is
 numerically unstable.)
 
-**Complexity: `O(Q · n · log²k)`.** Derive this by summing the cost of
-each tree level directly. There are `L = log₂n` levels; at level `ℓ` there
-are `n/2^ℓ` nodes, and every node's polynomial (and every `g`-vector during
-propagate) is truncated to size `s_ℓ = min(2^ℓ, k)` - nothing past `k`
+**Complexity: $O(Q \cdot n \cdot \log^2 k)$.** Derive this by summing the cost of
+each tree level directly. There are $L = \log_2 n$ levels; at level $\ell$ there
+are $n/2^\ell$ nodes, and every node's polynomial (and every $g$-vector during
+propagate) is truncated to size $s_\ell = \min(2^\ell, k)$ - nothing past $k$
 terms of the payout can ever matter downstream. Each node's FFT-based
-multiply/correlate at level `ℓ` costs `O(s_ℓ log s_ℓ)`, so the total cost
-at level `ℓ` is `(n/2^ℓ) · O(s_ℓ log s_ℓ)`. Two regimes:
+multiply/correlate at level $\ell$ costs $O(s_\ell \log s_\ell)$, so the total cost
+at level $\ell$ is $(n/2^\ell) \cdot O(s_\ell \log s_\ell)$. Two regimes:
 
-- *Below saturation* (`2^ℓ ≤ k`, so `s_ℓ = 2^ℓ`): cost at level `ℓ` is
-  `(n/2^ℓ) · O(2^ℓ · ℓ) = O(n · ℓ)`. Summed over `ℓ = 1, ..., log k`, this
-  is `O(n · (log k)²)` (a triangular sum).
-- *Above saturation* (`2^ℓ > k`, so `s_ℓ = k`, capped): cost at level `ℓ`
-  is `(n/2^ℓ) · O(k log k)`. The node count `n/2^ℓ` shrinks geometrically
+- *Below saturation* ($2^\ell \leq k$, so $s_\ell = 2^\ell$): cost at level $\ell$ is
+  $(n/2^\ell) \cdot O(2^\ell \cdot \ell) = O(n \cdot \ell)$. Summed over $\ell = 1, \ldots, \log k$, this
+  is $O(n \cdot (\log k)^2)$ (a triangular sum).
+- *Above saturation* ($2^\ell > k$, so $s_\ell = k$, capped): cost at level $\ell$
+  is $(n/2^\ell) \cdot O(k \log k)$. The node count $n/2^\ell$ shrinks geometrically
   going up the tree, so the entire remaining tail of levels sums to just
-  `O(n log k)` - not an extra factor of `log n`.
+  $O(n \log k)$ - not an extra factor of $\log n$.
 
-Adding both regimes: `O(n log²k) + O(n log k) = O(n log²k)` for the build
+Adding both regimes: $O(n \log^2 k) + O(n \log k) = O(n \log^2 k)$ for the build
 pass; propagate is the same shape of operation (same FFT sizes), so it's
-the same order. That's the per-quadrature-point cost; multiplying by `Q`
-quadrature points gives `O(Q · n · log²k)` overall.
+the same order. That's the per-quadrature-point cost; multiplying by $Q$
+quadrature points gives $O(Q \cdot n \cdot \log^2 k)$ overall.
 
 **Three CPU engines with cost-based dispatch.** The library picks the
 fastest engine per `(n, k)` pair via `select_engine()`, which compares a
 roofline linear-cost estimate against a calibrated hybrid-cost model - no
 hand-tuned crossover thresholds:
 
-1. **Linear (batched):** `O(nk)` forward-backward pass. Interleaves BQ=8
+1. **Linear (batched):** $O(nk)$ forward-backward pass. Interleaves BQ=8
    quadrature points for SIMD (NEON on Apple Silicon, AVX-512 on Zen 4).
    Best for small `k`.
 2. **Hybrid (block + tree):** Partitions `n` players into cost-model-selected
@@ -263,47 +261,45 @@ divided by the subset's total stack. (Proof: for player `i` against a
 group, `T_i` and the minimum of everyone else's `T`s are independent, the
 latter is itself exponential with rate equal to the sum of their stacks -
 the minimum of independent exponentials is exponential with the summed
-rate - and `P(T_i < T_other)` for two independent exponentials with rates
-`a, b` is `a / (a + b)`.) Applied to a pair `{i, j}`: `P(i beats j) =
-S_i / (S_i + S_j)`. Applied to a triple `{i, j, k}`: `P(i beats both) =
-S_i / (S_i + S_j + S_k)`.
+rate - and $P(T_i < T_{\text{other}})$ for two independent exponentials with rates
+$a, b$ is $a / (a + b)$.) Applied to a pair $\{i, j\}$: $P(i \text{ beats } j) =
+S_i / (S_i + S_j)$. Applied to a triple $\{i, j, k\}$: $P(i \text{ beats both}) =
+S_i / (S_i + S_j + S_k)$.
 
-Now write player `i`'s actual finishing position as `m` other players
-finishing ahead of them (`m = 0` is 1st place). For any `t`, the number of
-ways to choose `t` of the players who finish *behind* `i` is `C(n-1-m, t)`
+Now write player $i$'s actual finishing position as $m$ other players
+finishing ahead of them ($m = 0$ is 1st place). For any $t$, the number of
+ways to choose $t$ of the players who finish *behind* $i$ is $C(n-1-m, t)$
 - an exact combinatorial identity on the realized outcome, no probability
-involved yet: it's just choosing `t` players from the `n-1-m` who rank
-below `i`. Equivalently, it's a sum of indicators over every `t`-subset `T`
-of the other `n-1` players, counting the ones `i` beats entirely:
+involved yet: it's just choosing $t$ players from the $n-1-m$ who rank
+below $i$. Equivalently, it's a sum of indicators over every $t$-subset $T$
+of the other $n-1$ players, counting the ones $i$ beats entirely:
 
-```
-C(n-1-m, t) = Σ_{T ⊆ others, |T| = t}  1[i finishes better than every player in T]
-```
+$$C(n-1-m, t) = \sum_{\substack{T \subseteq \text{others} \\ |T| = t}} \mathbf{1}[i \text{ finishes better than every player in } T]$$
 
-- **V1 (linear payout, `payout[m] = n - m`):** Since `n - m = C(n-1-m,0) +
-  C(n-1-m,1)`, apply the identity at `t = 0` (always 1, trivially - the
-  empty subset) and `t = 1` (one term per opponent `j`):
+- **V1 (linear payout, $\text{payout}[m] = n - m$):** Since $n - m = C(n-1-m, 0) +
+  C(n-1-m, 1)$, apply the identity at $t = 0$ (always 1, trivially - the
+  empty subset) and $t = 1$ (one term per opponent $j$):
 
-  ```
-  E[payout_i] = E[1] + E[ Σ_{j≠i} 1[i beats j] ]
-              = 1 + Σ_{j≠i} P(i beats j)          <- linearity of expectation
-              = 1 + Σ_{j≠i} S_i / (S_i + S_j)
-  ```
+  $$\begin{aligned}
+  E[\text{payout}_i] &= E[1] + E\!\left[\sum_{j \neq i} \mathbf{1}[i \text{ beats } j]\right] \\
+  &= 1 + \sum_{j \neq i} P(i \text{ beats } j) && \text{(linearity of expectation)} \\
+  &= 1 + \sum_{j \neq i} \frac{S_i}{S_i + S_j}
+  \end{aligned}$$
 
-  This is exactly `v1_exact()`'s formula, `O(n²)` to compute directly.
+  This is exactly `v1_exact()`'s formula, $O(n^2)$ to compute directly.
 
-- **V2 (quadratic payout, `payout[m] = C(n-1-m, 2)`):** Apply the identity
-  at `t = 2` - one term per opponent *pair* `{j, k}`:
+- **V2 (quadratic payout, $\text{payout}[m] = C(n-1-m, 2)$):** Apply the identity
+  at $t = 2$ - one term per opponent *pair* $\{j, k\}$:
 
-  ```
-  E[payout_i] = E[ Σ_{j<k, j,k≠i} 1[i beats j and k] ]
-              = Σ_{j<k, j,k≠i} P(i beats both j and k)   <- linearity of expectation
-              = Σ_{j<k, j,k≠i} S_i / (S_i + S_j + S_k)
-  ```
+  $$\begin{aligned}
+  E[\text{payout}_i] &= E\!\left[\sum_{\substack{j < k \\ j,k \neq i}} \mathbf{1}[i \text{ beats } j \text{ and } k]\right] \\
+  &= \sum_{\substack{j < k \\ j,k \neq i}} P(i \text{ beats both } j \text{ and } k) && \text{(linearity of expectation)} \\
+  &= \sum_{\substack{j < k \\ j,k \neq i}} \frac{S_i}{S_i + S_j + S_k}
+  \end{aligned}$$
 
-  since "`i` beats both `j` and `k`" is exactly "`i` has the smallest `T`
+  since "$i$ beats both $j$ and $k$" is exactly "$i$ has the smallest $T$
   among the trio," which is the competing-exponentials fact above applied
-  to `{i, j, k}`. This is exactly `v2_exact()`'s formula, `O(n³)` to
+  to $\{i, j, k\}$. This is exactly `v2_exact()`'s formula, $O(n^3)$ to
   compute directly.
 
 In both cases the move from a *combinatorial identity on one realized
@@ -311,8 +307,8 @@ outcome* to an *exact formula for the expectation* is linearity of
 expectation, applied term-by-term to a sum of indicator variables: it
 costs nothing to push the expectation through a sum, no matter how the
 individual indicator events are correlated with each other. Higher payout
-schedules follow the same pattern for larger `t`; V1 and V2 are the `t ≤ 2`
-cases used here as exact, closed-form, arbitrary-`n` ground truth.
+schedules follow the same pattern for larger $t$; V1 and V2 are the $t \leq 2$
+cases used here as exact, closed-form, arbitrary-$n$ ground truth.
 
 These are implemented as `v1_exact()` and `v2_exact()` in `src/icm.c`
 (publicly exposed as `icm_v1_exact()` / `icm_v2_exact()` in `icm.h`).
@@ -322,7 +318,7 @@ distributions: uniform (all stacks equal), adversarial (100:1 ratio),
 geometric, and an extreme 1e9:1 adversarial case.
 
 **Why Gauss-Legendre, not tanh-sinh?** The same tool also runs every case
-through tanh-sinh (double-exponential) quadrature under the identical `v = Φ(y)`
+through tanh-sinh (double-exponential) quadrature under the identical $v = \Phi(y)$
 substitution, for a direct side-by-side comparison. Both converge well on
 easy distributions, but on the 1e9:1 adversarial case (the practical worst
 case for stack-ratio tails) tanh-sinh plateaus instead of converging:
@@ -370,7 +366,7 @@ Three engines with cost-based automatic dispatch:
 
 | Engine | Strategy | Best for |
 |--------|----------|----------|
-| **Linear** (batched) | O(nk), BQ=8 quad-point batching, interleaved layout, L2-aware checkpointing | Small k |
+| **Linear** (batched) | $O(nk)$, BQ=8 quad-point batching, interleaved layout, L2-aware checkpointing | Small k |
 | **Hybrid** (B=auto) | Block build + FFT tree + bidirectional divide, calibrated block size | Large k |
 | **Tree** (pure FFT) | FFT-accelerated subproduct tree | Parallel workloads |
 
@@ -503,6 +499,7 @@ instead:
 
 ```bash
 # Generate calibration data
+# macOS: add -I/opt/homebrew/include -L/opt/homebrew/lib (Homebrew FFTW)
 gcc -O3 -march=native -o calibrate tools/calibrate.c -lfftw3 -lm
 ./calibrate
 
