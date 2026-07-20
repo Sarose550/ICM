@@ -177,7 +177,9 @@ static void wisdom_save(void) {
     fftw_export_wisdom_to_filename(WISDOM_FILE);
 }
 
+#if defined(ICM_BENCH_INCLUDE)
 static int next_pow2(int n);
+#endif
 
 /* ══════════════════════════════════════════════════════════════
    FFTW PLAN CACHE — create once, reuse across all quad points
@@ -502,9 +504,12 @@ static inline __attribute__((always_inline)) void correlate_school(const double 
 /* FFT vs schoolbook is decided per-level in tree_ctx_create_ex2()
  * using calibrated FFT times from fft_config.h. */
 
+/* next_pow2: only called from next_fftw_size (guarded by ICM_BENCH_INCLUDE). */
+#if defined(ICM_BENCH_INCLUDE)
 static inline int next_pow2(int n) {
     int p = 1; while (p < n) p <<= 1; return p;
 }
+#endif
 
 /* FFTW is 30–50% faster at composite (7-smooth) sizes than arbitrary sizes.
  * Rounding k to a smooth size rather than next_pow2 preserves this benefit. */
@@ -531,7 +536,8 @@ static void build_fftw_size_table(void) {
 }
 
 /* next_fftw_size: binary search for smallest smooth number >= n.
- * Only called when next_pow2 wastes significant padding. */
+ * Only called from bench.c (via ICM_BENCH_INCLUDE). */
+#if defined(ICM_BENCH_INCLUDE)
 static int next_fftw_size(int n) {
     int lo = 0, hi = n_smooth - 1;
     while (lo < hi) {
@@ -540,6 +546,7 @@ static int next_fftw_size(int n) {
     }
     return (lo < n_smooth) ? smooth_nums[lo] : next_pow2(n);
 }
+#endif
 
 /* best_k_pad: find the k' >= k that minimizes the saturated-level FFT cost.
  * At saturated levels, build multiply conv_len = 2*k' - 1. The FFT must be
@@ -588,7 +595,9 @@ static int best_k_pad(int k) {
  *
  * Cyclic convolution of size N = fft_n wraps terms C[N..2d] to C[0..2d-N].
  * The correction is a schoolbook product of the top (m+1) terms of each input:
- * cost = (m+1)² FMAs, where m = 2d - N. Typically m = 0..3. */
+ * cost = (m+1)² FMAs, where m = 2d - N. Typically m = 0..3.
+ * Only called from bench.c (via ICM_BENCH_INCLUDE). */
+#if defined(ICM_BENCH_INCLUDE)
 static inline __attribute__((always_inline)) void polymul_fft_cyclic(const double *a, int na,
                                 const double *b, int nb,
                                 double *c, int k,
@@ -644,6 +653,7 @@ static inline __attribute__((always_inline)) void polymul_fft_cyclic(const doubl
         if (pos < k) c[pos] = high;       /* place at correct high position */
     }
 }
+#endif
 
 /* General cyclic FFT multiply with m-wrap correction.
  * c[0..k-1] = (a[0..na-1] * b[0..nb-1]) mod x^k, using cyclic FFT of size
@@ -1587,13 +1597,21 @@ static void engine_tree_ctx(int n, const double *a,
 
 typedef struct { double *ws; } NaiveCtx;
 
+/* naive_ctx_create: only needed by bench.c (via ICM_BENCH_INCLUDE). */
+#if defined(ICM_BENCH_INCLUDE)
 static NaiveCtx *naive_ctx_create(int n, int k) {
     (void)k;
     NaiveCtx *nc = (NaiveCtx *)calloc(1, sizeof(NaiveCtx));
     nc->ws = (double *)malloc(((size_t)(n + 1) + n) * sizeof(double));
     return nc;
 }
+#endif
+
+/* naive_ctx_destroy: used by ctx_destroy() in the OpenMP path, and by
+ * bench.c (via ICM_BENCH_INCLUDE). */
+#if defined(ICM_BENCH_INCLUDE) || defined(_OPENMP)
 static void naive_ctx_destroy(NaiveCtx *nc) { free(nc->ws); free(nc); }
+#endif
 
 #ifdef _OPENMP
 static NaiveCtx *naive_ctx_clone(const NaiveCtx *src, int n, int k) {

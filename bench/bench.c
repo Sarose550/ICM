@@ -30,7 +30,10 @@
  *   ./bench profile      # FFT overhead measurement + phase profiling
  */
 
-/* Include the library source directly for access to internal types */
+/* Include the library source directly for access to internal types.
+ * ICM_BENCH_INCLUDE gates functions in icm.c that are only needed by the
+ * benchmark harness (not by libicm.a). */
+#define ICM_BENCH_INCLUDE
 #include "icm.c"
 
 /* ══════════════════════════════════════════════════════════════
