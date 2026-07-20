@@ -95,7 +95,7 @@ Threads  Serial  Parallel  Speedup
 16       —       26.9      14.2x
 ```
 
-### 1-second threshold: n ≈ 17,216 (k=n, single-threaded, re-verified 2026-07-20 under corrected dispatch)
+### 1-second threshold: n ≈ 17,216 (k=n, single-threaded)
 
 ### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32)
 
