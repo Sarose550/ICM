@@ -300,6 +300,24 @@ and reports convergence against both closed forms across four stack
 distributions: uniform (all stacks equal), adversarial (100:1 ratio),
 geometric, and an extreme 1e9:1 adversarial case.
 
+**Why Gauss-Legendre, not tanh-sinh?** The same tool also runs every case
+through tanh-sinh (double-exponential) quadrature under the identical `v = Φ(y)`
+substitution, for a direct side-by-side comparison. Both converge well on
+easy distributions, but on the 1e9:1 adversarial case (the practical worst
+case for stack-ratio tails) tanh-sinh plateaus instead of converging:
+
+| Q | Gauss-Legendre | tanh-sinh |
+|---|---|---|
+| 256 | 1.54 × 10^(-10) | 6.53 × 10^(-6) |
+| 512 | 4.87 × 10^(-13) | 5.89 × 10^(-8) |
+| 1024 | 5.30 × 10^(-13) | 8.27 × 10^(-8) |
+
+(n=4, k=4, V1 payout; full data in `results/accuracy_m3max_20260718.csv`,
+`scheme` column.) Gauss-Legendre keeps converging toward machine precision;
+tanh-sinh stalls around 1e-7-1e-8 on this tail case and doesn't improve
+further from `Q = 512` to `Q = 1024`. This is what motivated using
+Gauss-Legendre in production rather than tanh-sinh.
+
 **Headline result:** Gauss-Legendre quadrature converges to ~5 × 10^(-13)
 relative error by `Q = 1024` against both V1 and V2 closed forms across all
 tested distributions. The convergence is rapid - here are representative
