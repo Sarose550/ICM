@@ -141,7 +141,7 @@ $P(i \text{ finishes in position } r \mid T_i = t)$.
 
 Uncondition: $T_i$ has density $S_i e^{-S_i t}$, so
 
-$$P(i \text{ finishes in position } r) = \int_0^\infty S_i e^{-S_i t} \cdot [x^r]\, Q_i(x; t) \, dt,$$
+$$P(i \text{ finishes in position } r) = \int_0^\infty S_i e^{-S_i t} \cdot [x^r] Q_i(x; t) dt$$
 
 where $[x^r] Q$ denotes the coefficient of $x^r$ in $Q$. This is the
 integral representation the exponential-clock model promised.
