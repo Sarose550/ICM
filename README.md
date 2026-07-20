@@ -39,6 +39,11 @@ double ns = icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
 
 Returns wall-clock time in nanoseconds. All correctness tests pass at < 5e-12 relative error.
 
+**Python bindings.** `python/` provides a ctypes wrapper (`icm.equity(stacks, payouts)`)
+over the same compiled shared library — no separate implementation, no reduced
+accuracy, just a thin call-through. See [python/README.md](python/README.md)
+for setup (`make libicm`, then `import icm`).
+
 ## How It Works
 
 **1. The problem.** A tournament has `n` players with chip stacks
@@ -119,15 +124,69 @@ normal CDF to make the integrand decay rapidly). With `Q = 256`
 Gauss-Legendre nodes, this yields deterministic double-precision accuracy
 (relative error < 5 × 10^(-12); see Accuracy section below).
 
-The remaining computational challenge is evaluating that degree-`k`
-polynomial product for all `n` players efficiently, which is what the three
-CPU engines and the FFT-accelerated subproduct tree exist to do. FFT-based
-convolution multiplies two degree-`d` polynomials in `O(d log d)` time
-instead of `O(d²)`, and the subproduct tree uses this to compute all
-leave-one-out products simultaneously. (See Wikipedia's article on the
-[Fast Fourier
-Transform](https://en.wikipedia.org/wiki/Fast_Fourier_transform) for
-background on why FFT convolution beats the naive approach.)
+The remaining computational challenge is evaluating, for *every* player `i`
+simultaneously, the coefficients of `Q_i(x; v)` — the product of everyone
+else's per-player factor. Computed naively, one player at a time, that's `n`
+separate degree-`(n-1)` products: `O(n²)` factors to multiply. The
+subproduct tree computes all `n` of them together in `O(n log n)`
+multiplications (each accelerated further by FFT convolution, which
+multiplies two degree-`d` polynomials in `O(d log d)` time instead of the
+schoolbook `O(d²)`; see Wikipedia's article on the [Fast Fourier
+Transform](https://en.wikipedia.org/wiki/Fast_Fourier_transform) for why
+that's faster). Here's how.
+
+**6. Computing all `n` leave-one-out products at once: the subproduct tree.**
+Arrange the `n` players' factors `P_j(x) = a_j(v) + b_j(v)·x` as the leaves
+of a balanced binary tree. The algorithm makes two passes over this tree:
+
+- *Build (bottom-up).* Each internal node's polynomial is the product of its
+  two children's polynomials, truncated to whatever degree bound is actually
+  needed downstream (never more than `k`, since the payout vector has only
+  `k` nonzero terms and nothing past that degree can ever be read out).
+  After this pass, every node holds the product of all the leaf factors in
+  its subtree.
+
+- *Propagate (top-down).* Seed the root with the payout vector itself,
+  `(π_1, ..., π_k)`, treated as the coefficients of a polynomial `g_root(x)`.
+  Then walk back down the tree. At each internal node, its parent's
+  `g`-vector is combined with the *sibling's* subtree polynomial (computed
+  during the build pass) to produce the child's `g`-vector — concretely,
+  each child's new coefficients are `g_child[m] = Σ_j P_sibling[j] · g_parent[m+j]`,
+  a sliding-window dot product (a cross-correlation, computable via FFT the
+  same way convolution is). Descend all the way to the leaves.
+
+Why does folding in the sibling at every level work? A node's `g`-vector is,
+by construction, `payout(x)` convolved with the product of every leaf
+factor *outside* that node's subtree, truncated to the terms that still
+matter. Two siblings share the same parent's `g`, i.e. the same "everything
+above and to the side of both of us" — but each one is still missing the
+*other's* subtree from its own exclusion set. Folding in the sibling's
+polynomial when descending past it is exactly what accounts for those
+missing leaves. By the time the walk reaches leaf `i`, its `g`-vector has
+picked up the sibling contribution at every level on the root-to-leaf path
+— which, level by level, is precisely the set of every other leaf in the
+tree. `g_leaf_i[0]` is then the constant term of `payout(x) * Q_i(x; v)`,
+truncated: exactly the coefficient the generating-function argument in
+step 5 needs, for every `i`, without ever having built `Q_i(x; v)` on its
+own. One build pass, one propagate pass, `O(n log n)` total work (times
+`O(log n)` per FFT-accelerated multiply/correlate) — not `n` separate
+`O(n)` products.
+
+The hybrid engine (below) runs this same two-pass algorithm over *blocks*
+of `B` players rather than individual players — a block's leaf polynomial
+is the product of its `B` players' factors, multiplied directly
+(schoolbook, not FFT — `B` is small). That collapses `n` tree leaves down
+to `n/B`, shrinking the tree's depth and per-level FFT count. The cost is
+one extra step at the very end: a block's leave-one-out `g`-vector describes
+"everything outside this block," not any individual player inside it, so
+recovering a single player's coefficient means dividing the block's
+*complete* (non-truncated) polynomial product by that player's own factor —
+polynomial division, done only on this small, complete, `B`-degree product,
+where the resulting numerical amplification is bounded by `|c|^B` and safe
+in double precision for `B` up to 64. (Division elsewhere in this codebase
+is deliberately avoided — see the correctness constraint in `CLAUDE.md` —
+because doing the same thing on the full, *truncated* `n`-player product is
+numerically unstable.)
 
 **Three CPU engines with cost-based dispatch.** The library picks the
 fastest engine per `(n, k)` pair via `select_engine()`, which compares a
@@ -142,14 +201,6 @@ hand-tuned crossover thresholds:
    binary subproduct tree over the blocks. Best for large `k`.
 3. **Tree (pure FFT):** FFT-accelerated subproduct tree without blocking.
    Slightly slower than hybrid in serial but wins in parallel.
-
-**The FFT infrastructure.** All tree operations use offline-calibrated
-per-size FFT costs across the 7-smooth (`2^a · 3^b · 5^c · 7^d`) size
-family. `best_fft_config()` searches for the optimal FFT size including
-wrap-correction tradeoffs: a smaller FFT plus a schoolbook correction for
-aliased terms often beats padding to the next power of two. The propagation
-phase shares the forward FFT of the parent g-vector across both children
-and reuses cached FFT(P) from the build phase.
 
 **GPU path (cuFFTDx fused-kernel).** On NVIDIA B200/H200, `src/gpu/`
 implements a planner, execution engine, and API. The planner assigns each
@@ -166,16 +217,66 @@ special payout structures, not against a slow general-purpose reference
 for *any* `n` because they follow from linearity of expectation over pairs
 and triples of players, not from enumerating elimination orderings:
 
-- **V1 (linear payout, `payout[m] = n - m`):** The exact equity for player
-  `i` is `1 + Σ_{j ≠ i} S_i / (S_i + S_j)` — a pairwise sum computable in
-  `O(n²)` total. Each term is the probability that `i` outlasts `j` in a
-  head-to-head race under the MH model, and linearity of expectation sums
-  them.
+Both derivations reuse the exponential-clock construction from step 4 above:
+`T_1, ..., T_n` independent, `T_j ~ Exponential(rate = S_j)`, and finishing
+order = increasing `T_j` (smallest `T` finishes 1st). One elementary fact
+about competing independent exponentials does all the work: for any subset
+of players, the probability that a particular one of them has the smallest
+`T` — i.e. finishes best — *within that subset* is that player's stack
+divided by the subset's total stack. (Proof: for player `i` against a
+group, `T_i` and the minimum of everyone else's `T`s are independent, the
+latter is itself exponential with rate equal to the sum of their stacks —
+the minimum of independent exponentials is exponential with the summed
+rate — and `P(T_i < T_other)` for two independent exponentials with rates
+`a, b` is `a / (a + b)`.) Applied to a pair `{i, j}`: `P(i beats j) =
+S_i / (S_i + S_j)`. Applied to a triple `{i, j, k}`: `P(i beats both) =
+S_i / (S_i + S_j + S_k)`.
 
-- **V2 (quadratic payout, `payout[m] = C(n-1-m, 2)`):** The exact equity is
-  a sum over all pairs `{j, k}` (both ≠ `i`) of `S_i / (S_i + S_j + S_k)` —
-  the same idea one order up, computable in `O(n³)`, exact for the same
-  reason.
+Now write player `i`'s actual finishing position as `m` other players
+finishing ahead of them (`m = 0` is 1st place). For any `t`, the number of
+ways to choose `t` of the players who finish *behind* `i` is `C(n-1-m, t)`
+— an exact combinatorial identity on the realized outcome, no probability
+involved yet: it's just choosing `t` players from the `n-1-m` who rank
+below `i`. Equivalently, it's a sum of indicators over every `t`-subset `T`
+of the other `n-1` players, counting the ones `i` beats entirely:
+
+```
+C(n-1-m, t) = Σ_{T ⊆ others, |T| = t}  1[i finishes better than every player in T]
+```
+
+- **V1 (linear payout, `payout[m] = n - m`):** Since `n - m = C(n-1-m,0) +
+  C(n-1-m,1)`, apply the identity at `t = 0` (always 1 — trivial, the
+  empty subset) and `t = 1` (one term per opponent `j`):
+
+  ```
+  E[payout_i] = E[1] + E[ Σ_{j≠i} 1[i beats j] ]
+              = 1 + Σ_{j≠i} P(i beats j)          ← linearity of expectation
+              = 1 + Σ_{j≠i} S_i / (S_i + S_j)
+  ```
+
+  This is exactly `v1_exact()`'s formula, `O(n²)` to compute directly.
+
+- **V2 (quadratic payout, `payout[m] = C(n-1-m, 2)`):** Apply the identity
+  at `t = 2` — one term per opponent *pair* `{j, k}`:
+
+  ```
+  E[payout_i] = E[ Σ_{j<k, j,k≠i} 1[i beats j and k] ]
+              = Σ_{j<k, j,k≠i} P(i beats both j and k)   ← linearity of expectation
+              = Σ_{j<k, j,k≠i} S_i / (S_i + S_j + S_k)
+  ```
+
+  since "`i` beats both `j` and `k`" is exactly "`i` has the smallest `T`
+  among the trio," which is the competing-exponentials fact above applied
+  to `{i, j, k}`. This is exactly `v2_exact()`'s formula, `O(n³)` to
+  compute directly.
+
+In both cases the move from a *combinatorial identity on one realized
+outcome* to an *exact formula for the expectation* is linearity of
+expectation, applied term-by-term to a sum of indicator variables — it
+costs nothing to push the expectation through a sum, no matter how the
+individual indicator events are correlated with each other. Higher payout
+schedules follow the same pattern for larger `t`; V1 and V2 are the `t ≤ 2`
+cases used here as exact, closed-form, arbitrary-`n` ground truth.
 
 These are implemented as `v1_exact()` and `v2_exact()` in `src/icm.c`
 (publicly exposed as `icm_v1_exact()` / `icm_v2_exact()` in `icm.h`).
