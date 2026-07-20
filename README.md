@@ -136,41 +136,56 @@ Transform](https://en.wikipedia.org/wiki/Fast_Fourier_transform) for why
 that's faster). Here's how.
 
 **6. Computing all `n` leave-one-out products at once: the subproduct tree.**
+Restated in linear-algebra terms, this is a dot-product problem. Represent a
+truncated polynomial by its coefficient vector, and define the pairing
+`⟨f, g⟩ = Σ_m f[m]·g[m]` (an ordinary dot product). What every player `i`
+actually needs is `⟨payout, Q_i(x; v)⟩` - the payout vector dotted against
+the product of everyone else's factor. Built one player at a time, that
+requires `n` separate `O(n)`-degree products before the dot product is even
+possible: `O(n²)` total.
+
+Here is the shortcut. "Multiply by a fixed polynomial `P`", `T_P(f) = P·f`
+(truncated), is a *linear* operator on coefficient vectors. Under the
+dot-product pairing above, its adjoint - the operator `T_P*` satisfying
+`⟨T_P(f), g⟩ = ⟨f, T_P*(g)⟩` for every `f, g` - is exactly a
+*cross-correlation* with `P`: `T_P*(g)[m] = Σ_j P[j]·g[m+j]`. This falls
+straight out of writing `T_P` as a matrix: it's a convolution (Toeplitz-style)
+matrix, and the transpose of a convolution matrix is a correlation matrix.
+
 Arrange the `n` players' factors `P_j(x) = a_j(v) + b_j(v)·x` as the leaves
-of a balanced binary tree. The algorithm makes two passes over this tree:
+of a balanced binary tree. Building the tree bottom-up is just composing a
+chain of these `T_P` operators, one per level. `Q_i` - "everyone except leaf
+`i`" - is what that chain computes if you skip every `T_P` on leaf `i`'s own
+root-to-leaf path. Adjoints reverse the order of composition
+(`(A∘B)* = B*∘A*`), so applying the *adjoints* of that same chain, starting
+from `payout` at the root and walking downward, computes `⟨payout, Q_i⟩`
+directly - one adjoint per level, shared across every leaf, branching only
+where paths diverge. Concretely, at any node the "own subtree" the walk is
+about to enter is one child; the part it must still account for is the
+*other* child, i.e. the sibling. So the adjoint applied at each step down is
+`T_{P_sibling}*` - correlation with the sibling's polynomial - which is
+exactly the mechanism below:
 
 - *Build (bottom-up).* Each internal node's polynomial is the product of its
   two children's polynomials, truncated to whatever degree bound is actually
   needed downstream (never more than `k`, since the payout vector has only
   `k` nonzero terms and nothing past that degree can ever be read out).
   After this pass, every node holds the product of all the leaf factors in
-  its subtree.
+  its subtree - this is the `T_P` chain being composed.
 
 - *Propagate (top-down).* Seed the root with the payout vector itself,
   `(π_1, ..., π_k)`, treated as the coefficients of a polynomial `g_root(x)`.
-  Then walk back down the tree. At each internal node, its parent's
-  `g`-vector is combined with the *sibling's* subtree polynomial (computed
-  during the build pass) to produce the child's `g`-vector: concretely,
-  each child's new coefficients are `g_child[m] = Σ_j P_sibling[j] · g_parent[m+j]`,
-  a sliding-window dot product (a cross-correlation, computable via FFT the
-  same way convolution is). Descend all the way to the leaves.
+  Then walk back down the tree, applying `T_{P_sibling}*` at each level:
+  each child's new coefficients are
+  `g_child[m] = Σ_j P_sibling[j] · g_parent[m+j]` - the cross-correlation
+  derived above, computable via FFT the same way convolution is. Descend
+  all the way to the leaves.
 
-Why does folding in the sibling at every level work? A node's `g`-vector is,
-by construction, `payout(x)` convolved with the product of every leaf
-factor *outside* that node's subtree, truncated to the terms that still
-matter. Two siblings share the same parent's `g`, i.e. the same "everything
-above and to the side of both of us" - but each one is still missing the
-*other's* subtree from its own exclusion set. Folding in the sibling's
-polynomial when descending past it is exactly what accounts for those
-missing leaves. By the time the walk reaches leaf `i`, its `g`-vector has
-picked up the sibling contribution at every level on the root-to-leaf path,
-which, level by level, is precisely the set of every other leaf in the
-tree. `g_leaf_i[0]` is then the constant term of `payout(x) * Q_i(x; v)`,
-truncated: exactly the coefficient the generating-function argument in
-step 5 needs, for every `i`, without ever having built `Q_i(x; v)` on its
-own. One build pass, one propagate pass, `O(n log n)` total work (times
-`O(log n)` per FFT-accelerated multiply/correlate), not `n` separate
-`O(n)` products.
+`g_leaf_i[0]` is then `⟨payout, Q_i(x; v)⟩`, truncated to its constant term:
+exactly the coefficient the generating-function argument in step 5 needs,
+for every `i`, without ever having built `Q_i(x; v)` on its own. One build
+pass, one propagate pass, `O(n log n)` total work (times `O(log n)` per
+FFT-accelerated multiply/correlate), not `n` separate `O(n)` products.
 
 The hybrid engine (below) runs this same two-pass algorithm over *blocks*
 of `B` players rather than individual players: a block's leaf polynomial
