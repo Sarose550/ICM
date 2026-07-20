@@ -55,31 +55,31 @@ See [python/README.md](python/README.md) for setup (`make libicm`, then
 
 ## How It Works
 
-**1. The problem.** A tournament has `n` players with chip stacks
-`S_1, ..., S_n` and a payout vector $\vec{\pi} = (\pi_0, \pi_1, \ldots, \pi_{k-1})$
-where `k ≤ n` positions receive nonzero prizes ($\pi_0$ is the prize for 1st
+**1. The problem.** A tournament has $n$ players with chip stacks
+$S_1, \ldots, S_n$ and a payout vector $\boldsymbol{\pi} = (\pi_0, \pi_1, \ldots, \pi_{k-1})$
+where $k \leq n$ positions receive nonzero prizes ($\pi_0$ is the prize for 1st
 place). ICM computes each player's expected payout - the sum over finishing
 positions of the prize for that position times the probability the player
 finishes there. The naive answer enumerates
-all `n!` elimination orderings, weights each by its probability under the
+all $n!$ elimination orderings, weights each by its probability under the
 Malmuth–Harville model (Harville, 1973; Malmuth, 2001), and sums the
 resulting payouts.
 
-**2. Why naive enumeration is dead almost immediately.** `n!` grows
+**2. Why naive enumeration is dead almost immediately.** $n!$ grows
 catastrophically fast: $15! \approx 1.3 \times 10^{12}$, $20! \approx 2.4 \times 10^{18}$. As the
 HoldemResources.net blog post ["High Accuracy ICM Calculations for Large
 Fields"](https://www.holdemresources.net/blog/high-accuracy-mtt-icm/)
 notes, "Naive implementations of ICM can handle about 15 players, and even
 optimized versions can't calculate exact Malmuth-Harville values beyond
-25-30 players." The naive enumeration wall is around `n ≈ 15` - any attempt
+25-30 players." The naive enumeration wall is around $n \approx 15$ - any attempt
 to enumerate all orderings for 16+ players runs into years of compute time.
 
 **3. The industry-standard exact method: bitmask dynamic programming.**
 Rather than enumerating orderings, one can track the set of players who
-have busted so far. Let `dp[mask]` be the probability that exactly the
-players in the bitmask `mask` have been eliminated. From each state, for
-each surviving player `j`, the transition adds `dp[mask] · (S_j / total
-remaining stack)` to `dp[mask | (1<<j)]`. There are $2^n$ states and up to
+have busted so far. Let $dp_{\text{mask}}$ be the probability that exactly the
+players in the set $\text{mask}$ have been eliminated. From each state, for
+each surviving player $j$, the transition adds $dp_{\text{mask}} \cdot (S_j / \text{total remaining stack})$
+to $dp_{\text{mask} \cup \{j\}}$. There are $2^n$ states and up to
 $n$ candidate transitions per state, giving $O(n \cdot 2^n)$ total work - the
 per-state cost comes from looping over surviving players, not from the
 payout structure. This is the method used by real poker tools; see GTO
@@ -95,9 +95,9 @@ $n = 30$, $2^{30}$ states already pushes into gigabytes of memory.
 clock" framing.** The Malmuth–Harville elimination rule ("at each step, the
 probability any surviving player busts next is proportional to their
 stack") has an equivalent continuous-time formulation. Assign each player
-`j` an independent exponential random variable `T_j` with rate equal to
-their chip stack `S_j` (an "elimination clock"), and eliminate players in
-order of increasing `T_j`. The memoryless property of the exponential
+$j$ an independent exponential random variable $T_j$ with rate equal to
+their chip stack $S_j$ (an "elimination clock"), and eliminate players in
+order of increasing $T_j$. The memoryless property of the exponential
 distribution guarantees this recovers exactly the same stack-proportional
 elimination rule at every step. Concretely, for any subset of players, the
 probability that a particular player $i$ finishes best within that subset
@@ -106,7 +106,7 @@ probability that a particular player $i$ finishes best within that subset
 minimum of independent exponentials is itself exponential with rate equal
 to the sum of their rates; and for two independent exponentials with rates
 $a, b$, $P(T_a < T_b) = a / (a + b)$.) This gives a simple, unbiased way to
-*sample* a full elimination order in one shot - draw `n` exponentials, sort
+*sample* a full elimination order in one shot - draw $n$ exponentials, sort
 - instead of simulating step-by-step. Tysen Streib introduced this
 technique in a TwoPlusTwo forum thread, ["New Algorithm: Calculate ICM
 Large
@@ -168,10 +168,10 @@ probabilities times the remaining players' survival probabilities.
 Finally, player $i$'s equity is the sum over positions:
 $\text{Equity}_i = \sum_r \pi_r \cdot P(i \text{ finishes in position } r)$.
 Pulling the finite sum inside the integral and recognizing
-$\sum_r \pi_r \cdot [x^r] Q_i(x; v) = \langle \vec{\pi}, Q_i(x; v) \rangle$
+$\sum_r \pi_r \cdot [x^r] Q_i(x; v) = \langle \boldsymbol{\pi}, Q_i(x; v) \rangle$
 (the dot product used in the subproduct-tree section below):
 
-$$\text{Equity}_i = \int_0^1 S_i \, v^{S_i - 1} \, \langle \vec{\pi}, Q_i(x; v) \rangle \, dv.$$
+$$\text{Equity}_i = \int_0^1 S_i v^{S_i - 1} \langle \boldsymbol{\pi}, Q_i(x; v) \rangle dv.$$
 
 So instead of drawing $N$ random samples of the exponential race and
 averaging, this repo evaluates the exact 1-D integral over $v$ via
@@ -180,9 +180,9 @@ normal CDF to make the integrand decay rapidly). With $Q = 256$
 Gauss-Legendre nodes, this yields deterministic double-precision accuracy
 (relative error $< 5 \times 10^{-12}$; see Accuracy section below).
 
-The remaining computational challenge is evaluating, for *every* player `i`
-simultaneously, the coefficients of `Q_i(x; v)` - the product of everyone
-else's per-player factor. Computed naively, one player at a time, that's `n`
+The remaining computational challenge is evaluating, for *every* player $i$
+simultaneously, the coefficients of $Q_i(x; v)$ - the product of everyone
+else's per-player factor. Computed naively, one player at a time, that's $n$
 separate degree-$(n-1)$ products: $O(n^2)$ factors to multiply. The
 subproduct tree computes all $n$ of them together in $O(n \log n)$
 multiplications (each accelerated further by FFT convolution, which
@@ -191,20 +191,20 @@ schoolbook $O(d^2)$; see Wikipedia's article on the [Fast Fourier
 Transform](https://en.wikipedia.org/wiki/Fast_Fourier_transform) for why
 that's faster). Here's how.
 
-**6. Computing all `n` leave-one-out products at once: the subproduct tree.**
+**6. Computing all $n$ leave-one-out products at once: the subproduct tree.**
 Restated in linear-algebra terms, this is a dot-product problem. Represent a
 truncated polynomial by its coefficient vector, and define the pairing
-$\langle f, g \rangle = \sum_m f[m] \cdot g[m]$ (an ordinary dot product). What every player $i$
-actually needs is $\langle \vec{\pi}, Q_i(x; v) \rangle$ - the payout vector $\vec{\pi}$ dotted against
+$\langle f, g \rangle = \sum_m f_m \cdot g_m$ (an ordinary dot product). What every player $i$
+actually needs is $\langle \boldsymbol{\pi}, Q_i(x; v) \rangle$ - the payout vector $\boldsymbol{\pi}$ dotted against
 the product of everyone else's factor. Built one player at a time, that
 requires $n$ separate $O(n)$-degree products before the dot product is even
 possible: $O(n^2)$ total.
 
 Here is the shortcut. "Multiply by a fixed polynomial $P$", $T_P(f) = P \cdot f$
 (truncated), is a *linear* operator on coefficient vectors. Under the
-dot-product pairing above, its adjoint - the operator $T_P^{*}$ satisfying
-$\langle T_P(f), g \rangle = \langle f, T_P^{*}(g) \rangle$ for every $f, g$ - is exactly a
-*cross-correlation* with $P$: $T_P^{*}(g)[m] = \sum_j P[j] \cdot g[m+j]$. This falls
+dot-product pairing above, its adjoint - the operator $T_P^{\ast}$ satisfying
+$\langle T_P(f), g \rangle = \langle f, T_P^{\ast}(g) \rangle$ for every $f, g$ - is exactly a
+*cross-correlation* with $P$: $(T_P^{\ast}(g))_m = \sum_j P_j \cdot g_{m+j}$. This falls
 straight out of writing $T_P$ as a matrix: it's a convolution (Toeplitz-style)
 matrix, and the transpose of a convolution matrix is a correlation matrix.
 
@@ -213,50 +213,50 @@ of a balanced binary tree. Building the tree bottom-up is just composing a
 chain of these $T_P$ operators, one per level. $Q_i$ - "everyone except leaf
 $i$" - is what that chain computes if you skip every $T_P$ on leaf $i$'s own
 root-to-leaf path. Adjoints reverse the order of composition
-($(A \circ B)^{*} = B^{*} \circ A^{*}$), so applying the *adjoints* of that same chain, starting
-from $\vec{\pi}$ at the root and walking downward, computes $\langle \vec{\pi}, Q_i \rangle$
+($(A \circ B)^{\ast} = B^{\ast} \circ A^{\ast}$), so applying the *adjoints* of that same chain, starting
+from $\boldsymbol{\pi}$ at the root and walking downward, computes $\langle \boldsymbol{\pi}, Q_i \rangle$
 directly - one adjoint per level, shared across every leaf, branching only
 where paths diverge. Concretely: at each node, the walk is about to descend
 into one child (call it the *own* subtree); the part it still needs to
 account for is the *other* child - the sibling. So the adjoint applied at
-each step down is $T_{P_{\text{sibling}}}^{*}$ - correlation with the sibling's
+each step down is $T_{P_{\text{sibling}}}^{\ast}$ - correlation with the sibling's
 polynomial - which is exactly the mechanism below:
 
 - *Build (bottom-up).* Each internal node's polynomial is the product of its
   two children's polynomials, truncated to whatever degree bound is actually
-  needed downstream (never more than `k`, since the payout vector has only
-  `k` nonzero terms and nothing past that degree can ever be read out).
+  needed downstream (never more than $k$, since the payout vector has only
+  $k$ nonzero terms and nothing past that degree can ever be read out).
   After this pass, every node holds the product of all the leaf factors in
-  its subtree - this is the `T_P` chain being composed.
+  its subtree - this is the $T_P$ chain being composed.
 
 - *Propagate (top-down).* Seed the root with the payout vector itself,
-  $\vec{\pi} = (\pi_0, \pi_1, \ldots, \pi_{k-1})$, treated as the coefficients of a polynomial $g_{\text{root}}(x)$.
-  Then walk back down the tree, applying $T_{P_{\text{sibling}}}^{*}$ at each level:
+  $\boldsymbol{\pi} = (\pi_0, \pi_1, \ldots, \pi_{k-1})$, treated as the coefficients of a polynomial $g_{\text{root}}(x)$.
+  Then walk back down the tree, applying $T_{P_{\text{sibling}}}^{\ast}$ at each level:
   each child's new coefficients are
-  $g_{\text{child}}[m] = \sum_j P_{\text{sibling}}[j] \cdot g_{\text{parent}}[m+j]$ - the cross-correlation
+  $g_{\text{child}, m} = \sum_j P_{\text{sibling}, j} \cdot g_{\text{parent}, m+j}$ - the cross-correlation
   derived above, computable via FFT the same way convolution is. Descend
   all the way to the leaves.
 
-$g_{\text{leaf}_i}[0]$ is then $\langle \vec{\pi}, Q_i(x; v) \rangle$, truncated to its constant term:
+$g_{\text{leaf}_i, 0}$ is then $\langle \boldsymbol{\pi}, Q_i(x; v) \rangle$, truncated to its constant term:
 exactly the coefficient the generating-function argument in step 5 needs,
 for every $i$, without ever having built $Q_i(x; v)$ on its own. One build
 pass, one propagate pass, not $n$ separate $O(n)$ products (the exact
 complexity is derived below).
 
 The hybrid engine (below) runs this same two-pass algorithm over *blocks*
-of `B` players rather than individual players: a block's leaf polynomial
-is the product of its `B` players' factors, multiplied directly
-(schoolbook, not FFT - `B` is small). That collapses `n` tree leaves down
-to `n/B`, shrinking the tree's depth and per-level FFT count. The cost is
-one extra step at the very end: a block's leave-one-out `g`-vector describes
+of $B$ players rather than individual players: a block's leaf polynomial
+is the product of its $B$ players' factors, multiplied directly
+(schoolbook, not FFT - $B$ is small). That collapses $n$ tree leaves down
+to $n/B$, shrinking the tree's depth and per-level FFT count. The cost is
+one extra step at the very end: a block's leave-one-out $g$-vector describes
 "everything outside this block," not any individual player inside it, so
 recovering a single player's coefficient means dividing the block's
 *complete* (non-truncated) polynomial product by that player's own factor,
-polynomial division, done only on this small, complete, `B`-degree product,
+polynomial division, done only on this small, complete, $B$-degree product,
 where the resulting numerical amplification is bounded by $|c|^B$ and safe
 in double precision for $B$ up to 64. (Division elsewhere in this codebase
 is deliberately avoided because doing the same thing on the full,
-*truncated* `n`-player product is numerically unstable.)
+*truncated* $n$-player product is numerically unstable.)
 
 **Complexity: $O(Q \cdot n \cdot \log^2 k)$.** Derive this by summing the cost of
 each tree level directly. There are $L = \log_2 n$ levels; at level $\ell$ there
@@ -303,16 +303,16 @@ points are processed sequentially and reuse the same memory, the overall
 space requirement remains $O(n \log k)$ - it does not multiply by $Q$.
 
 **Three CPU engines with cost-based dispatch.** The library picks the
-fastest engine per `(n, k)` pair via `select_engine()`, which compares a
+fastest engine per $(n, k)$ pair via `select_engine()`, which compares a
 roofline linear-cost estimate against a calibrated hybrid-cost model - no
 hand-tuned crossover thresholds:
 
 1. **Linear (batched):** $O(nk)$ forward-backward pass. Interleaves BQ=8
    quadrature points for SIMD (NEON on Apple Silicon, AVX-512 on Zen 4).
-   Best for small `k`.
-2. **Hybrid (block + tree):** Partitions `n` players into cost-model-selected
+   Best for small $k$.
+2. **Hybrid (block + tree):** Partitions $n$ players into cost-model-selected
    blocks, builds block products sequentially, then runs an FFT-accelerated
-   binary subproduct tree over the blocks. Best for large `k`.
+   binary subproduct tree over the blocks. Best for large $k$.
 3. **Tree (pure FFT):** FFT-accelerated subproduct tree without blocking.
    Slightly slower than hybrid in serial but wins in parallel.
 
@@ -328,7 +328,7 @@ below for current throughput numbers.
 The library is validated against exact closed-form reference values for two
 special payout structures, not against a slow general-purpose reference
 (which would cap validation at ~20–30 players). These closed forms are exact
-for *any* `n` because they follow from linearity of expectation over pairs
+for *any* $n$ because they follow from linearity of expectation over pairs
 and triples of players, not from enumerating elimination orderings:
 
 Both derivations follow from the exponential-clock model established in
@@ -402,7 +402,7 @@ case for stack-ratio tails) tanh-sinh plateaus instead of converging:
 | 512 | $4.87 \times 10^{-13}$ | $5.89 \times 10^{-8}$ |
 | 1024 | $5.30 \times 10^{-13}$ | $8.27 \times 10^{-8}$ |
 
-(n=4, k=4, V1 payout; full data in `results/accuracy_convergence.csv`,
+($n=4$, $k=4$, V1 payout; full data in `results/accuracy_convergence.csv`,
 `scheme` column.) Gauss-Legendre keeps converging toward machine precision;
 tanh-sinh stalls around 1e-7-1e-8 on this tail case and doesn't improve
 further from `Q = 512` to `Q = 1024`. This is what motivated using
@@ -414,7 +414,7 @@ tested distributions. The convergence is rapid - here are representative
 rows from `results/accuracy_convergence.csv` for the `gauss` scheme on
 uniform stacks (V1 payout):
 
-| Q | max_rel_err (n=4, uniform, V1) |
+| Q | max_rel_err ($n=4$, uniform, V1) |
 |---|-------------------------------|
 | 4 | $4.10 \times 10^{0}$ |
 | 8 | $4.36 \times 10^{-1}$ |
@@ -425,7 +425,7 @@ uniform stacks (V1 payout):
 | 1024 | $1.07 \times 10^{-12}$ |
 
 At `Q = 1024`, the maximum relative error across *all* tested configurations
-(`n` up to 20, all four stack distributions, both V1 and V2) stays below
+($n$ up to 20, all four stack distributions, both V1 and V2) stays below
 ~$2 \times 10^{-12}$ for uniform stacks and below ~$6 \times 10^{-13}$ for the adversarial
 and 1e9:1 cases. The production default is `Q = 256`, which already delivers
 sub-$2 \times 10^{-12}$ relative error - sufficient for any practical poker
