@@ -83,24 +83,38 @@ DEVICE_CONFIGS = {
 
 # ─── Data loading ────────────────────────────────────────────
 
+def _trim_uptick(k_arr, n_arr):
+    """If the last point reverses the downward trend (n[-1] > n[-2]),
+    return arrays without it so the connected line ends smoothly.
+    Otherwise return the original arrays unchanged."""
+    if len(n_arr) >= 2 and n_arr[-1] > n_arr[-2]:
+        return k_arr[:-1], n_arr[:-1]
+    return k_arr, n_arr
+
+
 def load_contour(path, max_time_ms=2000):
-    """Load contour CSV. Filter out points where time > max_time_ms.
-    Keeps all 'ok' rows plus at most the first 'floor' row, then stops.
-    This trims degenerate trailing floor rows from older data that predate
-    the contour_1s.c fix (which now breaks after the first floor)."""
+    """Load contour CSV. Filter out 'ok' points where time > max_time_ms (these
+    indicate anomalous bisection search behavior, not real 1s-budget data).
+    Always includes the row where n_max <= k (the true n=k crossing) regardless
+    of its measured time, then stops — floor-row probes intentionally use a
+    generous timeout to confirm the crossing, so their time is expected to
+    exceed max_time_ms and must not be filtered out."""
     k, n, engine = [], [], []
     with open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
             ki, ni, ti = int(row['k']), int(row['n_max']), float(row['time_ms'])
+            # Always keep the crossing row, regardless of time.
+            if ni <= ki:
+                k.append(ki)
+                n.append(ni)
+                engine.append(row['engine'])
+                break
             if ti > max_time_ms:
                 continue
-            status = row.get('status', 'ok')
             k.append(ki)
             n.append(ni)
             engine.append(row['engine'])
-            if status == 'floor':
-                break  # one floor row is enough — stop reading
     return np.array(k), np.array(n), engine
 
 
@@ -139,26 +153,31 @@ def plot_contour(cfg, serial_path, parallel_path, out_path):
     ks, ns, es = load_contour(serial_path)
     kp, np_, ep = load_contour(parallel_path)
 
+    # Trim any uptick at the tail so the connected line ends smoothly.
+    # Keep full arrays for interpolation (star marker, engine crossover).
+    ks_line, ns_line = _trim_uptick(ks, ns)
+    kp_line, np_line = _trim_uptick(kp, np_)
+
     fig, ax = plt.subplots(figsize=(10, 6.5))
 
     ax.fill_between(ks, ns, alpha=0.06, color=SERIAL_COLOR)
     ax.fill_between(kp, np_, alpha=0.06, color=PARALLEL_COLOR)
 
-    # Serial with engine markers
-    s_lin = [(k, n) for k, n, e in zip(ks, ns, es) if e == 'linear']
-    s_hyb = [(k, n) for k, n, e in zip(ks, ns, es) if e == 'hybrid']
+    # Serial with engine markers (use trimmed arrays for line + markers)
+    s_lin = [(k, n) for k, n, e in zip(ks_line, ns_line, es[:len(ks_line)]) if e == 'linear']
+    s_hyb = [(k, n) for k, n, e in zip(ks_line, ns_line, es[:len(ks_line)]) if e == 'hybrid']
 
-    ax.plot(ks, ns, '-', color=SERIAL_COLOR, linewidth=2, alpha=0.6, zorder=4)
+    ax.plot(ks_line, ns_line, '-', color=SERIAL_COLOR, linewidth=2, alpha=0.6, zorder=4)
     if s_lin:
         ax.plot(*zip(*s_lin), 'o', color=SERIAL_COLOR, markersize=7, zorder=5)
     if s_hyb:
         ax.plot(*zip(*s_hyb), 's', color=SERIAL_COLOR, markersize=6, zorder=5)
 
-    # Parallel with engine markers
-    p_lin = [(k, n) for k, n, e in zip(kp, np_, ep) if e == 'linear']
-    p_hyb = [(k, n) for k, n, e in zip(kp, np_, ep) if e == 'hybrid']
+    # Parallel with engine markers (use trimmed arrays for line + markers)
+    p_lin = [(k, n) for k, n, e in zip(kp_line, np_line, ep[:len(kp_line)]) if e == 'linear']
+    p_hyb = [(k, n) for k, n, e in zip(kp_line, np_line, ep[:len(kp_line)]) if e == 'hybrid']
 
-    ax.plot(kp, np_, '-', color=PARALLEL_COLOR, linewidth=2, alpha=0.6, zorder=4)
+    ax.plot(kp_line, np_line, '-', color=PARALLEL_COLOR, linewidth=2, alpha=0.6, zorder=4)
     if p_lin:
         ax.plot(*zip(*p_lin), 'o', color=PARALLEL_COLOR, markersize=7, zorder=5)
     if p_hyb:
@@ -180,8 +199,8 @@ def plot_contour(cfg, serial_path, parallel_path, out_path):
         # Find where contour crosses n=k (interpolate)
         for i in range(len(k_arr) - 1):
             # contour: n_arr[i] at k_arr[i]. n=k line: n=k.
-            # crossing when n_arr goes from > k to < k
-            if n_arr[i] >= k_arr[i] and n_arr[i+1] < k_arr[i+1]:
+            # crossing when n_arr goes from >= k to <= k
+            if n_arr[i] >= k_arr[i] and n_arr[i+1] <= k_arr[i+1]:
                 # Linear interp in log space
                 frac = (np.log(k_arr[i]) - np.log(n_arr[i])) / \
                        ((np.log(n_arr[i+1]) - np.log(n_arr[i])) - (np.log(k_arr[i+1]) - np.log(k_arr[i])))
@@ -215,7 +234,7 @@ def plot_contour(cfg, serial_path, parallel_path, out_path):
     ]
     ax.legend(handles=legend_elements, loc='upper right', fontsize=9.5, framealpha=0.9)
 
-    ax.set_xlim(1.5, max(ks) * 1.5)
+    ax.set_xlim(1.5, max(max(ks), max(kp)) * 1.5)
     y_lo = min(min(ns), min(np_)) * 0.5
     y_hi = max(max(ns), max(np_)) * 2
     ax.set_ylim(y_lo, y_hi)
@@ -274,12 +293,15 @@ def plot_speedup(cfg, serial_path, parallel_path, out_path):
 def plot_dispatch(cfg, serial_path, out_path):
     ks, ns, es = load_contour(serial_path)
 
+    # Trim uptick at tail for smooth line ending
+    ks_line, ns_line = _trim_uptick(ks, ns)
+
     fig, ax = plt.subplots(figsize=(10, 6))
-    for k_val, n_val, eng in zip(ks, ns, es):
+    for k_val, n_val, eng in zip(ks_line, ns_line, es[:len(ks_line)]):
         color = LINEAR_COLOR if eng == 'linear' else HYBRID_COLOR
         ax.scatter(k_val, n_val, c=color, s=80, zorder=5, edgecolors='white', linewidth=0.5)
 
-    ax.plot(ks, ns, '-', color='gray', linewidth=1, alpha=0.5, zorder=3)
+    ax.plot(ks_line, ns_line, '-', color='gray', linewidth=1, alpha=0.5, zorder=3)
 
     ax.set_xscale('log')
     ax.set_yscale('log')
@@ -456,7 +478,7 @@ def plot_gpu_contour(heatmap_path, out_path):
 
     # Mark intersection (1-second k=n threshold)
     for i in range(len(contour_k) - 1):
-        if contour_n[i] >= contour_k[i] and contour_n[i+1] < contour_k[i+1]:
+        if contour_n[i] >= contour_k[i] and contour_n[i+1] <= contour_k[i+1]:
             frac = (np.log(contour_k[i]) - np.log(contour_n[i])) / \
                    ((np.log(contour_n[i+1]) - np.log(contour_n[i])) - (np.log(contour_k[i+1]) - np.log(contour_k[i])))
             k_cross = np.exp(np.log(contour_k[i]) + frac * (np.log(contour_k[i+1]) - np.log(contour_k[i])))

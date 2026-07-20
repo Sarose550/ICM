@@ -18,7 +18,7 @@ Model (per Q-point):
 9 fitted parameters, calib[fft_n] lookup from fft_config.h.
 Objective: minimize Σ(log(pred/meas))².
 
-Usage: python3 tools/fit_cost_model.py <sample_plans.csv> [devices/zen4/fft_config.h]
+Usage: python3 tools/fit_cost_model.py <sample_plans.csv> [config_h] [--write]
 """
 import sys
 import re
