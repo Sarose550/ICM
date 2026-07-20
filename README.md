@@ -56,16 +56,17 @@ See [python/README.md](python/README.md) for setup (`make libicm`, then
 ## How It Works
 
 **1. The problem.** A tournament has `n` players with chip stacks
-`S_1, ..., S_n` and a payout structure `(π_1, ..., π_k)` where `k ≤ n`
-positions receive nonzero prizes. ICM computes each player's expected
-payout - the sum over finishing positions of the prize for that position
-times the probability the player finishes there. The naive answer enumerates
+`S_1, ..., S_n` and a payout vector $\vec{\pi} = (\pi_0, \pi_1, \ldots, \pi_{k-1})$
+where `k ≤ n` positions receive nonzero prizes ($\pi_0$ is the prize for 1st
+place). ICM computes each player's expected payout - the sum over finishing
+positions of the prize for that position times the probability the player
+finishes there. The naive answer enumerates
 all `n!` elimination orderings, weights each by its probability under the
 Malmuth–Harville model (Harville, 1973; Malmuth, 2001), and sums the
 resulting payouts.
 
 **2. Why naive enumeration is dead almost immediately.** `n!` grows
-catastrophically fast: 15! ≈ 1.3 × 10^12, 20! ≈ 2.4 × 10^18. As the
+catastrophically fast: $15! \approx 1.3 \times 10^{12}$, $20! \approx 2.4 \times 10^{18}$. As the
 HoldemResources.net blog post ["High Accuracy ICM Calculations for Large
 Fields"](https://www.holdemresources.net/blog/high-accuracy-mtt-icm/)
 notes, "Naive implementations of ICM can handle about 15 players, and even
@@ -164,13 +165,13 @@ term that Monte Carlo would otherwise have to sample - the sum over all
 subsets of $r$ other players of the product of their elimination
 probabilities times the remaining players' survival probabilities.
 
-Finally, the expected payout is the sum over positions:
-$E[\text{payout}_i] = \sum_r \text{payout}[r] \cdot P(i \text{ finishes in position } r)$.
+Finally, player $i$'s equity is the sum over positions:
+$\text{Equity}_i = \sum_r \pi_r \cdot P(i \text{ finishes in position } r)$.
 Pulling the finite sum inside the integral and recognizing
-$\sum_r \text{payout}[r] \cdot [x^r] Q_i(x; v) = \langle \text{payout}, Q_i(x; v) \rangle$
+$\sum_r \pi_r \cdot [x^r] Q_i(x; v) = \langle \vec{\pi}, Q_i(x; v) \rangle$
 (the dot product used in the subproduct-tree section below):
 
-$$E[\text{payout}_i] = \int_0^1 S_i v^{S_i - 1} \langle \text{payout}, Q_i(x; v) \rangle dv.$$
+$$\text{Equity}_i = \int_0^1 S_i \, v^{S_i - 1} \, \langle \vec{\pi}, Q_i(x; v) \rangle \, dv.$$
 
 So instead of drawing $N$ random samples of the exponential race and
 averaging, this repo evaluates the exact 1-D integral over $v$ via
@@ -194,16 +195,16 @@ that's faster). Here's how.
 Restated in linear-algebra terms, this is a dot-product problem. Represent a
 truncated polynomial by its coefficient vector, and define the pairing
 $\langle f, g \rangle = \sum_m f[m] \cdot g[m]$ (an ordinary dot product). What every player $i$
-actually needs is $\langle \text{payout}, Q_i(x; v) \rangle$ - the payout vector dotted against
+actually needs is $\langle \vec{\pi}, Q_i(x; v) \rangle$ - the payout vector $\vec{\pi}$ dotted against
 the product of everyone else's factor. Built one player at a time, that
 requires $n$ separate $O(n)$-degree products before the dot product is even
 possible: $O(n^2)$ total.
 
 Here is the shortcut. "Multiply by a fixed polynomial $P$", $T_P(f) = P \cdot f$
 (truncated), is a *linear* operator on coefficient vectors. Under the
-dot-product pairing above, its adjoint - the operator $T_P^*$ satisfying
-$\langle T_P(f), g \rangle = \langle f, T_P^*(g) \rangle$ for every $f, g$ - is exactly a
-*cross-correlation* with $P$: $T_P^*(g)[m] = \sum_j P[j] \cdot g[m+j]$. This falls
+dot-product pairing above, its adjoint - the operator $T_P^{*}$ satisfying
+$\langle T_P(f), g \rangle = \langle f, T_P^{*}(g) \rangle$ for every $f, g$ - is exactly a
+*cross-correlation* with $P$: $T_P^{*}(g)[m] = \sum_j P[j] \cdot g[m+j]$. This falls
 straight out of writing $T_P$ as a matrix: it's a convolution (Toeplitz-style)
 matrix, and the transpose of a convolution matrix is a correlation matrix.
 
@@ -212,14 +213,14 @@ of a balanced binary tree. Building the tree bottom-up is just composing a
 chain of these $T_P$ operators, one per level. $Q_i$ - "everyone except leaf
 $i$" - is what that chain computes if you skip every $T_P$ on leaf $i$'s own
 root-to-leaf path. Adjoints reverse the order of composition
-($(A \circ B)^* = B^* \circ A^*$), so applying the *adjoints* of that same chain, starting
-from $\text{payout}$ at the root and walking downward, computes $\langle \text{payout}, Q_i \rangle$
+($(A \circ B)^{*} = B^{*} \circ A^{*}$), so applying the *adjoints* of that same chain, starting
+from $\vec{\pi}$ at the root and walking downward, computes $\langle \vec{\pi}, Q_i \rangle$
 directly - one adjoint per level, shared across every leaf, branching only
-where paths diverge. Concretely, at any node the "own subtree" the walk is
-about to enter is one child; the part it must still account for is the
-*other* child, i.e. the sibling. So the adjoint applied at each step down is
-$T_{P_{\text{sibling}}}^*$ - correlation with the sibling's polynomial - which is
-exactly the mechanism below:
+where paths diverge. Concretely: at each node, the walk is about to descend
+into one child (call it the *own* subtree); the part it still needs to
+account for is the *other* child - the sibling. So the adjoint applied at
+each step down is $T_{P_{\text{sibling}}}^{*}$ - correlation with the sibling's
+polynomial - which is exactly the mechanism below:
 
 - *Build (bottom-up).* Each internal node's polynomial is the product of its
   two children's polynomials, truncated to whatever degree bound is actually
@@ -229,14 +230,14 @@ exactly the mechanism below:
   its subtree - this is the `T_P` chain being composed.
 
 - *Propagate (top-down).* Seed the root with the payout vector itself,
-  $(\pi_1, \ldots, \pi_k)$, treated as the coefficients of a polynomial $g_{\text{root}}(x)$.
-  Then walk back down the tree, applying $T_{P_{\text{sibling}}}^*$ at each level:
+  $\vec{\pi} = (\pi_0, \pi_1, \ldots, \pi_{k-1})$, treated as the coefficients of a polynomial $g_{\text{root}}(x)$.
+  Then walk back down the tree, applying $T_{P_{\text{sibling}}}^{*}$ at each level:
   each child's new coefficients are
   $g_{\text{child}}[m] = \sum_j P_{\text{sibling}}[j] \cdot g_{\text{parent}}[m+j]$ - the cross-correlation
   derived above, computable via FFT the same way convolution is. Descend
   all the way to the leaves.
 
-$g_{\text{leaf}_i}[0]$ is then $\langle \text{payout}, Q_i(x; v) \rangle$, truncated to its constant term:
+$g_{\text{leaf}_i}[0]$ is then $\langle \vec{\pi}, Q_i(x; v) \rangle$, truncated to its constant term:
 exactly the coefficient the generating-function argument in step 5 needs,
 for every $i$, without ever having built $Q_i(x; v)$ on its own. One build
 pass, one propagate pass, not $n$ separate $O(n)$ products (the exact
@@ -335,41 +336,44 @@ step 4. Applied to a pair $\{i, j\}$: $P(i \text{ beats } j) =
 S_i / (S_i + S_j)$. Applied to a triple $\{i, j, k\}$: $P(i \text{ beats both}) =
 S_i / (S_i + S_j + S_k)$.
 
-Now write player $i$'s actual finishing position as $m$ other players
-finishing ahead of them ($m = 0$ is 1st place). For any $t$, the number of
-ways to choose $t$ of the players who finish *behind* $i$ is $C(n-1-m, t)$
+Now write player $i$'s actual finishing position as $M$ other players
+finishing ahead of them ($M = 0$ is 1st place) - $M$ is a random variable,
+determined by the realized elimination order. For any $t$, the number of
+ways to choose $t$ of the players who finish *behind* $i$ is $C(n-1-M, t)$
 - an exact combinatorial identity on the realized outcome, no probability
-involved yet: it's just choosing $t$ players from the $n-1-m$ who rank
+involved yet: it's just choosing $t$ players from the $n-1-M$ who rank
 below $i$. Equivalently, it's a sum of indicators over every $t$-subset $T$
 of the other $n-1$ players, counting the ones $i$ beats entirely:
 
-$$C(n-1-m, t) = \sum_{\substack{T \subseteq \text{others} \\ |T| = t}} \mathbf{1}[i \text{ finishes better than every player in } T]$$
+$$C(n-1-M, t) = \sum_{\substack{T \subseteq \text{others} \\ |T| = t}} \mathbf{1}[i \text{ finishes better than every player in } T]$$
 
-- **V1 (linear payout, $\text{payout}[m] = n - m$):** Since $n - m = C(n-1-m, 0) +
-  C(n-1-m, 1)$, apply the identity at $t = 0$ (always 1, trivially - the
-  empty subset) and $t = 1$ (one term per opponent $j$):
+**V1 (linear payout, $\pi_M = n - M$):** Since $n - M = C(n-1-M, 0) +
+C(n-1-M, 1)$, apply the identity at $t = 0$ (always 1, trivially - the
+empty subset) and $t = 1$ (one term per opponent $j$). By linearity of
+expectation:
 
-  $$\begin{aligned}
-  E[\text{payout}_i] &= E[1] + E\!\left[\sum_{j \neq i} \mathbf{1}[i \text{ beats } j]\right] \\
-  &= 1 + \sum_{j \neq i} P(i \text{ beats } j) && \text{(linearity of expectation)} \\
-  &= 1 + \sum_{j \neq i} \frac{S_i}{S_i + S_j}
-  \end{aligned}$$
+$$\begin{aligned}
+\text{Equity}_i &= E[1] + E\left[\sum_{j \neq i} \mathbf{1}[i \text{ beats } j]\right] \\
+&= 1 + \sum_{j \neq i} P(i \text{ beats } j) \\
+&= 1 + \sum_{j \neq i} \frac{S_i}{S_i + S_j}
+\end{aligned}$$
 
-  This is exactly `v1_exact()`'s formula, $O(n^2)$ to compute directly.
+This is exactly `v1_exact()`'s formula, $O(n^2)$ to compute directly.
 
-- **V2 (quadratic payout, $\text{payout}[m] = C(n-1-m, 2)$):** Apply the identity
-  at $t = 2$ - one term per opponent *pair* $\{j, k\}$:
+**V2 (quadratic payout, $\pi_M = C(n-1-M, 2)$):** Apply the identity
+at $t = 2$ - one term per opponent *pair* $\{j, k\}$. By linearity of
+expectation:
 
-  $$\begin{aligned}
-  E[\text{payout}_i] &= E\!\left[\sum_{\substack{j < k \\ j,k \neq i}} \mathbf{1}[i \text{ beats } j \text{ and } k]\right] \\
-  &= \sum_{\substack{j < k \\ j,k \neq i}} P(i \text{ beats both } j \text{ and } k) && \text{(linearity of expectation)} \\
-  &= \sum_{\substack{j < k \\ j,k \neq i}} \frac{S_i}{S_i + S_j + S_k}
-  \end{aligned}$$
+$$\begin{aligned}
+\text{Equity}_i &= E\left[\sum_{\substack{j < k \\ j,k \neq i}} \mathbf{1}[i \text{ beats } j \text{ and } k]\right] \\
+&= \sum_{\substack{j < k \\ j,k \neq i}} P(i \text{ beats both } j \text{ and } k) \\
+&= \sum_{\substack{j < k \\ j,k \neq i}} \frac{S_i}{S_i + S_j + S_k}
+\end{aligned}$$
 
-  since "$i$ beats both $j$ and $k$" is exactly "$i$ has the smallest $T$
-  among the trio," which is the competing-exponentials fact above applied
-  to $\{i, j, k\}$. This is exactly `v2_exact()`'s formula, $O(n^3)$ to
-  compute directly.
+since "$i$ beats both $j$ and $k$" is exactly "$i$ has the smallest $T$
+among the trio," which is the competing-exponentials fact above applied
+to $\{i, j, k\}$. This is exactly `v2_exact()`'s formula, $O(n^3)$ to
+compute directly.
 
 In both cases the move from a *combinatorial identity on one realized
 outcome* to an *exact formula for the expectation* is linearity of
@@ -394,9 +398,9 @@ case for stack-ratio tails) tanh-sinh plateaus instead of converging:
 
 | Q | Gauss-Legendre | tanh-sinh |
 |---|---|---|
-| 256 | 1.54 × 10^(-10) | 6.53 × 10^(-6) |
-| 512 | 4.87 × 10^(-13) | 5.89 × 10^(-8) |
-| 1024 | 5.30 × 10^(-13) | 8.27 × 10^(-8) |
+| 256 | $1.54 \times 10^{-10}$ | $6.53 \times 10^{-6}$ |
+| 512 | $4.87 \times 10^{-13}$ | $5.89 \times 10^{-8}$ |
+| 1024 | $5.30 \times 10^{-13}$ | $8.27 \times 10^{-8}$ |
 
 (n=4, k=4, V1 payout; full data in `results/accuracy_convergence.csv`,
 `scheme` column.) Gauss-Legendre keeps converging toward machine precision;
@@ -404,7 +408,7 @@ tanh-sinh stalls around 1e-7-1e-8 on this tail case and doesn't improve
 further from `Q = 512` to `Q = 1024`. This is what motivated using
 Gauss-Legendre in production rather than tanh-sinh.
 
-**Headline result:** Gauss-Legendre quadrature converges to ~5 × 10^(-13)
+**Headline result:** Gauss-Legendre quadrature converges to ~$5 \times 10^{-13}$
 relative error by `Q = 1024` against both V1 and V2 closed forms across all
 tested distributions. The convergence is rapid - here are representative
 rows from `results/accuracy_convergence.csv` for the `gauss` scheme on
@@ -412,19 +416,19 @@ uniform stacks (V1 payout):
 
 | Q | max_rel_err (n=4, uniform, V1) |
 |---|-------------------------------|
-| 4 | 4.10 × 10^0 |
-| 8 | 4.36 × 10^(-1) |
-| 16 | 1.32 × 10^(-1) |
-| 64 | 3.08 × 10^(-8) |
-| 128 | 6.79 × 10^(-13) |
-| 256 | 8.87 × 10^(-13) |
-| 1024 | 1.07 × 10^(-12) |
+| 4 | $4.10 \times 10^{0}$ |
+| 8 | $4.36 \times 10^{-1}$ |
+| 16 | $1.32 \times 10^{-1}$ |
+| 64 | $3.08 \times 10^{-8}$ |
+| 128 | $6.79 \times 10^{-13}$ |
+| 256 | $8.87 \times 10^{-13}$ |
+| 1024 | $1.07 \times 10^{-12}$ |
 
 At `Q = 1024`, the maximum relative error across *all* tested configurations
 (`n` up to 20, all four stack distributions, both V1 and V2) stays below
-~2 × 10^(-12) for uniform stacks and below ~6 × 10^(-13) for the adversarial
+~$2 \times 10^{-12}$ for uniform stacks and below ~$6 \times 10^{-13}$ for the adversarial
 and 1e9:1 cases. The production default is `Q = 256`, which already delivers
-sub-2 × 10^(-12) relative error - sufficient for any practical poker
+sub-$2 \times 10^{-12}$ relative error - sufficient for any practical poker
 application.
 
 ![Accuracy convergence](accuracy_convergence.png)
