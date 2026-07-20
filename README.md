@@ -10,7 +10,7 @@ High-performance C library for computing tournament placement equities using gen
 The Independent Chip Model (ICM) is a tournament equity model that converts
 chip stacks into real-money expected payouts by accounting for the payout
 structure. In a poker tournament, chips do not have a fixed dollar value
-— your last chip is worth far less than your first — and ICM computes each
+- your last chip is worth far less than your first - and ICM computes each
 player's fair expected share of the prize pool. For a general introduction,
 see the [ICM Wikipedia page](https://en.wikipedia.org/wiki/Independent_Chip_Model).
 
@@ -100,7 +100,7 @@ order of increasing `T_j`. The memoryless property of the exponential
 distribution guarantees this recovers exactly the same stack-proportional
 elimination rule at every step. Concretely, for any subset of players, the
 probability that a particular player $i$ finishes best within that subset
-— i.e., has the smallest $T$ — is $S_i$ divided by the subset's total stack.
+- i.e., has the smallest $T$ - is $S_i$ divided by the subset's total stack.
 (Proof: $T_i$ and the minimum of everyone else's $T$'s are independent; the
 minimum of independent exponentials is itself exponential with rate equal
 to the sum of their rates; and for two independent exponentials with rates
@@ -136,7 +136,7 @@ Expanding this product, each factor contributes either $a_j(t)$ (player $j$
 finishes after $i$, contributes $x^0$) or $b_j(t) \cdot x$ (player $j$
 finishes before $i$, contributes $x^1$). The coefficient of $x^r$ in
 $Q_i(x; t)$ is therefore exactly $P(\text{exactly } r \text{ of the other
-players finish before } i \mid T_i = t)$ — i.e.
+players finish before } i \mid T_i = t)$ - i.e.
 $P(i \text{ finishes in position } r \mid T_i = t)$.
 
 Uncondition: $T_i$ has density $S_i e^{-S_i t}$, so
@@ -160,7 +160,7 @@ cancels the bound flip):
 $$P(i \text{ finishes in position } r) = \int_0^1 S_i \, v^{S_i - 1} \cdot [x^r]\, Q_i(x; v) \, dv.$$
 
 The coefficient of $x^r$ in $Q_i(x; v)$ captures exactly the combinatorial
-term that Monte Carlo would otherwise have to sample — the sum over all
+term that Monte Carlo would otherwise have to sample - the sum over all
 subsets of $r$ other players of the product of their elimination
 probabilities times the remaining players' survival probabilities.
 
@@ -278,7 +278,7 @@ pass; propagate is the same shape of operation (same FFT sizes), so it's
 the same order. That's the per-quadrature-point cost; multiplying by $Q$
 quadrature points gives $O(Q \cdot n \cdot \log^2 k)$ overall.
 
-**Space complexity: $O(n \log k)$.** — actually just $O(n \log k)$ per
+**Space complexity: $O(n \log k)$.** - actually just $O(n \log k)$ per
 quadrature point, same as the time complexity's leading spatial factor, and
 here's why.
 
@@ -287,19 +287,19 @@ The build phase constructs the subproduct tree bottom-up: level $\ell$
 truncated to degree $\min(2^\ell, k)$ (never more than $k$, since the payout
 vector only has $k$ nonzero terms to read out later). The top-down propagate
 pass needs every level's build-phase polynomials available as it descends,
-so — unlike a pass you could discard as you go — the whole tree has to be
+so - unlike a pass you could discard as you go - the whole tree has to be
 held in memory simultaneously, not just one level at a time.
 
 Summing storage across levels: for levels where $2^\ell \leq k$, each level
-costs $(n/2^\ell) \cdot 2^\ell = n$, and there are $\log k$ such levels — that
+costs $(n/2^\ell) \cdot 2^\ell = n$, and there are $\log k$ such levels - that
 alone contributes $O(n \log k)$. For levels where $2^\ell > k$ (i.e., past the
 point where a node's polynomial saturates at degree $k$), the per-level cost
 is $(n/2^\ell) \cdot k$, which shrinks geometrically as $\ell$ increases, so
-those levels collectively contribute only $O(n)$ more — dominated by the
+those levels collectively contribute only $O(n)$ more - dominated by the
 first (smallest $\ell$) term in that regime. So the total is
 $O(n \log k) + O(n) = O(n \log k)$ per quadrature point. Since quadrature
 points are processed sequentially and reuse the same memory, the overall
-space requirement remains $O(n \log k)$ — it does not multiply by $Q$.
+space requirement remains $O(n \log k)$ - it does not multiply by $Q$.
 
 **Three CPU engines with cost-based dispatch.** The library picks the
 fastest engine per `(n, k)` pair via `select_engine()`, which compares a
