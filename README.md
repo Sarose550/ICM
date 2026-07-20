@@ -268,7 +268,7 @@ in double precision for $B$ up to 64. (Division elsewhere in this codebase
 is deliberately avoided because doing the same thing on the full,
 *truncated* $n$-player product is numerically unstable.)
 
-**Complexity: $O(Q \cdot n \cdot \log^2 k)$.** Derive this by summing the cost of
+**Time Complexity: $O(Q \cdot n \cdot \log^2 k)$.** Derive this by summing the cost of
 each tree level directly. There are $L = \log_2 n$ levels; at level $\ell$ there
 are $n/2^\ell$ nodes, and every node's polynomial (and every $g$-vector during
 propagate) is truncated to size $s_\ell = \min(2^\ell, k)$ - nothing past $k$
@@ -289,9 +289,7 @@ pass; propagate is the same shape of operation (same FFT sizes), so it's
 the same order. That's the per-quadrature-point cost; multiplying by $Q$
 quadrature points gives $O(Q \cdot n \cdot \log^2 k)$ overall.
 
-**Space complexity: $O(n \log k)$.** - actually just $O(n \log k)$ per
-quadrature point, same as the time complexity's leading spatial factor, and
-here's why.
+**Space complexity: $O(n \log k)$. Here's why.
 
 The build phase constructs the subproduct tree bottom-up: level $\ell$
 (counting from the leaves) has $n/2^\ell$ nodes, each holding a polynomial
