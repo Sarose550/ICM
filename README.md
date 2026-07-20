@@ -437,6 +437,17 @@ make DEVICE=m3_pro   # or zen4 - whichever matches your machine
 
 `fftw_wisdom.dat` and the `calib_times_ns[]` table are measured on one specific physical machine. FFTW will happily load wisdom from a different unit of the same CPU model - it just isn't guaranteed to have picked the fastest codelet for *your* silicon, and the nanosecond timings the cost model reads for FFT-vs-schoolbook and engine-dispatch decisions won't necessarily match your machine's actual behavior (different DIMM speed, microcode revision, thermal/boost profile, or memory bandwidth can all shift these numbers). `./bench_grid crossover` is the check that catches this: if every cell's dispatch decision agrees with the measured winner, the shipped calibration is good enough and you're done. Only recalibrate from scratch (below) if it disagrees - and definitely recalibrate if you're on hardware unlike anything already in `devices/`.
 
+One command runs the whole pipeline (FFTW calibration, hybrid-engine timing,
+and cost-model constant fitting) and finishes with a `verify` + `crossover`
+check:
+
+```bash
+./tools/calibrate_full.sh mydevice   # add --quick for a faster, less precise FFTW pass
+```
+
+That's usually all you need. If you want to see (or run) each step by hand
+instead:
+
 ```bash
 # Generate calibration data
 gcc -O3 -march=native -o calibrate tools/calibrate.c -lfftw3 -lm
