@@ -381,6 +381,14 @@ Three engines with cost-based automatic dispatch:
 
 *M3 Pro numbers are being recalibrated after a hardware migration - this table will be refreshed once that run completes.*
 
+![1-second contour: serial vs 16-thread parallel, Zen 4](contour_1s.png)
+
+![16-core parallel speedup at the 1-second boundary, Zen 4](parallel_speedup.png)
+
+![Engine dispatch (linear vs hybrid) at the 1-second boundary, Zen 4](engine_dispatch.png)
+
+![1-second contour, NVIDIA B200](gpu_contour.png)
+
 See [RESULTS.md](RESULTS.md) for complete performance tables across platforms.
 
 ## Building
