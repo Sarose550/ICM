@@ -183,10 +183,10 @@ Gauss-Legendre nodes, this yields deterministic double-precision accuracy
 The remaining computational challenge is evaluating, for *every* player $i$
 simultaneously, the coefficients of $Q_i(x; v)$ - the product of everyone
 else's per-player factor. Computed naively, one player at a time, that's $n$
-separate degree-$(n-1)$ products: $O(n^2)$ factors to multiply. The
+separate degree- $(n-1)$ products: $O(n^2)$ factors to multiply. The
 subproduct tree computes all $n$ of them together in $O(n \log n)$
 multiplications (each accelerated further by FFT convolution, which
-multiplies two degree-$d$ polynomials in $O(d \log d)$ time instead of the
+multiplies two degree- $d$ polynomials in $O(d \log d)$ time instead of the
 schoolbook $O(d^2)$; see Wikipedia's article on the [Fast Fourier
 Transform](https://en.wikipedia.org/wiki/Fast_Fourier_transform) for why
 that's faster). Here's how.
@@ -253,7 +253,7 @@ one extra step at the very end: a block's leave-one-out $g$-vector describes
 recovering a single player's coefficient means dividing the block's
 *complete* (non-truncated) polynomial product by that player's own factor,
 polynomial division, done only on this small, complete, $B$-degree product,
-where the resulting numerical amplification is bounded by $|c|^B$ and safe
+where the resulting numerical amplification is bounded by $|c|^B$ (with $c$ the per-factor amplification from a single polynomial division) and safe
 in double precision for $B$ up to 64. (Division elsewhere in this codebase
 is deliberately avoided because doing the same thing on the full,
 *truncated* $n$-player product is numerically unstable.)
@@ -360,7 +360,7 @@ $$\begin{aligned}
 
 This is exactly `v1_exact()`'s formula, $O(n^2)$ to compute directly.
 
-**V2 (quadratic payout, $\pi_M = C(n-1-M, 2)$):** Apply the identity
+**V2 (quadratic payout, $\pi_M = \mathit{C(n-1-M, 2)}$):** Apply the identity
 at $t = 2$ - one term per opponent *pair* $\lbrace j, k\rbrace$. By linearity of
 expectation:
 
@@ -370,7 +370,7 @@ $$\begin{aligned}
 &= \sum_{\substack{j < k \\ j,k \neq i}} \frac{S_i}{S_i + S_j + S_k}
 \end{aligned}$$
 
-since "$i$ beats both $j$ and $k$" is exactly "$i$ has the smallest $T$
+since " $i$ beats both $j$ and $k$" is exactly " $i$ has the smallest $T$
 among the trio," which is the competing-exponentials fact above applied
 to $\lbrace i, j, k\rbrace$. This is exactly `v2_exact()`'s formula, $O(n^3)$ to
 compute directly.
@@ -381,7 +381,7 @@ expectation, applied term-by-term to a sum of indicator variables: it
 costs nothing to push the expectation through a sum, no matter how the
 individual indicator events are correlated with each other. Higher payout
 schedules follow the same pattern for larger $t$; V1 and V2 are the $t \leq 2$
-cases used here as exact, closed-form, arbitrary-$n$ ground truth.
+cases used here as exact, closed-form, arbitrary- $n$ ground truth.
 
 These are implemented as `v1_exact()` and `v2_exact()` in `src/icm.c`
 (publicly exposed as `icm_v1_exact()` / `icm_v2_exact()` in `icm.h`).
@@ -408,7 +408,7 @@ tanh-sinh stalls around 1e-7-1e-8 on this tail case and doesn't improve
 further from `Q = 512` to `Q = 1024`. This is what motivated using
 Gauss-Legendre in production rather than tanh-sinh.
 
-**Headline result:** Gauss-Legendre quadrature converges to ~$5 \times 10^{-13}$
+**Headline result:** Gauss-Legendre quadrature converges to $\sim 5 \times 10^{-13}$
 relative error by `Q = 1024` against both V1 and V2 closed forms across all
 tested distributions. The convergence is rapid - here are representative
 rows from `results/accuracy_convergence.csv` for the `gauss` scheme on
@@ -426,9 +426,9 @@ uniform stacks (V1 payout):
 
 At `Q = 1024`, the maximum relative error across *all* tested configurations
 ($n$ up to 20, all four stack distributions, both V1 and V2) stays below
-~$2 \times 10^{-12}$ for uniform stacks and below ~$6 \times 10^{-13}$ for the adversarial
+$\sim 2 \times 10^{-12}$ for uniform stacks and below $\sim 6 \times 10^{-13}$ for the adversarial
 and 1e9:1 cases. The production default is `Q = 256`, which already delivers
-sub-$2 \times 10^{-12}$ relative error - sufficient for any practical poker
+sub- $2 \times 10^{-12}$ relative error - sufficient for any practical poker
 application.
 
 ![Accuracy convergence](accuracy_convergence.png)
