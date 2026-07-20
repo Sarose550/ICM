@@ -152,12 +152,12 @@ and $b_j(t) = 1 - v^{S_j}$, so define
 $$a_j(v) = v^{S_j}, \quad b_j(v) = 1 - v^{S_j},$$
 $$Q_i(x; v) = \prod_{j \neq i} \bigl(a_j(v) + b_j(v) \cdot x\bigr).$$
 
-For the measure, $dv = -e^{-t} dt = -v \, dt$, so $dt = -dv/v$, and
+For the measure, $dv = -e^{-t} dt = -v dt$, so $dt = -dv/v$, and
 $e^{-S_i t} = v^{S_i}$. Substituting and flipping the integration bounds
 ($t: 0 \to \infty$ becomes $v: 1 \to 0$, and the minus sign from $dt = -dv/v$
 cancels the bound flip):
 
-$$P(i \text{ finishes in position } r) = \int_0^1 S_i \, v^{S_i - 1} \cdot [x^r]\, Q_i(x; v) \, dv.$$
+$$P(i \text{ finishes in position } r) = \int_0^1 S_i  v^{S_i - 1} \cdot [x^r] Q_i(x; v) dv.$$
 
 The coefficient of $x^r$ in $Q_i(x; v)$ captures exactly the combinatorial
 term that Monte Carlo would otherwise have to sample - the sum over all
@@ -170,7 +170,7 @@ Pulling the finite sum inside the integral and recognizing
 $\sum_r \text{payout}[r] \cdot [x^r] Q_i(x; v) = \langle \text{payout}, Q_i(x; v) \rangle$
 (the dot product used in the subproduct-tree section below):
 
-$$E[\text{payout}_i] = \int_0^1 S_i \, v^{S_i - 1} \, \langle \text{payout}, Q_i(x; v) \rangle \, dv.$$
+$$E[\text{payout}_i] = \int_0^1 S_i v^{S_i - 1} \langle \text{payout}, Q_i(x; v) \rangle dv.$$
 
 So instead of drawing $N$ random samples of the exponential race and
 averaging, this repo evaluates the exact 1-D integral over $v$ via
