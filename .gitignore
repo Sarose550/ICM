@@ -34,6 +34,8 @@ fftw_wisdom.dat
 !devices/*/fftw_wisdom.dat
 **/cpu_*.csv
 **/*.png
+# accuracy_convergence.png is embedded in README.md — must be tracked.
+!accuracy_convergence.png
 zen4_*.txt
 planner_validation.csv
 gpu_limit_frontier.csv
