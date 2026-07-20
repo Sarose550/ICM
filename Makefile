@@ -139,6 +139,29 @@ calibrate:
 	$(CC) $(CFLAGS) $(INCLUDES) -o calibrate tools/calibrate.c $(LDFLAGS)
 	@echo "Run: ./calibrate (then copy fft_config.h + fftw_wisdom.dat to devices/$(DEVICE)/)"
 
+# ── Regenerate results/ data for tools/plot_contour.py ──────────
+# Requires devices/$(DEVICE)/ to already be calibrated (see "Calibrating
+# for a New Device" in README.md). Writes dated files directly into
+# results/ -- plot_contour.py picks up the most recent match automatically,
+# no renaming or copying needed. DEVICE=zen4 must be run on Zen4 hardware;
+# DEVICE=m3_pro on Apple Silicon.
+DATE := $(shell date +%Y-%m-%d)
+# plot_contour.py's DEVICE_CONFIGS use "m3pro" (no underscore) in filenames
+# even though the build device is "m3_pro" -- match that convention here.
+RESULTS_TAG := $(subst m3_pro,m3pro,$(DEVICE))
+results-refresh: all parallel contour_1s contour_1s_par
+	mkdir -p results
+	./$(OUT) > results/bench_grid_$(RESULTS_TAG)_serial_$(DATE).txt
+	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc)} \
+	    ./$(OUT) > results/bench_grid_$(RESULTS_TAG)_parallel_$(DATE).txt
+	./contour_1s --contour > results/contour_$(RESULTS_TAG)_serial_q256_$(DATE).csv
+	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc)} \
+	    ./contour_1s_par --contour > results/contour_$(RESULTS_TAG)_parallel_q256_$(DATE).csv
+	python3 tools/plot_contour.py --device $(DEVICE)
+	@echo "Refreshed results/ for DEVICE=$(DEVICE), dated $(DATE)."
+
+.PHONY: results-refresh
+
 # ── GPU targets ─────────────────────────────────────────────────
 
 # CPU reference object for GPU benchmarks (cross-check against CPU results)
@@ -222,7 +245,7 @@ campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate
 # ── Clean ───────────────────────────────────────────────────────
 
 clean:
-	rm -f $(OUT) calibrate contour_1s contour_1s_par
+	rm -f $(OUT) calibrate contour_1s contour_1s_par accuracy_bench
 	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model
 	rm -rf $(BUILD_DIR)
 	rm -rf python/*.egg-info python/build python/dist

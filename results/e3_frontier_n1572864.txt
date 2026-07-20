@@ -1,4 +1,0 @@
-run=1  total=1148.40 ms  B=96  engine=1  peak_vram=166900.3 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
-run=2  total=1148.50 ms  B=96  engine=1  peak_vram=166900.3 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
-run=3  total=1149.62 ms  B=96  engine=1  peak_vram=166900.3 MB  block=0.00 tree_build=0.00 prop_cached=0.00 prop_recomp=0.00 leaf=0.00
-best=1148.40 ms  (n=1572864 k=1572864 Q=256)

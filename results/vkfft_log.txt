@@ -1,7 +1,0 @@
-
-=== Summary ===
-cuFFT wins: 331
-VkFFT wins: 357
-Ties (<1% diff): 48
-Errors: 0
-Total tested: 736
