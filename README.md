@@ -166,12 +166,12 @@ subsets of $r$ other players of the product of their elimination
 probabilities times the remaining players' survival probabilities.
 
 Finally, player $i$'s equity is the sum over positions:
-$\text{Equity}_i = \sum_r \pi_r \cdot P(i \text{ finishes in position } r)$.
+$\text{Equity}_ i = \sum_r \pi_r \cdot P(i \text{ finishes in position } r)$.
 Pulling the finite sum inside the integral and recognizing
 $\sum_r \pi_r \cdot [x^r] Q_i(x; v) = \langle \boldsymbol{\pi}, Q_i(x; v) \rangle$
 (the dot product used in the subproduct-tree section below):
 
-$$\text{Equity}_i = \int_0^1 S_i v^{S_i - 1} \langle \boldsymbol{\pi}, Q_i(x; v) \rangle dv.$$
+$$\text{Equity}_ i = \int_0^1 S_i v^{S_i - 1} \langle \boldsymbol{\pi}, Q_i(x; v) \rangle dv.$$
 
 So instead of drawing $N$ random samples of the exponential race and
 averaging, this repo evaluates the exact 1-D integral over $v$ via
@@ -204,7 +204,7 @@ Here is the shortcut. "Multiply by a fixed polynomial $P$", $T_P(f) = P \cdot f$
 (truncated), is a *linear* operator on coefficient vectors. Under the
 dot-product pairing above, its adjoint - the operator $T_P^{\ast}$ satisfying
 $\langle T_P(f), g \rangle = \langle f, T_P^{\ast}(g) \rangle$ for every $f, g$ - is exactly a
-*cross-correlation* with $P$: $(T_P^{\ast}(g))_m = \sum_j P_j \cdot g_{m+j}$. This falls
+*cross-correlation* with $P$: $(T_P^{\ast}(g))_ m = \sum_j P_j \cdot g_{m+j}$. This falls
 straight out of writing $T_P$ as a matrix: it's a convolution (Toeplitz-style)
 matrix, and the transpose of a convolution matrix is a correlation matrix.
 
@@ -237,7 +237,7 @@ polynomial - which is exactly the mechanism below:
   derived above, computable via FFT the same way convolution is. Descend
   all the way to the leaves.
 
-$g_{\text{leaf}_i, 0}$ is then $\langle \boldsymbol{\pi}, Q_i(x; v) \rangle$, truncated to its constant term:
+$g_{\text{leaf}_ i, 0}$ is then $\langle \boldsymbol{\pi}, Q_i(x; v) \rangle$, truncated to its constant term:
 exactly the coefficient the generating-function argument in step 5 needs,
 for every $i$, without ever having built $Q_i(x; v)$ on its own. One build
 pass, one propagate pass, not $n$ separate $O(n)$ products (the exact
@@ -353,7 +353,7 @@ empty subset) and $t = 1$ (one term per opponent $j$). By linearity of
 expectation:
 
 $$\begin{aligned}
-\text{Equity}_i &= E[1] + E\left[\sum_{j \neq i} \mathbf{1}[i \text{ beats } j]\right] \\
+\text{Equity}_ i &= E[1] + E\left[\sum_{j \neq i} \mathbf{1}[i \text{ beats } j]\right] \\
 &= 1 + \sum_{j \neq i} P(i \text{ beats } j) \\
 &= 1 + \sum_{j \neq i} \frac{S_i}{S_i + S_j}
 \end{aligned}$$
@@ -365,7 +365,7 @@ at $t = 2$ - one term per opponent *pair* $\{j, k\}$. By linearity of
 expectation:
 
 $$\begin{aligned}
-\text{Equity}_i &= E\left[\sum_{\substack{j < k \\ j,k \neq i}} \mathbf{1}[i \text{ beats } j \text{ and } k]\right] \\
+\text{Equity}_ i &= E\left[\sum_{\substack{j < k \\ j,k \neq i}} \mathbf{1}[i \text{ beats } j \text{ and } k]\right] \\
 &= \sum_{\substack{j < k \\ j,k \neq i}} P(i \text{ beats both } j \text{ and } k) \\
 &= \sum_{\substack{j < k \\ j,k \neq i}} \frac{S_i}{S_i + S_j + S_k}
 \end{aligned}$$

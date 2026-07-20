@@ -1,4 +1,4 @@
-# RESULTS.md — ICM Equity Optimization Results
+# RESULTS.md - ICM Equity Optimization Results
 
 All correctness tests PASS at < 5e-12 relative error (< 1e-9 for Smax=10^9).
 Q=256 quadrature points.
@@ -8,7 +8,7 @@ Q=256 quadrature points.
 > Calibrated with FFTW PATIENT wisdom on Apple M3 Pro (6P+6E, 12 logical cores).
 > Engine dispatch: `select_engine()` cost-based, B auto-selected (typically B=16).
 
-### Performance (ms, uniform stacks, median of 5) — M3 Pro
+### Performance (ms, uniform stacks, median of 5) - M3 Pro
 
 Single-threaded vs 12-thread parallel, per (n, k) cell:
 
@@ -81,7 +81,7 @@ Single-threaded vs 12-thread parallel, per (n, k) cell:
 | 65536 | k=n/2 | 9710 | 1270 | 7.6x |
 | 65536 | k=n | 10000 | 1310 | 7.6x |
 
-### Parallel speedup — M3 Pro
+### Parallel speedup - M3 Pro
 
 At the 1-second boundary (from contour sweep, Q=256):
 
@@ -105,7 +105,7 @@ limits peak parallel speedup to ~8x vs Zen 4's ~14x on 16 homogeneous P-cores.
 
 ## AMD Ryzen 9 7950X (Zen 4, AVX-512, FFTW+MKL dual dispatch)
 
-### Performance (ms, uniform stacks, median of 5) — Zen 4
+### Performance (ms, uniform stacks, median of 5) - Zen 4
 
 Single-threaded vs 16-thread parallel, per (n, k) cell:
 
@@ -178,7 +178,7 @@ Single-threaded vs 16-thread parallel, per (n, k) cell:
 | 65536 | k=n/2 | 4170 | 530 | 7.9x |
 | 65536 | k=n | 4490 | 631 | 7.1x |
 
-### Parallel speedup — Zen 4
+### Parallel speedup - Zen 4
 
 At the 1-second boundary (from contour sweep, Q=256):
 
@@ -211,16 +211,16 @@ MKL wins 112/749 (mostly small composites 14-64, plus 131072 at 1.15x).
 - Cost-model-driven B selection (`select_best_B`)
 - Shared tree_build_levels / tree_propagate_g helpers
 - BQ=8 batched linear with interleaved a_batch layout
-(`a_batch[j*BQ+qi]` — cache-friendly, eliminates L1 misses at all n).
+(`a_batch[j*BQ+qi]` - cache-friendly, eliminates L1 misses at all n).
 Template in `src/linear_batched_impl.inc`.
 - L2-aware checkpointing (`ckpt_interval_batched`)
-- Cost-based engine dispatch (`select_engine`) — no fixed K_CROSS thresholds
+- Cost-based engine dispatch (`select_engine`) - no fixed K_CROSS thresholds
 - Cross-correlation wrap correction handles both output-wrap and input-wrap
 cyclic aliasing (corrects a pre-existing bug with wrap_m > 0)
 
 ### M3 Pro / Apple Silicon specific
 
-- vDSP interleaved DFT dispatch (`vDSP_DFT_Interleaved_CreateSetupD`) — 10-18%
+- vDSP interleaved DFT dispatch (`vDSP_DFT_Interleaved_CreateSetupD`) - 10-18%
 faster FFT at 33 supported sizes (f × 2^g where f ∈ {1,3,5,15}, g ≥ 4).
 Zero format conversion (uses same interleaved complex as FFTW). Forward ×2
 scaling absorbed into pointwise multiply; single ×0.25 on inverse output.
@@ -229,10 +229,10 @@ to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 
 ### Zen 4 specific
 
-- FFTW+MKL dual dispatch via `dlopen` — per-size best-of-both (181/749 sizes use MKL)
+- FFTW+MKL dual dispatch via `dlopen` - per-size best-of-both (181/749 sizes use MKL)
 - BQ=2 batched linear with interleaved layout (AVX-512 native width)
 - L2-aware checkpointing with 1MB per-core L2
-- B=32 (vs M3 Pro B=16) — cost model adapts to Zen 4's wider schoolbook-FFT crossover
+- B=32 (vs M3 Pro B=16) - cost model adapts to Zen 4's wider schoolbook-FFT crossover
 - `MKL_THREADING_LAYER=SEQUENTIAL` set automatically at init (avoids OpenMP dependency)
 
 ## FFT Phase Split (Zen 4 7950X)
@@ -269,7 +269,7 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 | `FP64_DIV_NS` | 6.0449 | FP64 divide latency. |
 | `LEAF_FMA_NS` | 0.1889 | FMA cost at tree-leaf schoolbook multiplies. |
 | `LEAF_BLOCK_NS` | 74.3047 | Per-block overhead at leaf level. |
-| `FFT_OVERHEAD_NS` | 0.0000 | Per-call FFT overhead — baked into `calib_times_ns[]` (full pipeline), not double-counted. |
+| `FFT_OVERHEAD_NS` | 0.0000 | Per-call FFT overhead - baked into `calib_times_ns[]` (full pipeline), not double-counted. |
 
 > FFT calibration table (`calib_sizes[]`/`calib_times_ns[]`) and FFTW wisdom
 > in `devices/m3_pro/fft_config.h` are from an FFTW PATIENT calibration
