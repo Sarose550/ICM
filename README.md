@@ -488,6 +488,8 @@ Three engines with cost-based automatic dispatch:
 
 ![1-second contour, NVIDIA B200](results/gpu_contour.png)
 
+![Runtime vs n at fixed k, NVIDIA B200](results/runtime_vs_n_gpu.png)
+
 **GPU scaling.** The B200 pushes well past the CPU ceiling: where the CPU
 engines handle up to ~17,000 players in one second (single-threaded), the B200
 computes 1,572,864 players (k=n) in 1,148 ms - roughly 1.5 million players in
