@@ -45,7 +45,7 @@ icm_equity(n, S, Q, payout, k, equity);
 icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
 ```
 
-All correctness tests pass at < 5e-12 relative error.
+All correctness tests pass at < 2e-10 relative error.
 
 **Subset equity.** `icm_equity_subset()` computes equities for only a chosen
 subset of players (`targets`) instead of all `n`. It prunes the hybrid
@@ -184,7 +184,7 @@ averaging, this repo evaluates the exact 1-D integral over $v$ via
 quadrature (after a change of variables $v = \Phi(y)$ using the standard
 normal CDF to make the integrand decay rapidly). With $Q = 256$
 Gauss-Legendre nodes, this yields deterministic double-precision accuracy
-(relative error $< 5 \times 10^{-12}$; see Accuracy section below).
+(relative error $< 2 \times 10^{-10}$; see Accuracy section below).
 
 The remaining computational challenge is evaluating, for *every* player $i$
 simultaneously, the coefficients of $Q_i(x; v)$ - the product of everyone
