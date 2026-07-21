@@ -141,24 +141,25 @@ calibrate:
 
 # ── Regenerate results/ data for tools/plot_contour.py ──────────
 # Requires devices/$(DEVICE)/ to already be calibrated (see "Calibrating
-# for a New Device" in README.md). Writes dated files directly into
-# results/ -- plot_contour.py picks up the most recent match automatically,
-# no renaming or copying needed. DEVICE=zen4 must be run on Zen4 hardware;
-# DEVICE=m3_pro on Apple Silicon.
-DATE := $(shell date +%Y-%m-%d)
+# for a New Device" in README.md). Writes stable (undated) files directly
+# into results/, overwriting any previous run -- plot_contour.py picks up
+# these files by name (via find_latest's mtime tiebreak), no renaming or
+# copying needed. DEVICE=zen4 must be run on Zen4 hardware; DEVICE=m3_pro
+# on Apple Silicon. Git history is the record of prior runs; file names are
+# not used for versioning.
 # plot_contour.py's DEVICE_CONFIGS use "m3pro" (no underscore) in filenames
 # even though the build device is "m3_pro" -- match that convention here.
 RESULTS_TAG := $(subst m3_pro,m3pro,$(DEVICE))
 results-refresh: all parallel contour_1s contour_1s_par
 	mkdir -p results
-	./$(OUT) > results/bench_grid_$(RESULTS_TAG)_serial_$(DATE).txt
+	./$(OUT) > results/bench_grid_$(RESULTS_TAG)_serial.txt
 	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc)} \
-	    ./$(OUT) > results/bench_grid_$(RESULTS_TAG)_parallel_$(DATE).txt
-	./contour_1s --contour > results/contour_$(RESULTS_TAG)_serial_q256_$(DATE).csv
+	    ./$(OUT) > results/bench_grid_$(RESULTS_TAG)_parallel.txt
+	./contour_1s --contour > results/contour_$(RESULTS_TAG)_serial_q256.csv
 	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc)} \
-	    ./contour_1s_par --contour > results/contour_$(RESULTS_TAG)_parallel_q256_$(DATE).csv
+	    ./contour_1s_par --contour > results/contour_$(RESULTS_TAG)_parallel_q256.csv
 	python3 tools/plot_contour.py --device $(DEVICE)
-	@echo "Refreshed results/ for DEVICE=$(DEVICE), dated $(DATE)."
+	@echo "Refreshed results/ for DEVICE=$(DEVICE)."
 
 .PHONY: results-refresh
 
