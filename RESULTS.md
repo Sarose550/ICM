@@ -229,8 +229,8 @@ to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 
 ### Zen 4 specific
 
-- FFTW+MKL dual dispatch via `dlopen` - per-size best-of-both (181/749 sizes use MKL)
-- BQ=2 batched linear with interleaved layout (AVX-512 native width)
+- FFTW+MKL dual dispatch via `dlopen` - per-size best-of-both (112/749 sizes use MKL)
+- BQ=8 batched linear with interleaved layout (native AVX-512 width)
 - L2-aware checkpointing with 1MB per-core L2
 - B=32 (vs M3 Pro B=16) - cost model adapts to Zen 4's wider schoolbook-FFT crossover
 - `MKL_THREADING_LAYER=SEQUENTIAL` set automatically at init (avoids OpenMP dependency)
@@ -294,4 +294,49 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 > Calibration table, FFTW wisdom, and MKL dispatch (`calib_lib[]`) in
 > `devices/zen4/fft_config.h` are from the same AMD Ryzen 9 7950X SKU and
 > reflect real Zen4 microarchitecture measurements.
+
+---
+
+## NVIDIA B200 GPU (sm_100, cuFFTDx fused kernels, CUDA graph capture)
+
+> The linear engine is CPU-only (sequential player-by-player structure can't
+> saturate GPU parallelism). Only the tree-based engines map to the GPU; the
+> planner assigns each subproduct-tree level to one of three kernel tiers
+> (schoolbook, cuFFTDx fused, batched cuFFT) based on polynomial degree.
+
+### Performance (ms, Q=256, FP64): systematic (n, k) grid
+
+| n | k=64 | k=1024 | k=n/2 | k=n |
+|---|------|--------|-------|-----|
+| 4,096 | 0.37 | 0.75 | 0.82 | 0.86 |
+| 16,384 | 1.19 | 2.86 | 4.07 | 4.37 |
+| 65,536 | 4.40 | 10.83 | 19.85 | 20.64 |
+| 262,144 | 17.14 | 42.21 | 97.60 | 101.3 |
+| 1,048,576 | 68.09 | 167.34 | 683.06 | 687.67 |
+| 4,194,304 | 273.28 | 873.28 | 2475.64 | 2500.45 |
+
+Sampled from the 211-point calibration heatmap (`results/gpu_heatmap_b200.csv`).
+
+### Frontier probes (dedicated max-n / max-field search, `tools/push_limit_gpu.cu`)
+
+These are not part of the systematic grid above -- they're the specific `n`
+values a binary search landed on to pin down the 1-second and 626ms
+boundaries.
+
+| n | k | Time (ms) |
+|---|---|-----------|
+| 1,441,792 | n | 866 |
+| 1,572,864 | n | 1,148 |
+| 6,291,456 | 100 | 626.3 |
+| 8,388,608 | 100 | 1,235 |
+| 16,777,216 | 10 | 2,592 |
+
+### 1-second threshold: n ≈ 1,441,792 (k=n), n ≈ 6,291,456 (k=100)
+
+### Dispatch: three-tier kernel planner (schoolbook / cuFFTDx fused / batched cuFFT), cost-based per tree level
+
+GPU cost-model constants (`C_wrap`, `C_school`, `R`, `C_gap`) are fit
+separately from the CPU model via `tools/fit_gpu_cost_model.py` against
+empirical kernel benchmarks in `devices/b200/gpu_fft_config.h` -- see
+"GPU Cost Model (B200)" in `OPTIMIZATION_GUIDE.md` for the full pipeline.
 
