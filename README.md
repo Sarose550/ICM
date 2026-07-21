@@ -94,8 +94,8 @@ calls at the same `n`/`k`) and calibration/diagnostics helpers.
 The algorithm reformulates ICM equity as a one-dimensional integral over
 generating-function coefficients, evaluated by Gaussian quadrature
 ($Q = 256$ nodes, relative error $< 5 \times 10^{-12}$). The central
-challenge---computing leave-one-out polynomial products for all $n$ players
-simultaneously---is solved by an FFT-accelerated binary subproduct tree
+challenge - computing leave-one-out polynomial products for all $n$ players
+simultaneously - is solved by an FFT-accelerated binary subproduct tree
 whose propagation phase is the adjoint of its build phase, reducing cost
 from $O(nk)$ to $O(n \log^2 k)$ per quadrature point.
 
