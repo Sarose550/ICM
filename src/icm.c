@@ -2593,29 +2593,27 @@ void icm_init(const char *wisdom_path) {
 #endif
 }
 
-double icm_equity(int n, const double *S, int Q,
-                  const double *payout, int k,
-                  double *equity) {
+void icm_equity(int n, const double *S, int Q,
+                const double *payout, int k,
+                double *equity) {
     int B = select_engine(n, k);
     if (B > 0) {
         HybridCtx *hc = hybrid_ctx_create(n, S, k, B);
-        double t = run_engine_ctx(n, S, Q, payout, k, equity,
-                                  engine_hybrid_ctx, hc);
+        run_engine_ctx(n, S, Q, payout, k, equity,
+                       engine_hybrid_ctx, hc);
         hybrid_ctx_destroy(hc);
-        return t;
     } else {
         LinearCtx *lc = linear_ctx_create(n, k);
-        double t = run_linear_batched(n, S, Q, payout, k, equity, lc);
+        run_linear_batched(n, S, Q, payout, k, equity, lc);
         linear_ctx_destroy(lc);
-        return t;
     }
 }
 
-double icm_equity_subset(int n, const double *S, int Q,
-                         const double *payout, int k,
-                         double *equity,
-                         const int *targets, int n_targets) {
-    return compute_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
+void icm_equity_subset(int n, const double *S, int Q,
+                       const double *payout, int k,
+                       double *equity,
+                       const int *targets, int n_targets) {
+    compute_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
 }
 
 void *icm_tree_ctx_create(int n, int k) { return tree_ctx_create(n, k); }

@@ -40,13 +40,13 @@ icm_init("fftw_wisdom.dat");
 //   Q          -- quadrature points (typically 256)
 //   payout[k]  -- payout coefficients
 //   equity[n]  -- output (caller-allocated)
-double ns = icm_equity(n, S, Q, payout, k, equity);
+icm_equity(n, S, Q, payout, k, equity);
 
 // Compute equities for a subset of players
-double ns = icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
+icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
 ```
 
-Returns wall-clock time in nanoseconds. All correctness tests pass at < 5e-12 relative error.
+All correctness tests pass at < 5e-12 relative error.
 
 **Python bindings.** `python/` provides a ctypes wrapper (`icm.equity(stacks, payouts)`)
 that calls straight into the same compiled shared library the C API uses.

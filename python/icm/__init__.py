@@ -91,8 +91,8 @@ def _load_library():
     _lib.icm_init.argtypes = [ctypes.c_char_p]
     _lib.icm_init.restype = None
 
-    # double icm_equity(int n, const double *S, int Q,
-    #                   const double *payout, int k, double *equity)
+    # void icm_equity(int n, const double *S, int Q,
+    #                 const double *payout, int k, double *equity)
     _lib.icm_equity.argtypes = [
         ctypes.c_int,                              # n
         ctypes.POINTER(ctypes.c_double),           # S
@@ -101,11 +101,11 @@ def _load_library():
         ctypes.c_int,                              # k
         ctypes.POINTER(ctypes.c_double),           # equity
     ]
-    _lib.icm_equity.restype = ctypes.c_double
+    _lib.icm_equity.restype = None
 
-    # double icm_equity_subset(int n, const double *S, int Q,
-    #                          const double *payout, int k, double *equity,
-    #                          const int *targets, int n_targets)
+    # void icm_equity_subset(int n, const double *S, int Q,
+    #                        const double *payout, int k, double *equity,
+    #                        const int *targets, int n_targets)
     _lib.icm_equity_subset.argtypes = [
         ctypes.c_int,                              # n
         ctypes.POINTER(ctypes.c_double),           # S
@@ -116,7 +116,7 @@ def _load_library():
         ctypes.POINTER(ctypes.c_int),              # targets
         ctypes.c_int,                              # n_targets
     ]
-    _lib.icm_equity_subset.restype = ctypes.c_double
+    _lib.icm_equity_subset.restype = None
 
 
 def _ensure_loaded():
@@ -223,7 +223,7 @@ def equity(stacks, payouts, Q=256):
 
     equity_out = np.zeros(n, dtype=np.float64)
 
-    elapsed_ns = _lib.icm_equity(
+    _lib.icm_equity(
         ctypes.c_int(n),
         _ptr(stacks_arr),
         ctypes.c_int(Q),
@@ -278,7 +278,7 @@ def equity_subset(stacks, payouts, targets, Q=256):
 
     equity_out = np.zeros(n, dtype=np.float64)
 
-    elapsed_ns = _lib.icm_equity_subset(
+    _lib.icm_equity_subset(
         ctypes.c_int(n),
         _ptr(stacks_arr),
         ctypes.c_int(Q),

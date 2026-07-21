@@ -405,7 +405,9 @@ int main(int argc, char **argv) {
 
         double best = 1e18;
         for (int r = 0; r < reps; r++) {
-            double t = icm_equity(n, S, Q, payout, k, equity);
+            double t0 = now_ns();
+            icm_equity(n, S, Q, payout, k, equity);
+            double t = now_ns() - t0;
             double ms = t / 1e6;
             if (ms < best) best = ms;
             printf("  run %d: %.1f ms\n", r + 1, ms);
@@ -574,7 +576,9 @@ int main(int argc, char **argv) {
             icm_equity(n, S, Q, payout, k, equity);
             double full_samples[BENCH_REPS];
             for (int r = 0; r < BENCH_REPS; r++) {
-                full_samples[r] = icm_equity(n, S, Q, payout, k, equity) / 1e6;
+                double t0 = now_ns();
+                icm_equity(n, S, Q, payout, k, equity);
+                full_samples[r] = (now_ns() - t0) / 1e6;
             }
             MEDIAN5(full_samples);
             double full_ms = full_samples[BENCH_REPS / 2];
@@ -594,8 +598,10 @@ int main(int argc, char **argv) {
                 icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
                 double sub_samples[BENCH_REPS];
                 for (int r = 0; r < BENCH_REPS; r++) {
-                    sub_samples[r] = icm_equity_subset(n, S, Q, payout, k, equity,
-                                                       targets, n_targets) / 1e6;
+                    double t0 = now_ns();
+                    icm_equity_subset(n, S, Q, payout, k, equity,
+                                      targets, n_targets);
+                    sub_samples[r] = (now_ns() - t0) / 1e6;
                 }
                 MEDIAN5(sub_samples);
                 double sub_ms = sub_samples[BENCH_REPS / 2];

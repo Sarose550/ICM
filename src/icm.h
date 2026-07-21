@@ -22,20 +22,18 @@ extern "C" {
  *   Q:          number of quadrature points (typically 256)
  *   payout[k]:  payout functional coefficients
  *   k:          number of payout terms (1 ≤ k ≤ n)
- *   equity[n]:  output array (caller-allocated)
- * Returns elapsed wall time in nanoseconds. */
-double icm_equity(int n, const double *S, int Q,
-                  const double *payout, int k,
-                  double *equity);
+ *   equity[n]:  output array (caller-allocated) */
+void icm_equity(int n, const double *S, int Q,
+                const double *payout, int k,
+                double *equity);
 
 /* Compute equities for a subset of players.
  *   targets[n_targets]: indices of players to compute (0-based)
- *   Only equity[targets[i]] values are set in the output.
- * Returns elapsed wall time in nanoseconds. */
-double icm_equity_subset(int n, const double *S, int Q,
-                         const double *payout, int k,
-                         double *equity,
-                         const int *targets, int n_targets);
+ *   Only equity[targets[i]] values are set in the output. */
+void icm_equity_subset(int n, const double *S, int Q,
+                       const double *payout, int k,
+                       double *equity,
+                       const int *targets, int n_targets);
 
 /* Initialize the library (call once before any computation).
  * Loads FFTW wisdom and builds smooth number tables.
