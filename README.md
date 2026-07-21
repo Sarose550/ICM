@@ -345,8 +345,7 @@ S_i / (S_i + S_j + S_k)$.
 Now write player $i$'s actual finishing position as $M$ other players
 finishing ahead of them ($M = 0$ is 1st place) - $M$ is a random variable,
 determined by the realized elimination order. For any $t$, the number of
-ways to choose $t$ of the players who finish *behind* $i$ is $C(n-1-M, t)$
-- an exact combinatorial identity on the realized outcome, no probability
+ways to choose $t$ of the players who finish *behind* $i$ is $C(n-1-M, t)$ - an exact combinatorial identity on the realized outcome, no probability
 involved yet: it's just choosing $t$ players from the $n-1-M$ who rank
 below $i$. Equivalently, it's a sum of indicators over every $t$-subset $T$
 of the other $n-1$ players, counting the ones $i$ beats entirely:
