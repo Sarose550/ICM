@@ -108,14 +108,12 @@ their chip stack $S_j$ (an "elimination clock"), and eliminate players in
 order of increasing $T_j$. The memoryless property of the exponential
 distribution guarantees this recovers exactly the same stack-proportional
 elimination rule at every step. Concretely, for any subset of players, the
-probability that a particular player $i$ finishes best within that subset
-- i.e., has the smallest $T$ - is $S_i$ divided by the subset's total stack.
+probability that a particular player $i$ finishes best within that subset, i.e. has the smallest $T$, is $S_i$ divided by the subset's total stack.
 (Proof: $T_i$ and the minimum of everyone else's $T$'s are independent; the
 minimum of independent exponentials is itself exponential with rate equal
 to the sum of their rates; and for two independent exponentials with rates
 $a, b$, $P(T_a < T_b) = a / (a + b)$.) This gives a simple, unbiased way to
-*sample* a full elimination order in one shot - draw $n$ exponentials, sort
-- instead of simulating step-by-step. Tysen Streib introduced this
+*sample* a full elimination order in one shot - draw $n$ exponentials and sort instead of simulating step-by-step. Tysen Streib introduced this
 technique in a TwoPlusTwo forum thread, ["New Algorithm: Calculate ICM
 Large
 Tournaments"](https://forumserver.twoplustwo.com/15/poker-theory-amp-gto/new-algorithm-calculate-icm-large-tournaments-1098489/).
