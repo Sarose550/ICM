@@ -50,8 +50,7 @@ Returns wall-clock time in nanoseconds. All correctness tests pass at < 5e-12 re
 **Subset equity.** `icm_equity_subset()` computes equities for only a chosen
 subset of players (`targets`) instead of all `n`. It prunes the hybrid
 engine's propagate pass with a per-level hot/cold bitmask marking which
-tree branches can contain a target player, skipping cold branches entirely
-- the sort order used by the rest of the engine is untouched, so this is
+tree branches can contain a target player, skipping cold branches entirely - the sort order used by the rest of the engine is untouched, so this is
 purely a pruning optimization, not a different algorithm. Worthwhile when
 you only need a handful of players' equities out of a large field; the
 speedup is workload-dependent (larger `n`, smaller target fraction helps
