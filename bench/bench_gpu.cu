@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -8,6 +9,11 @@
 
 #include "icm.h"
 #include "icm_gpu.h"
+
+static inline double now_ns() {
+    using namespace std::chrono;
+    return duration<double, std::nano>(steady_clock::now().time_since_epoch()).count();
+}
 
 static inline double rel_err(double a, double b) {
     double d = fabs(a - b);
@@ -118,7 +124,9 @@ static int run_verify(int extended) {
                 make_payout(n, k, payout);
 
                 std::vector<double> cpu_eq(n, 0.0), gpu_eq(n, 0.0);
-                double t_cpu_ns = icm_equity(n, S.data(), Q, payout.data(), k, cpu_eq.data());
+                double t_cpu0 = now_ns();
+                icm_equity(n, S.data(), Q, payout.data(), k, cpu_eq.data());
+                double t_cpu_ns = now_ns() - t_cpu0;
 
                 IcmGpuOptions opts{};
                 opts.device_id = 0;
