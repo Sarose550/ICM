@@ -41,10 +41,10 @@ static double run_case(int n, int k, int Q, int force_B, int *out_B) {
     opts.force_uncached_cufft_levels = -1;
 
     IcmGpuRunStats stats{};
-    double t_ns = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &stats);
-    if (t_ns < 0) return -1.0;
+    int status = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &stats);
+    if (status != 0) return -1.0;
     if (out_B) *out_B = stats.B;
-    return t_ns / 1e6;
+    return stats.total_ns / 1e6;
 }
 
 int main(int argc, char **argv) {

@@ -3,7 +3,7 @@
 
 # ICM -- Independent Chip Model Equity Computation
 
-High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~17,216 players / payouts in 1 second*.
+High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~17,216 players / payouts in 1 second*. A CUDA backend extends this to over 1.5 million players in about a second on an NVIDIA B200. Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
 
 ## What is ICM?
 
@@ -59,7 +59,31 @@ most).
 **Python bindings.** `python/` provides a ctypes wrapper (`icm.equity(stacks, payouts)`)
 that calls straight into the same compiled shared library the C API uses.
 See [python/README.md](python/README.md) for setup (`make libicm`, then
-`import icm`).
+`import icm`). These bindings cover the CPU library only -- no Python
+wrapper exists for the CUDA API below.
+
+## CUDA API
+
+```c
+#include "icm_gpu.h"
+
+// Initialize (call once -- selects the CUDA device)
+icm_gpu_init(/* device_id */ 0);
+
+// Compute equities for all n players; opts=NULL uses defaults.
+// Returns 0 on success, -1 on failure (check icm_gpu_last_error()).
+// Timing is opt-in: pass a non-NULL stats to read stats.total_ns
+// afterward, or NULL to skip it.
+IcmGpuRunStats stats;
+int status = icm_gpu_equity(n, S, Q, payout, k, equity, /* opts */ NULL, &stats);
+
+icm_gpu_shutdown();
+```
+
+All correctness tests pass at < 1e-8 relative error against the CPU reference
+(`bench_gpu verify`). See [src/icm_gpu.h](src/icm_gpu.h) for the full API,
+including the reusable `IcmGpuPlan` (amortizes planning cost across repeated
+calls at the same `n`/`k`) and calibration/diagnostics helpers.
 
 ## How It Works
 

@@ -4151,22 +4151,22 @@ int icm_gpu_plan_summary(const IcmGpuPlan *plan_opaque, IcmGpuPlanSummary *summa
     return 1;
 }
 
-double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
-                                const double *payout, double *equity,
-                                IcmGpuRunStats *stats) {
+int icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
+                            const double *payout, double *equity,
+                            IcmGpuRunStats *stats) {
     auto *plan = reinterpret_cast<GpuPlan *>(plan_opaque);
     if (!plan || !payout || !equity || Q <= 0) {
         set_last_errorf("icm_gpu_equity_with_plan invalid arguments");
-        return -1.0;
+        return -1;
     }
-    if (!CUDA_OK(cudaSetDevice(g_cuda_device))) return -1.0;
+    if (!CUDA_OK(cudaSetDevice(g_cuda_device))) return -1;
     if (!CUDA_OK(cudaMemcpyAsync(plan->d_payout, payout, (size_t)plan->k * sizeof(double),
-                                 cudaMemcpyHostToDevice, plan->stream_compute))) return -1.0;
+                                 cudaMemcpyHostToDevice, plan->stream_compute))) return -1;
 
     int threads = 256;
     int blocks = (plan->n + threads - 1) / threads;
     k_zero<<<blocks, threads, 0, plan->stream_compute>>>(plan->d_equity, (size_t)plan->n);
-    if (!CUDA_OK(cudaGetLastError())) return -1.0;
+    if (!CUDA_OK(cudaGetLastError())) return -1;
 
     double Smax = 0.0;
     for (int i = 0; i < plan->n; ++i) if (plan->S_sorted[i] > Smax) Smax = plan->S_sorted[i];
@@ -4196,7 +4196,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
             if (!run_hybrid_single_q(plan, curr, pts[q].logv, pts[q].w, false, fast,
                                      &block_ns, &tree_build_ns, &tree_prop_cached_ns,
                                      &tree_prop_recomp_ns, &leaf_ns, &accum_ns)) {
-                return -1.0;
+                return -1;
             }
         }
     } else if (qb > 1) {
@@ -4215,7 +4215,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
             if (batch_sz == qb) {
                 /* Full batch */
                 if (!run_hybrid_batched_q(plan, &active_pts[q], qb)) {
-                    return -1.0;
+                    return -1;
                 }
             } else {
                 /* Remainder: pad with zero-weight Q-points to make a full batch.
@@ -4233,7 +4233,7 @@ double icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                     padded[r].w = 0.0;
                 }
                 if (!run_hybrid_batched_q(plan, padded, qb)) {
-                    return -1.0;
+                    return -1;
                 }
             }
         }
@@ -4377,7 +4377,7 @@ pipeline_cleanup:
         /* Restore original pointers so destroy_plan frees the right buffers */
         plan->d_poly_levels[0] = orig_poly_levels_0;
         if (plan->B > 1) plan->d_block_prods = orig_block_prods;
-        if (!pipeline_ok) return -1.0;
+        if (!pipeline_ok) return -1;
     } else {
         for (int q = 0; q < Q; ++q) {
             if (pts[q].w == 0.0) continue;
@@ -4385,15 +4385,15 @@ pipeline_cleanup:
             if (!run_hybrid_single_q(plan, curr, pts[q].logv, pts[q].w, false, fast,
                                      &block_ns, &tree_build_ns, &tree_prop_cached_ns,
                                      &tree_prop_recomp_ns, &leaf_ns, &accum_ns)) {
-                return -1.0;
+                return -1;
             }
         }
     }
-    if (!CUDA_OK(cudaStreamSynchronize(plan->stream_compute))) return -1.0;
+    if (!CUDA_OK(cudaStreamSynchronize(plan->stream_compute))) return -1;
     double total_ns = now_ns_host() - t0;
 
     if (!CUDA_OK(cudaMemcpy(equity, plan->d_equity, (size_t)plan->n * sizeof(double),
-                            cudaMemcpyDeviceToHost))) return -1.0;
+                            cudaMemcpyDeviceToHost))) return -1;
 
     if (stats) {
         memset(stats, 0, sizeof(*stats));
@@ -4411,15 +4411,15 @@ pipeline_cleanup:
         stats->uncached_fused_levels = plan->uncached_fused_levels;
         stats->uncached_cufft_levels = plan->uncached_cufft_levels;
     }
-    return total_ns;
+    return 0;
 }
 
-double icm_gpu_equity(int n, const double *S, int Q,
-                      const double *payout, int k,
-                      double *equity, const IcmGpuOptions *opts,
-                      IcmGpuRunStats *stats) {
+int icm_gpu_equity(int n, const double *S, int Q,
+                  const double *payout, int k,
+                  double *equity, const IcmGpuOptions *opts,
+                  IcmGpuRunStats *stats) {
     if (g_cuda_device < 0) {
-        if (!icm_gpu_init(0)) return -1.0;
+        if (!icm_gpu_init(0)) return -1;
     }
 
     int sk_max = single_kernel_max_n(k);
@@ -4500,8 +4500,8 @@ double icm_gpu_equity(int n, const double *S, int Q,
         arena_sz += 256; arena_sz += L * sizeof(int);            /* g_needed */
         arena_sz += 256; arena_sz += L * sizeof(size_t);         /* plev_off */
         char *sk_arena = nullptr;
-        if (!CUDA_OK(cudaMalloc(&sk_arena, arena_sz))) return -1.0;
-        if (!CUDA_OK(cudaMemset(sk_arena, 0, arena_sz))) { cudaFree(sk_arena); return -1.0; }
+        if (!CUDA_OK(cudaMalloc(&sk_arena, arena_sz))) return -1;
+        if (!CUDA_OK(cudaMemset(sk_arena, 0, arena_sz))) { cudaFree(sk_arena); return -1; }
 
         size_t sk_off = 0;
         #define SKP(ptr, type, sz) do { sk_off = (sk_off + 255) & ~(size_t)255; (ptr) = (type)(sk_arena + sk_off); sk_off += (sz); } while(0)
@@ -4553,31 +4553,31 @@ double icm_gpu_equity(int n, const double *S, int Q,
             stats->total_ns = total_ns;
             stats->engine = 2; /* single-kernel engine */
         }
-        return total_ns;
+        return 0;
     }
 
 standard_gpu_path:
     IcmGpuPlan *plan = icm_gpu_plan_create(n, S, k, opts);
-    if (!plan) return -1.0;
-    double t = icm_gpu_equity_with_plan(plan, Q, payout, equity, stats);
+    if (!plan) return -1;
+    int t = icm_gpu_equity_with_plan(plan, Q, payout, equity, stats);
     icm_gpu_plan_destroy(plan);
     return t;
 }
 
-double icm_gpu_equity_subset(int n, const double *S, int Q,
-                             const double *payout, int k,
-                             double *equity,
-                             const int *targets, int n_targets,
-                             const IcmGpuOptions *opts,
-                             IcmGpuRunStats *stats) {
-    if (n <= 0 || k <= 0 || n_targets <= 0 || !targets) return -1.0;
+int icm_gpu_equity_subset(int n, const double *S, int Q,
+                         const double *payout, int k,
+                         double *equity,
+                         const int *targets, int n_targets,
+                         const IcmGpuOptions *opts,
+                         IcmGpuRunStats *stats) {
+    if (n <= 0 || k <= 0 || n_targets <= 0 || !targets) return -1;
     if (g_cuda_device < 0) {
-        if (!icm_gpu_init(0)) return -1.0;
+        if (!icm_gpu_init(0)) return -1;
     }
 
     /* Create plan */
     IcmGpuPlan *plan_opaque = icm_gpu_plan_create(n, S, k, opts);
-    if (!plan_opaque) return -1.0;
+    if (!plan_opaque) return -1;
     GpuPlan *plan = reinterpret_cast<GpuPlan *>(plan_opaque);
 
     /* Build active mask in sorted order: map original-index targets to sorted indices */
@@ -4595,18 +4595,18 @@ double icm_gpu_equity_subset(int n, const double *S, int Q,
     uint8_t *d_mask = nullptr;
     if (!CUDA_OK(cudaMalloc(&d_mask, (size_t)n * sizeof(uint8_t)))) {
         icm_gpu_plan_destroy(plan_opaque);
-        return -1.0;
+        return -1;
     }
     if (!CUDA_OK(cudaMemcpy(d_mask, h_mask.data(), (size_t)n * sizeof(uint8_t),
                             cudaMemcpyHostToDevice))) {
         cudaFree(d_mask);
         icm_gpu_plan_destroy(plan_opaque);
-        return -1.0;
+        return -1;
     }
     plan->d_active_mask = d_mask;
 
     /* Execute with mask */
-    double t = icm_gpu_equity_with_plan(plan_opaque, Q, payout, equity, stats);
+    int t = icm_gpu_equity_with_plan(plan_opaque, Q, payout, equity, stats);
 
     /* Clean up */
     plan->d_active_mask = nullptr;  /* prevent double-free in plan_destroy */
@@ -4614,7 +4614,7 @@ double icm_gpu_equity_subset(int n, const double *S, int Q,
     icm_gpu_plan_destroy(plan_opaque);
 
     /* Zero non-target entries in output */
-    if (t >= 0) {
+    if (t == 0) {
         std::vector<bool> is_target(n, false);
         for (int i = 0; i < n_targets; ++i) {
             if (targets[i] >= 0 && targets[i] < n) is_target[targets[i]] = true;

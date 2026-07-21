@@ -125,13 +125,13 @@ int main(int argc, char **argv) {
                     opts.force_uncached_cufft_levels = T;
 
                     IcmGpuRunStats warm{};
-                    double warm_ns = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &warm);
-                    if (warm_ns < 0) {
+                    int warm_status = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &warm);
+                    if (warm_status != 0) {
                         printf("  B=%d M=%d T=%d -> ERR(%s)\n", B, M, T, icm_gpu_last_error());
                         continue;
                     }
 
-                    double warm_ms = warm_ns / 1e6;
+                    double warm_ms = warm.total_ns / 1e6;
                     int reps = 3;
                     if (warm_ms < 10.0) reps = 10;
                     else if (warm_ms > 100.0) reps = 1;
@@ -142,19 +142,19 @@ int main(int argc, char **argv) {
                     samples.reserve(max_reps);
                     IcmGpuRunStats stats{};
                     for (int r = 0; r < reps; ++r) {
-                        double t_ns = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &stats);
-                        if (t_ns < 0) {
+                        int status = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &stats);
+                        if (status != 0) {
                             samples.clear();
                             break;
                         }
-                        samples.push_back(t_ns / 1e6);
+                        samples.push_back(stats.total_ns / 1e6);
                     }
                     while (!samples.empty() && (int)samples.size() < max_reps) {
                         double cv = cv_ms(samples);
                         if (cv <= 0.03) break;
-                        double t_ns = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &stats);
-                        if (t_ns < 0) break;
-                        samples.push_back(t_ns / 1e6);
+                        int status = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &stats);
+                        if (status != 0) break;
+                        samples.push_back(stats.total_ns / 1e6);
                     }
                     if (samples.empty()) continue;
 
