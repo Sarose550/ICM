@@ -6,6 +6,8 @@
 High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~17,216 players / payouts in 1 second*. A CUDA backend extends this to over 1.5 million players in about a second on an NVIDIA B200. Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
 
 > 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf) - full derivation, proofs, and performance evaluation.
+>
+> **Status:** arXiv submission pending.
 
 ## What is ICM?
 
@@ -135,28 +137,31 @@ is in the paper; raw sweep data is in `results/accuracy_convergence.csv`.
 
 ## Performance
 
-Three engines with cost-based automatic dispatch:
+**CPU, single-threaded (ms, Q=256):**
 
-| Engine | Strategy | Best for |
-|--------|----------|----------|
-| **Linear** (batched) | $O(nk)$, BQ=8 quad-point batching, interleaved layout, L2-aware checkpointing | Small k |
-| **Hybrid** (B=auto) | Block build + FFT tree + bidirectional divide, calibrated block size | Large k |
-| **Tree** (pure FFT) | FFT-accelerated subproduct tree | Parallel workloads |
+| n | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n | | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n |
+|---|------|------|-------|-------|-------|-----|-|------|------|-------|-------|-------|-----|
+| | **M3 Pro** |||||| | **Zen 4 7950X** |||||
+| 1024  | 1.71 | 7.16 | 13.2 | 24.4 | 28.9 | 34.8 | | 1.28 | 3.95 | 7.61 | 26.5 | 29.1 | 34.0 |
+| 2048  | 4.11 | 14.3 | 26.3 | 60.9 | 75.2 | 99.8 | | 3.18 | 6.83 | 13.9 | 63.0 | 73.7 | 75.1 |
+| 4096  | 8.18 | 28.5 | 52.6 | 159  | 214  | 232  | | 7.32 | 14.1 | 28.3 | 153  | 161  | 168  |
+| 8192  | 16.2 | 56.6 | 104  | 438  | 483  | 516  | | 14.5 | 28.6 | 53.4 | 343  | 376  | 382  |
+| 16384 | 32.5 | 113  | 208  | 1020 | 1090 | 1480 | | 29.6 | 62.7 | 112  | 805  | 866  | 835  |
+| 32768 | 64.9 | 226  | 418  | 2330 | 3090 | 4680 | | 63.4 | 116  | 217  | 1880 | 1810 | 1840 |
+| 65536 | 130  | 453  | 836  | 6580 | 9710 | 10000| | 117  | 244  | 419  | 3920 | 4170 | 4490 |
 
-`select_engine(n, k)` chooses the optimal engine for each (n, k) pair based on calibrated FFT costs and hardware parameters. No manual tuning required.
+**GPU, NVIDIA B200 (ms, Q=256):**
 
-**Headline numbers.** Single-threaded, the library handles up to ~17,216
-players (k=n) in one second on Zen 4 (see footnote). The GPU path pushes well
-past that ceiling: the B200 computes 1,572,864 players (k=n) in 1,148 ms -
-roughly 1.5 million players in about a second, a ~90x increase in problem
-size at comparable latency.
+| n | k=64 | k=1024 | k=n/2 | k=n |
+|---|------|--------|-------|-----|
+| 4,096 | 0.37 | 0.75 | 0.82 | 0.86 |
+| 16,384 | 1.19 | 2.86 | 4.07 | 4.37 |
+| 65,536 | 4.40 | 10.83 | 19.85 | 20.64 |
+| 262,144 | 17.14 | 42.21 | 97.60 | 101.3 |
+| 1,048,576 | 68.09 | 167.34 | 683.06 | 687.67 |
+| 4,194,304 | 273.28 | 873.28 | 2475.64 | 2500.45 |
 
-![Runtime vs n at fixed k, NVIDIA B200](results/runtime_vs_n_gpu.png)
-
-Full benchmark grids (all n/k combinations, both CPU platforms, serial and
-parallel), 1-second contour plots, engine-dispatch visualizations, and the
-GPU heatmap: see [RESULTS.md](RESULTS.md) for the raw tables, or the paper
-for the full evaluation and figures.
+See the paper for the full grids, contour plots, and dispatch analysis.
 
 ## Building
 
@@ -205,18 +210,9 @@ make bench_gpu_fused CUDA_ARCH=sm_100    # B200/B100
 make bench_gpu_fused CUDA_ARCH=sm_90     # H100/H200
 ```
 
-Requires CUDA toolkit and cuFFTDx.
-
-**B200 performance** (Q=256, fused cuFFTDx kernels, n=k):
-
-| n | Time |
-|---|------|
-| 65,536 | 20.64 ms |
-| 262,144 | 101.30 ms |
-| 1,441,792 | 866 ms |
-| 1,572,864 | 1,148 ms |
-
-See `devices/b200/gpu_fft_config.h` for calibration data.
+Requires CUDA toolkit and cuFFTDx. See the [Performance](#performance) section
+above for B200 timings, and `devices/b200/gpu_fft_config.h` for calibration
+data.
 
 ## Calibrating for a New Device
 
