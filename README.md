@@ -121,11 +121,11 @@ closed forms across four stack distributions (uniform, 100:1 adversarial,
 geometric, and an extreme 1e9:1 case). Gauss-Legendre quadrature (the
 production choice) converges to $\sim 5 \times 10^{-13}$ relative error by
 `Q = 1024` on all of them; tanh-sinh (double-exponential) quadrature converges
-faster on easy distributions but stalls around $10^{-7}$-$10^{-8}$ on the
+faster on easy distributions but stalls around $10^{-7}$ - $10^{-8}$ on the
 1e9:1 case and doesn't improve from `Q = 512` to `Q = 1024`, which is why
 Gauss-Legendre is used in production rather than tanh-sinh. The production
-default `Q = 256` already delivers sub-$2 \times 10^{-12}$ relative error on
-uniform stacks and sub-$1.5 \times 10^{-10}$ at the 1e9:1 bound.
+default `Q = 256` already delivers under $2 \times 10^{-12}$ relative error on
+uniform stacks and under $1.6 \times 10^{-10}$ at the 1e9:1 bound.
 
 Full derivation (the V1/V2 closed forms, the exponential-clock argument they
 rely on, and the complete Gauss-Legendre vs. tanh-sinh convergence tables)
