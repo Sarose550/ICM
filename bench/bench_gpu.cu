@@ -138,9 +138,9 @@ static int run_verify(int extended) {
                 opts.force_uncached_cufft_levels = -1;
                 apply_env_overrides(opts);
                 IcmGpuRunStats stats{};
-                double t_gpu_ns = icm_gpu_equity(n, S.data(), Q, payout.data(), k,
-                                                 gpu_eq.data(), &opts, &stats);
-                if (t_gpu_ns < 0) {
+                int status = icm_gpu_equity(n, S.data(), Q, payout.data(), k,
+                                            gpu_eq.data(), &opts, &stats);
+                if (status != 0) {
                     printf("FAIL n=%d k=%d dist=%d gpu-error=%s\n",
                            n, k, dists[di], icm_gpu_last_error());
                     all_pass = 0;
@@ -168,7 +168,7 @@ static int run_verify(int extended) {
                 }
                 printf("%s n=%-7d k=%-7d dist=%d  err=%.3e  cpu=%.1f ms gpu=%.1f ms  B=%d tiers(cache/recomp)=%.1f/%.1f ms\n",
                        pass ? "PASS" : "FAIL", n, k, dists[di], max_rel,
-                       t_cpu_ns / 1e6, t_gpu_ns / 1e6, stats.B,
+                       t_cpu_ns / 1e6, stats.total_ns / 1e6, stats.B,
                        stats.tree_propagate_cached_ns / 1e6,
                        stats.tree_propagate_recomputed_ns / 1e6);
                 fflush(stdout);
@@ -224,13 +224,13 @@ static int run_single_bench(int argc, char **argv) {
     double best_ms = 1e30;
     for (int r = 0; r < reps; ++r) {
         IcmGpuRunStats stats{};
-        double t_ns = icm_gpu_equity(n, S.data(), Q, payout.data(), k,
-                                     equity.data(), &opts, &stats);
-        if (t_ns < 0) {
+        int status = icm_gpu_equity(n, S.data(), Q, payout.data(), k,
+                                    equity.data(), &opts, &stats);
+        if (status != 0) {
             printf("ERROR: %s\n", icm_gpu_last_error());
             return 1;
         }
-        double ms = t_ns / 1e6;
+        double ms = stats.total_ns / 1e6;
         if (ms < best_ms) best_ms = ms;
         printf("run=%d  total=%.2f ms  B=%d  engine=%d  peak_vram=%.1f MB  "
                "block=%.2f tree_build=%.2f prop_cached=%.2f prop_recomp=%.2f leaf=%.2f\n",
@@ -270,13 +270,13 @@ static int run_quick_grid() {
             opts.force_uncached_cufft_levels = -1;
             apply_env_overrides(opts);
             IcmGpuRunStats stats{};
-            double t_ns = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &stats);
-            if (t_ns < 0) {
+            int status = icm_gpu_equity(n, S.data(), Q, payout.data(), k, eq.data(), &opts, &stats);
+            if (status != 0) {
                 printf("n=%d k=%d ERROR: %s\n", n, k, icm_gpu_last_error());
                 return 1;
             }
             printf("n=%-7d k=%-7d time=%8.2f ms  B=%-4d peak=%8.1f MB\n",
-                   n, k, t_ns / 1e6, stats.B, (double)stats.peak_vram_bytes / (1024.0 * 1024.0));
+                   n, k, stats.total_ns / 1e6, stats.B, (double)stats.peak_vram_bytes / (1024.0 * 1024.0));
         }
     }
     return 0;

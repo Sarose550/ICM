@@ -61,25 +61,35 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
 void icm_gpu_plan_destroy(IcmGpuPlan *plan);
 int icm_gpu_plan_summary(const IcmGpuPlan *plan, IcmGpuPlanSummary *summary);
 
-/* Execution API */
-double icm_gpu_equity_with_plan(IcmGpuPlan *plan, int Q,
-                                const double *payout, double *equity,
-                                IcmGpuRunStats *stats);
+/* Execution API
+ *
+ * All three functions return 0 on success, -1 on failure (OOM, CUDA error,
+ * invalid arguments, etc.).  Check icm_gpu_last_error() for a diagnostic
+ * message on failure.
+ *
+ * Timing is available through the optional IcmGpuRunStats *stats out-
+ * parameter: if non-NULL, stats->total_ns carries the wall-clock time in
+ * nanoseconds.  (Pass NULL to suppress timing — you still get 0/-1 return
+ * status.)
+ */
+int icm_gpu_equity_with_plan(IcmGpuPlan *plan, int Q,
+                             const double *payout, double *equity,
+                             IcmGpuRunStats *stats);
 
-double icm_gpu_equity(int n, const double *S, int Q,
-                      const double *payout, int k,
-                      double *equity, const IcmGpuOptions *opts,
-                      IcmGpuRunStats *stats);
+int icm_gpu_equity(int n, const double *S, int Q,
+                   const double *payout, int k,
+                   double *equity, const IcmGpuOptions *opts,
+                   IcmGpuRunStats *stats);
 
 /* Compute equities for a subset of players.
  * Only equity[targets[i]] values are set in the output.
  * Currently computes all equities internally and extracts the subset. */
-double icm_gpu_equity_subset(int n, const double *S, int Q,
-                             const double *payout, int k,
-                             double *equity,
-                             const int *targets, int n_targets,
-                             const IcmGpuOptions *opts,
-                             IcmGpuRunStats *stats);
+int icm_gpu_equity_subset(int n, const double *S, int Q,
+                          const double *payout, int k,
+                          double *equity,
+                          const int *targets, int n_targets,
+                          const IcmGpuOptions *opts,
+                          IcmGpuRunStats *stats);
 
 /* Calibration + diagnostics helpers */
 int icm_gpu_write_config_header(const char *output_path);

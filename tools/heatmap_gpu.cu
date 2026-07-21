@@ -85,14 +85,14 @@ static double gpu_time_ms(int n, int k, int Q, int fast,
     }
 
     IcmGpuRunStats warm{};
-    double warm_ns = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), &warm);
-    if (warm_ns < 0) {
+    int warm_status = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), &warm);
+    if (warm_status != 0) {
         icm_gpu_plan_destroy(plan);
         cudaDeviceReset();
         icm_gpu_init(0);
         return NAN;
     }
-    double warm_ms = warm_ns / 1e6;
+    double warm_ms = warm.total_ns / 1e6;
 
     /* Bail early if warmup already exceeds timeout */
     if (timeout_ms > 0 && warm_ms > timeout_ms) {
@@ -109,16 +109,16 @@ static double gpu_time_ms(int n, int k, int Q, int fast,
     std::vector<double> samples;
     *stats = {};
     for (int r = 0; r < reps; ++r) {
-        double t = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), stats);
-        if (t < 0) { samples.clear(); break; }
-        samples.push_back(t / 1e6);
+        int status = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), stats);
+        if (status != 0) { samples.clear(); break; }
+        samples.push_back(stats->total_ns / 1e6);
     }
     while (!samples.empty() && (int)samples.size() < max_reps) {
         double cv = cv_ms(samples);
         if (cv <= 0.03) break;
-        double t = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), stats);
-        if (t < 0) break;
-        samples.push_back(t / 1e6);
+        int status = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), stats);
+        if (status != 0) break;
+        samples.push_back(stats->total_ns / 1e6);
     }
 
     icm_gpu_plan_destroy(plan);
@@ -171,8 +171,8 @@ static void run_heatmap(const char *out_csv, int Q, int fast) {
             icm_gpu_plan_summary(plan, &ps);
 
             IcmGpuRunStats warm{};
-            double warm_ns = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), &warm);
-            if (warm_ns < 0) {
+            int warm_status = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), &warm);
+            if (warm_status != 0) {
                 icm_gpu_plan_destroy(plan);
                 fprintf(f, "%d,%d,nan,nan,error,0,0,nan,0,0,0,error\n", n, k);
                 printf("ERR(%s)\n", icm_gpu_last_error());
@@ -182,7 +182,7 @@ static void run_heatmap(const char *out_csv, int Q, int fast) {
             }
 
             int reps = 3;
-            double warm_ms = warm_ns / 1e6;
+            double warm_ms = warm.total_ns / 1e6;
             if (warm_ms < 10.0) reps = 10;
             else if (warm_ms > 100.0) reps = 1;
             if (fast) reps = std::min(reps, 3);
@@ -191,16 +191,16 @@ static void run_heatmap(const char *out_csv, int Q, int fast) {
             std::vector<double> samples;
             IcmGpuRunStats stats{};
             for (int r = 0; r < reps; ++r) {
-                double t = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), &stats);
-                if (t < 0) { samples.clear(); break; }
-                samples.push_back(t / 1e6);
+                int status = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), &stats);
+                if (status != 0) { samples.clear(); break; }
+                samples.push_back(stats.total_ns / 1e6);
             }
             while (!samples.empty() && (int)samples.size() < max_reps) {
                 double cv = cv_ms(samples);
                 if (cv <= 0.03) break;
-                double t = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), &stats);
-                if (t < 0) break;
-                samples.push_back(t / 1e6);
+                int status = icm_gpu_equity_with_plan(plan, Q, payout.data(), equity.data(), &stats);
+                if (status != 0) break;
+                samples.push_back(stats.total_ns / 1e6);
             }
 
             icm_gpu_plan_destroy(plan);
