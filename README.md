@@ -9,8 +9,7 @@ High-performance C library for computing tournament placement equities using gen
 
 The Independent Chip Model (ICM) is a tournament equity model that converts
 chip stacks into real-money expected payouts by accounting for the payout
-structure. In a poker tournament, chips do not have a fixed dollar value
-- your last chip is worth far less than your first - and ICM computes each
+structure. In a poker tournament, chips do not have a fixed dollar value - your last chip is worth far less than your first - and ICM computes each
 player's fair expected share of the prize pool. For a general introduction,
 see the [ICM Wikipedia page](https://en.wikipedia.org/wiki/Independent_Chip_Model).
 
