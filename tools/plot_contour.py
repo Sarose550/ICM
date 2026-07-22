@@ -538,7 +538,10 @@ def load_accuracy_csv(path):
 
 
 def plot_accuracy_convergence(accuracy_path, out_path):
-    """Plot max_rel_err vs Q for Gauss-Legendre at various n, plus tanh-sinh comparison."""
+    """Plot max_rel_err vs Q: left panel Gauss vs tanh-sinh (uniform, various n),
+    right panel Gauss at n=20 across all 4 stack distributions - this is the
+    panel that actually justifies the Q=256 default, since uniform/adversarial
+    floor out well before Q=256 but geometric/extreme keep converging."""
     rows = load_accuracy_csv(accuracy_path)
 
     # Gauss-Legendre, V1, uniform for selected n values
@@ -556,9 +559,20 @@ def plot_accuracy_convergence(accuracy_path, out_path):
                 and r['payout_type'] == 'V1' and r['n'] == 10):
             tanh_data.append((r['Q'], r['max_rel_err']))
 
-    fig, ax = plt.subplots(figsize=(9, 6))
+    # Gauss-Legendre, V1, n=20, across all 4 stack distributions - the
+    # panel that shows *why* Q=256 (not just Q=128) is the production default.
+    dist_order = ['uniform', 'adversarial', 'geometric', 'adv_1e9']
+    dist_labels = {'uniform': 'uniform', 'adversarial': 'adversarial (1e4)',
+                   'geometric': 'geometric (5e5)', 'adv_1e9': 'extreme (1e9)'}
+    dist_data = {}  # distribution -> [(Q, err), ...]
+    for r in rows:
+        if (r['scheme'] == 'gauss' and r['payout_type'] == 'V1'
+                and r['n'] == 20 and r['distribution'] in dist_order):
+            dist_data.setdefault(r['distribution'], []).append((r['Q'], r['max_rel_err']))
 
-    # Color palette for Gauss lines
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+    # --- Left panel: Gauss vs tanh-sinh, uniform stacks, various n ---
     gauss_colors = ['#2563eb', '#7c3aed', '#059669', '#d97706', '#dc2626']
 
     for i, n in enumerate(gauss_n_values):
@@ -567,29 +581,50 @@ def plot_accuracy_convergence(accuracy_path, out_path):
         pts = sorted(gauss_data[n])
         qs = [p[0] for p in pts]
         errs = [p[1] for p in pts]
-        ax.plot(qs, errs, 'o-', color=gauss_colors[i], markersize=5, linewidth=1.5,
-                label=f'Gauss n={n}')
+        ax1.plot(qs, errs, 'o-', color=gauss_colors[i], markersize=5, linewidth=1.5,
+                 label=f'Gauss n={n}')
 
-    # tanh-sinh comparison
     if tanh_data:
         pts = sorted(tanh_data)
         qs = [p[0] for p in pts]
         errs = [p[1] for p in pts]
-        ax.plot(qs, errs, 's--', color='#6b7280', markersize=5, linewidth=1.5,
-                label='tanh-sinh n=10')
+        ax1.plot(qs, errs, 's--', color='#6b7280', markersize=5, linewidth=1.5,
+                 label='tanh-sinh n=10')
 
-    # Machine epsilon practical floor
-    q_range = ax.get_xlim()
-    ax.axhline(y=1e-12, color='gray', linestyle=':', alpha=0.5, linewidth=1)
-    ax.text(5, 1.5e-12, 'practical floor (~1e-12)', fontsize=8, color='gray', alpha=0.7)
+    ax1.axhline(y=1e-12, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+    ax1.text(5, 1.5e-12, 'practical floor (~1e-12)', fontsize=8, color='gray', alpha=0.7)
 
-    ax.set_xscale('log', base=2)
-    ax.set_yscale('log')
-    ax.set_xlabel('Quadrature points (Q)', fontsize=13)
-    ax.set_ylabel('Max relative error', fontsize=13)
-    ax.set_title('Quadrature Convergence: Gauss-Legendre vs tanh-sinh', fontsize=14)
-    ax.legend(fontsize=9, loc='upper right', framealpha=0.9)
-    ax.grid(True, which='both', alpha=0.2)
+    ax1.set_xscale('log', base=2)
+    ax1.set_yscale('log')
+    ax1.set_xlabel('Quadrature points (Q)', fontsize=13)
+    ax1.set_ylabel('Max relative error', fontsize=13)
+    ax1.set_title('Gauss-Legendre vs tanh-sinh (uniform stacks)', fontsize=13)
+    ax1.legend(fontsize=9, loc='upper right', framealpha=0.9)
+    ax1.grid(True, which='both', alpha=0.2)
+
+    # --- Right panel: Gauss, n=20, across all 4 stack distributions ---
+    dist_colors = {'uniform': '#2563eb', 'adversarial': '#059669',
+                    'geometric': '#d97706', 'adv_1e9': '#dc2626'}
+
+    for dist in dist_order:
+        if dist not in dist_data:
+            continue
+        pts = sorted(dist_data[dist])
+        qs = [p[0] for p in pts]
+        errs = [p[1] for p in pts]
+        ax2.plot(qs, errs, 'o-', color=dist_colors[dist], markersize=5, linewidth=1.5,
+                 label=dist_labels[dist])
+
+    ax2.axvline(x=128, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+    ax2.axhline(y=1e-12, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+
+    ax2.set_xscale('log', base=2)
+    ax2.set_yscale('log')
+    ax2.set_xlabel('Quadrature points (Q)', fontsize=13)
+    ax2.set_ylabel('Max relative error', fontsize=13)
+    ax2.set_title('Gauss-Legendre, n=20, across stack distributions', fontsize=13)
+    ax2.legend(fontsize=9, loc='upper right', framealpha=0.9)
+    ax2.grid(True, which='both', alpha=0.2)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
