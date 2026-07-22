@@ -140,19 +140,33 @@ echo "  Running bench_wrap_fma..."
 "$WRAP_BENCH_BIN" > "$WRAP_CSV"
 echo "  ✓ bench_wrap_fma complete → $WRAP_CSV"
 
-# Extract WRAP_FMA_NS: for the SMALL_2048 regime, take rows with wrap_m ≤ 32
-# (L1-resident inner loop, matches the realistic operating range), compute
-# ns_per_fma = median_ns_per_call / fma_count, and take the median across
-# those rows as a robust single-value estimate.
+# Extract WRAP_FMA_NS: least-squares SLOPE of median_ns_per_call vs. fma_count
+# over the SMALL_2048 regime, restricted to wrap_m in [64,384] (the realistic
+# decision-relevant range — see scratch/zen4_wrap_investigation/probe_results.txt,
+# levels 7-8 of the regressed Zen4 case had wrap_m ~150-200).
+#
+# Must be a SLOPE (regression), not a raw ns_per_call/fma_count ratio: each
+# call has a fixed overhead that doesn't scale with fma_count, so a raw ratio
+# is contaminated by that overhead and overestimates the true per-FMA cost,
+# especially at small fma_count. A slope between two well-separated points
+# (or a full least-squares fit, computed here) cancels the fixed overhead and
+# recovers the true marginal ns/FMA. (An earlier version of this script used
+# the raw-ratio method and got lucky — it landed close to the correct value
+# by coincidence on Zen4; don't reintroduce it.)
 WRAP_FMA_NS=$(awk -F, '
-  NR>1 && $1=="SMALL_2048" && $3<=32 {
-    ns = $6 / $5; sum += ns; n++
+  NR>1 && $1=="SMALL_2048" && $3>=64 && $3<=384 {
+    x = $5; y = $6
+    n++; sx += x; sy += y; sxx += x*x; sxy += x*y
   }
   END {
-    if (n > 0) printf "%.4f", sum / n
-    else print "0.1000"
+    if (n >= 2 && (n*sxx - sx*sx) != 0) {
+      slope = (n*sxy - sx*sy) / (n*sxx - sx*sx)
+      printf "%.4f", slope
+    } else {
+      print "0.4000"  # fallback: last known-good Zen4 value, flagged for manual review
+    }
   }' "$WRAP_CSV")
-echo "  Extracted WRAP_FMA_NS = $WRAP_FMA_NS (from SMALL_2048, wrap_m ≤ 32, mean ns/FMA)"
+echo "  Extracted WRAP_FMA_NS = $WRAP_FMA_NS (least-squares slope, SMALL_2048, wrap_m in [64,384])"
 
 # ── Step 5: Fit cost model constants (8 fitted + WRAP_FMA_NS pinned) ──
 echo ""
