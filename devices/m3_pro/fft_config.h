@@ -126,33 +126,33 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
  * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.
  * Wrap correction is modeled separately with WRAP_FMA_NS. */
 #ifndef FMA_NS
-#define FMA_NS 0.3796  /* ns per scalar FMA — re-measure via ./bench_grid profile */
+#define FMA_NS 0.0500  /* ns per scalar FMA — re-measure via ./bench_grid profile */
 #endif
 #ifndef FFT_OVERHEAD_NS
-#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline) */
+#define FFT_OVERHEAD_NS 631.0974  /* baked into calib_times_ns (full pipeline) */
 #endif
 #ifndef WRAP_FMA_NS
 #define WRAP_FMA_NS 0.4942  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
 #ifndef PAIRED_CACHED_CORR_RATIO
-#define PAIRED_CACHED_CORR_RATIO 1.5526  /* paired cached correlate / full pipeline */
+#define PAIRED_CACHED_CORR_RATIO 1.9080  /* paired cached correlate / full pipeline */
 #endif
 #ifndef INDEP_PAIR_RATIO
-#define INDEP_PAIR_RATIO 1.5526  /* correlate_fft_pair / full pipeline */
+#define INDEP_PAIR_RATIO 1.9080  /* correlate_fft_pair / full pipeline */
 #endif
 /* Hybrid-engine block/leaf constants — placeholders until
  * tools/fit_cost_model.py --write overwrites them with a real fit. */
 #ifndef FP64_DIV_NS
-#define FP64_DIV_NS 0.5000  /* ns per FP64 division — re-fit via fit_cost_model.py */
+#define FP64_DIV_NS 3.4890  /* ns per FP64 division — re-fit via fit_cost_model.py */
 #endif
 #ifndef LEAF_FMA_NS
-#define LEAF_FMA_NS 0.2174  /* ns per FMA in leaf blocks — re-fit via fit_cost_model.py */
+#define LEAF_FMA_NS 0.0727  /* ns per FMA in leaf blocks — re-fit via fit_cost_model.py */
 #endif
 #ifndef LEAF_BLOCK_NS
-#define LEAF_BLOCK_NS 1.0000  /* ns per leaf block overhead — re-fit via fit_cost_model.py */
+#define LEAF_BLOCK_NS 48.1032  /* ns per leaf block overhead — re-fit via fit_cost_model.py */
 #endif
 #ifndef BLOCK_FMA_NS
-#define BLOCK_FMA_NS 0.05  /* ns per FMA in block build — re-fit via fit_cost_model.py */
+#define BLOCK_FMA_NS 0.4027  /* ns per FMA in block build — re-fit via fit_cost_model.py */
 #endif
 #ifndef BLOCK_MEM_NS
 #define BLOCK_MEM_NS 0.1  /* ns per block-build memory op — re-fit via fit_cost_model.py */
