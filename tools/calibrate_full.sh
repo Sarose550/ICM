@@ -12,8 +12,14 @@
 #       (wrap-correction cost) via an isolated microbenchmark, avoiding the
 #       identifiability failure of the indirect full-plan regression for this
 #       single constant.
-#   4. Fits cost-model constants via tools/fit_cost_model.py --write --wrap-ns
-#      (pins WRAP_FMA_NS from step 3b, fits remaining 8 parameters)
+#   3c. Builds and runs tools/bench_div_chain.c — directly measures
+#       FP64_DIV_NS (leaf-extraction division cost) via a dependency-chained
+#       microbenchmark. Same identifiability failure as WRAP_FMA_NS: observed
+#       on M3 Pro converging to a physically implausible 0.5ns and hitting
+#       its fit bound when left free.
+#   4. Fits cost-model constants via tools/fit_cost_model.py --write
+#      --wrap-ns --div-ns (pins both from steps 3b/3c, fits remaining 7
+#      parameters)
 #   5. Rebuilds the library with the new device config
 #   6. Verifies correctness (bench_grid verify) and crossover dispatch
 #
@@ -175,11 +181,38 @@ WRAP_FMA_NS=$(awk -F, '
   }' "$WRAP_CSV")
 echo "  Extracted WRAP_FMA_NS = $WRAP_FMA_NS (least-squares slope, SMALL_2048, wrap_m in [64,384])"
 
-# ── Step 5: Fit cost model constants (8 fitted + WRAP_FMA_NS pinned) ──
+# ── Step 4b: Build and run bench_div_chain (direct FP64_DIV_NS measurement) ──
 echo ""
-echo "── Step 5/7: Fit cost model (tools/fit_cost_model.py --write --wrap-ns $WRAP_FMA_NS) ──"
-python3 tools/fit_cost_model.py "$CSV_FILE" "$CONFIG_H" --write --wrap-ns "$WRAP_FMA_NS"
+echo "── Step 4b/7: Direct division-chain microbenchmark (tools/bench_div_chain.c) ──"
+DIV_BENCH_BIN="$REPO_ROOT/bench_div_chain"
+DIV_CSV="$REPO_ROOT/div_chain_${DEVICE}.csv"
+gcc -O3 -march=native -o "$DIV_BENCH_BIN" tools/bench_div_chain.c
+echo "  Running bench_div_chain..."
+"$DIV_BENCH_BIN" > "$DIV_CSV"
+FP64_DIV_NS=$(awk -F, 'NR>1 && $1=="chained_dependency" {print $2}' "$DIV_CSV")
+if [ -z "$FP64_DIV_NS" ]; then
+    echo "  WARNING: bench_div_chain produced no output, falling back to unpinned fit for C_div"
+    FP64_DIV_NS=""
+else
+    echo "  Measured FP64_DIV_NS = $FP64_DIV_NS ns (dependency-chained, matches leaf-extraction usage)"
+fi
+
+# ── Step 5: Fit cost model constants (7 fitted + WRAP_FMA_NS + FP64_DIV_NS pinned) ──
+echo ""
+if [ -n "$FP64_DIV_NS" ]; then
+    echo "── Step 5/7: Fit cost model (tools/fit_cost_model.py --write --wrap-ns $WRAP_FMA_NS --div-ns $FP64_DIV_NS) ──"
+    python3 tools/fit_cost_model.py "$CSV_FILE" "$CONFIG_H" --write --wrap-ns "$WRAP_FMA_NS" --div-ns "$FP64_DIV_NS"
+else
+    echo "── Step 5/7: Fit cost model (tools/fit_cost_model.py --write --wrap-ns $WRAP_FMA_NS) ──"
+    python3 tools/fit_cost_model.py "$CSV_FILE" "$CONFIG_H" --write --wrap-ns "$WRAP_FMA_NS"
+fi
 echo "  ✓ Cost model fit complete → $CONFIG_H updated"
+echo "  NOTE: pinning both WRAP_FMA_NS and FP64_DIV_NS to direct measurements can raise"
+echo "  the aggregate fit's RMS error and push other free parameters (observed: C_overhead)"
+echo "  to compensate — this is a known collinearity limitation of the current sample_plans"
+echo "  training data, not a correctness issue. Check ./bench_grid verify + crossover (below)"
+echo "  for the metrics that actually matter; don't chase RMS to zero by unpinning a"
+echo "  physically-measured constant."
 
 # ── Step 6: Rebuild ──
 echo ""

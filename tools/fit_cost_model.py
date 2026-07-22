@@ -15,12 +15,19 @@ Model (per Q-point):
 
   T_leaf  = n * max(C_div, 2*B * C_leaf_fma) + (n/B) * C_leaf_block
 
-8 fitted + 1 directly measured (C_wrap/WRAP_FMA_NS) when --wrap-ns is given;
-otherwise 9 fitted parameters (backward-compatible but inherits the known
-identifiability problem for C_wrap — see comments in tools/bench_wrap_fma.c).
+Some parameters can be pinned to a directly-measured value instead of
+fitted: --wrap-ns pins C_wrap (WRAP_FMA_NS), --div-ns pins C_div
+(FP64_DIV_NS). Both are prone to the same identifiability failure when left
+free — C_div's usage (a sequential dependency chain in leaf extraction, see
+src/icm.c) is latency-bound, but the aggregate per-plan fit can't tell that
+apart from throughput-bound terms without enough contrast in the training
+data, and empirically drives it to an implausible value if left unpinned
+(observed on M3 Pro: fit converged to 0.5ns, hit its lower bound, vs. a
+direct microbenchmark of the actual dependency-chain giving ~3.5ns).
+Any subset of {wrap, div} may be pinned; the rest are fitted.
 Objective: minimize Σ(log(pred/meas))².
 
-Usage: python3 tools/fit_cost_model.py <sample_plans.csv> [config_h] [--write] [--wrap-ns N]
+Usage: python3 tools/fit_cost_model.py <sample_plans.csv> [config_h] [--write] [--wrap-ns N] [--div-ns N]
 """
 import sys
 import re
@@ -172,22 +179,18 @@ def objective(params, plans, calib):
     return total
 
 
-def fit(plans, calib, wrap_ns=None):
+def fit(plans, calib, pins=None):
     """Fit parameters minimizing log-relative error.
 
-    If wrap_ns is not None, C_wrap (P_WRAP) is pinned at that value and only
-    the remaining 8 parameters are fitted.  Otherwise all 9 are free (legacy
-    path — reproduces the known identifiability problem for C_wrap).
+    pins: dict of {param_index: value} to hold fixed (e.g. {P_WRAP: 0.40}).
+    Remaining parameters are fitted freely. Empty/None pins = legacy path,
+    all 9 free (reproduces the known identifiability problem for whichever
+    of C_wrap/C_div is left unpinned).
     """
-    if wrap_ns is not None:
-        # Pin C_wrap: remove P_WRAP from optimization, keep only 8 free params.
-        active_indices = [i for i in range(N_PARAMS) if i != P_WRAP]
-        bounds_8 = [BOUNDS[i] for i in active_indices]
-        initial_8 = [INITIAL[i] for i in active_indices]
-    else:
-        active_indices = list(range(N_PARAMS))
-        bounds_8 = BOUNDS
-        initial_8 = INITIAL
+    pins = pins or {}
+    active_indices = [i for i in range(N_PARAMS) if i not in pins]
+    bounds_active = [BOUNDS[i] for i in active_indices]
+    initial_active = [INITIAL[i] for i in active_indices]
 
     best_result = None
     best_fun = float('inf')
@@ -195,25 +198,24 @@ def fit(plans, calib, wrap_ns=None):
     for trial in range(20):
         rng = np.random.RandomState(trial)
         if trial == 0:
-            x0 = np.array(initial_8)
+            x0 = np.array(initial_active)
         else:
-            x0 = np.array([rng.uniform(lo, hi) for lo, hi in bounds_8])
+            x0 = np.array([rng.uniform(lo, hi) for lo, hi in bounds_active])
 
         # Build full parameter vector for the objective function
         def make_full(x):
-            if wrap_ns is not None:
-                full = np.zeros(N_PARAMS)
-                full[P_WRAP] = wrap_ns
-                for j, ai in enumerate(active_indices):
-                    full[ai] = x[j]
-                return full
-            return x
+            full = np.zeros(N_PARAMS)
+            for pi, val in pins.items():
+                full[pi] = val
+            for j, ai in enumerate(active_indices):
+                full[ai] = x[j]
+            return full
 
         def obj(x):
             return objective(make_full(x), plans, calib)
 
         res = minimize(obj, x0,
-                       method='L-BFGS-B', bounds=bounds_8,
+                       method='L-BFGS-B', bounds=bounds_active,
                        options={'maxiter': 10000, 'ftol': 1e-15})
         if res.fun < best_fun:
             best_fun = res.fun
@@ -223,8 +225,9 @@ def fit(plans, calib, wrap_ns=None):
     return best_result
 
 
-def report(params, plans, calib, wrap_ns=None):
+def report(params, plans, calib, pins=None):
     """Print fit results and per-plan diagnostics."""
+    pins = pins or {}
     n_plans = len(plans)
     log_errs = []
     for p in plans:
@@ -234,18 +237,21 @@ def report(params, plans, calib, wrap_ns=None):
     rms = np.sqrt(np.mean(log_errs**2)) * 100
     max_err = np.max(np.abs(log_errs)) * 100
 
-    n_free = N_PARAMS - 1 if wrap_ns is not None else N_PARAMS
-    pinned_note = f" (C_wrap pinned at {wrap_ns:.4f} ns via direct microbenchmark)" if wrap_ns is not None else ""
+    n_free = N_PARAMS - len(pins)
+    pinned_note = ""
+    if pins:
+        pinned_note = " (" + ", ".join(
+            f"{PARAM_NAMES[i]} pinned at {v:.4f}" for i, v in pins.items()) + ")"
     print(f"\n{'='*70}")
     print(f"FITTED COST MODEL — {n_plans} plans, {n_free} fitted + "
-          f"{N_PARAMS - n_free} pinned parameters{pinned_note}")
+          f"{len(pins)} pinned parameters{pinned_note}")
     print(f"RMS log-relative error: {rms:.2f}%")
     print(f"Max log-relative error: {max_err:.2f}%")
     print(f"{'='*70}")
 
     print(f"\nParameters:")
     for i in range(N_PARAMS):
-        tag = " (pinned)" if (wrap_ns is not None and i == P_WRAP) else ""
+        tag = " (pinned)" if i in pins else ""
         print(f"  {PARAM_NAMES[i]:15s} = {params[i]:.4f}{tag}")
 
     print(f"\nPhysics checks:")
@@ -253,13 +259,14 @@ def report(params, plans, calib, wrap_ns=None):
           f"  (expect ~0.13 ns = 2 FMA/cycle @ 3.8 GHz on Zen4)")
     print(f"  C_school    = {params[P_SCHOOL]:.4f} ns"
           f"  (expect ~FMA_NS)")
+    div_source = "pinned (direct microbenchmark)" if P_DIV in pins else "fitted (identifiability risk — prefer --div-ns)"
     print(f"  C_div       = {params[P_DIV]:.3f} ns"
-          f"  (expect ~4-6 ns for FP64 div on Zen4)")
+          f"  (expect ~3-6 ns for a dependency-chained FP64 div; {div_source})")
     print(f"  R           = {params[P_R]:.4f}"
           f"  (expect ~1.03-1.08)")
-    source = "pinned (direct microbenchmark)" if wrap_ns is not None else "fitted (identifiability warning — prefer --wrap-ns)"
+    wrap_source = "pinned (direct microbenchmark)" if P_WRAP in pins else "fitted (identifiability warning — prefer --wrap-ns)"
     print(f"  C_wrap      = {params[P_WRAP]:.3f} ns"
-          f"  ({source})")
+          f"  ({wrap_source})")
     leaf_cross_B = params[P_DIV] / (2 * params[P_LEAF_FMA]) if params[P_LEAF_FMA] > 0 else 0
     print(f"  Leaf crossover B = {leaf_cross_B:.0f}"
           f"  (C_div / 2*C_leaf_fma)")
@@ -397,14 +404,27 @@ def main():
                         help='Rewrite fft_config.h in-place with fitted constants')
     parser.add_argument('--wrap-ns', type=float, default=None,
                         help='Pin C_wrap (WRAP_FMA_NS) to this directly-measured '
-                             'value and fit only the remaining 8 parameters. '
-                             'If not given, fit all 9 (legacy — reproduces '
-                             'the known identifiability problem for C_wrap).')
+                             'value. If not given, C_wrap is fitted freely '
+                             '(legacy — reproduces the known identifiability '
+                             'problem for C_wrap).')
+    parser.add_argument('--div-ns', type=float, default=None,
+                        help='Pin C_div (FP64_DIV_NS) to this directly-measured '
+                             'value (time a dependency-chained division loop, '
+                             'matching src/icm.c leaf-extraction usage — NOT an '
+                             'independent-division throughput measurement, '
+                             'those give a very different, wrong number). If '
+                             'not given, C_div is fitted freely (identifiability '
+                             'risk — observed converging to an implausible '
+                             'value on M3 Pro, hit its lower bound).')
     args = parser.parse_args()
 
     plans_path = args.plans_csv
     config_path = args.config_h
-    wrap_ns = args.wrap_ns
+    pins = {}
+    if args.wrap_ns is not None:
+        pins[P_WRAP] = args.wrap_ns
+    if args.div_ns is not None:
+        pins[P_DIV] = args.div_ns
 
     print(f"Loading calibration from {config_path}")
     calib = load_calib(config_path)
@@ -420,19 +440,22 @@ def main():
         print(f"  Filtered {len(plans) - len(valid)} plans with per_qp_ns < 100")
         plans = valid
 
-    n_free = N_PARAMS - 1 if wrap_ns is not None else N_PARAMS
-    pinned_msg = f" (C_wrap pinned at {wrap_ns:.4f} ns)" if wrap_ns is not None else ""
+    n_free = N_PARAMS - len(pins)
+    pinned_msg = ""
+    if pins:
+        pinned_msg = " (" + ", ".join(
+            f"{PARAM_NAMES[i]} pinned at {v:.4f}" for i, v in pins.items()) + ")"
     print(f"\nFitting {n_free} parameters to {len(plans)} plans...{pinned_msg}")
-    result = fit(plans, calib, wrap_ns=wrap_ns)
+    result = fit(plans, calib, pins=pins)
 
     params = result.x
-    rms = report(params, plans, calib, wrap_ns=wrap_ns)
+    rms = report(params, plans, calib, pins=pins)
 
     print(f"\n{'='*70}")
     print(f"SUMMARY — constants for fft_config.h:")
     print(f"{'='*70}")
     for i in range(N_PARAMS):
-        tag = " (pinned)" if (wrap_ns is not None and i == P_WRAP) else ""
+        tag = " (pinned)" if i in pins else ""
         print(f"  #define {PARAM_NAMES[i].upper():20s} {params[i]:.4f}{tag}")
 
     if rms > 1.0:
