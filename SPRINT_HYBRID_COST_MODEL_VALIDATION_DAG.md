@@ -160,7 +160,16 @@ the already-accurate crossover-region prediction worse.
 - **Kill deadline:** 45 min
 - **Binding law:** `DISPATCH_GAP_ANALYSIS.md`, `HANDOFF.md` §"Next Steps" item 2
 
-### [ ] L2_APPLY_LEAF_FIX
+### [x] L2_APPLY_LEAF_FIX — DONE (commit `bc9af1e`)
+
+Applied corrected `leaf_fma_ns_per_player[]` (2.8234/3.5062/5.4698/7.8955/
+12.8751/19.2914) from `L1c_FINAL_LEAF_TABLE`'s cross-validated B-sweep.
+`bench_grid verify`: ALL TESTS PASSED. Real dispatch crossover on M3 Pro
+moved from k~260-320 to k~220-255 — real progress, but ground truth is
+k~120-160, gap not fully closed. Proceeding to tree-formula fix
+(T2/T3) since leaf alone was insufficient.
+
+### [ ] L2_APPLY_LEAF_FIX (superseded, kept for history)
 
 - **Model:** `supervisor`
 - **Depends:** L1_RUN_LEAF_RECALIB
@@ -172,7 +181,34 @@ the already-accurate crossover-region prediction worse.
     toward 1.0 (was 0.47-0.48 before the fix)
 - **Kill deadline:** 20 min
 
-### [ ] T2_PROPOSE_TREE_FIX
+### [x] T2_PROPOSE_TREE_FIX — errored, but surfaced a real bug directly
+
+Worker 40c2be errored before writing `TREE_FIX_PROPOSAL.md`, but its
+partial transcript surfaced a genuine bug: `src/icm.c`'s dispatch-decision
+formulas (`select_engine_ex` ~line 2215-2228, `select_best_B` ~line
+2581-2594) used `FMA_NS` (0.0677 on M3 Pro) for the wrap-correction term,
+but the ACTUALLY-EXECUTED code (`correlate_fft_cached_pair_wrap`,
+~line 1139/1191) and `src/fft_cost_model.h` both correctly use
+`WRAP_FMA_NS` (0.5160) for the same term — a 7.6x discrepancy between
+the dispatch formula and the real execution path. **Fixed directly by
+supervisor** (commit pending) — this is a correctness fix independent of
+whether it closes the crossover gap (a formula must match the code it's
+predicting, full stop).
+
+**Result: crossover moved to k~240-285 — further from ground truth
+(k~120-160), not closer.** This is informative, not a regression to
+panic over: it means the earlier "tree roughly accurate at k=120-320"
+read (from `probe_tree_levels.c`) was itself computed against that
+same buggy FMA_NS-based formula copy, not the real one — invalid
+comparison. More importantly, direct measurement of the LINEAR
+engine (untouched all session) against `cost_model.h`'s
+`linear_roofline_cost()` shows a consistent **~1.73-1.80x
+underprediction across every (n,k) tested** (both n=512..8192, k=120..285)
+— a stable multiplicative bias, not k-dependent. This is likely the
+actual dominant remaining gap, not the tree/leaf side. See new node
+`M1_INVESTIGATE_LINEAR_FMA_NS`.
+
+### [ ] T2_PROPOSE_TREE_FIX (superseded, kept for history)
 
 - **Model:** `deepseek`
 - **Depends:** T1_WIDEN_TREE_PROBE

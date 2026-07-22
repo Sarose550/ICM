@@ -2212,11 +2212,11 @@ static int select_engine_ex(int n, int k, int n_targets) {
               while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
               idx=lo; }
             double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                             + (double)bwm*(bwm+1)/2.0*FMA_NS;
+                             + (double)bwm*(bwm+1)/2.0*WRAP_FMA_NS;
             double corr;
             if (tc->fft_cache_ok[ell]) {
                 corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                     + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
+                     + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*WRAP_FMA_NS;
             } else {
                 int cfn = tc->corr_fft_n[ell];
                 int cwm = tc->corr_wrap_m[ell];
@@ -2225,7 +2225,7 @@ static int select_engine_ex(int n, int k, int n_targets) {
                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
                  cidx=lo;}
                 corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                     + (double)cwm*(cwm+1)*FMA_NS;
+                     + (double)cwm*(cwm+1)*WRAP_FMA_NS;
             }
             tree += nr * (build_fft + corr);
         } else {
@@ -2578,11 +2578,11 @@ static int select_best_B(int n, int k) {
                   while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
                   idx=lo; }
                 double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                                 + (double)bwm*(bwm+1)/2.0*FMA_NS;
+                                 + (double)bwm*(bwm+1)/2.0*WRAP_FMA_NS;
                 double corr;
                 if (tc->fft_cache_ok[ell]) {
                     corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                         + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
+                         + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*WRAP_FMA_NS;
                 } else {
                     int cfn = tc->corr_fft_n[ell];
                     int cwm = tc->corr_wrap_m[ell];
@@ -2591,7 +2591,7 @@ static int select_best_B(int n, int k) {
                      while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
                      cidx=lo;}
                     corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                         + (double)cwm*(cwm+1)*FMA_NS;
+                         + (double)cwm*(cwm+1)*WRAP_FMA_NS;
                 }
                 tree += nr * (build_fft + corr);
             } else {
