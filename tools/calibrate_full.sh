@@ -54,8 +54,15 @@ case "$OS" in
         VEC_FLAGS=""
         ;;
     Linux)
-        HOMEBREW_INC=""
-        HOMEBREW_LIB=""
+        # Auto-detect AOCL-FFTW, matching the Makefile.
+        if [ -f /usr/local/aocl-fftw/lib/libfftw3.so ]; then
+            HOMEBREW_INC="-I/usr/local/aocl-fftw/include"
+            HOMEBREW_LIB="-L/usr/local/aocl-fftw/lib -Wl,-rpath,/usr/local/aocl-fftw/lib"
+            echo "  Detected AOCL-FFTW at /usr/local/aocl-fftw — using it for calibration."
+        else
+            HOMEBREW_INC=""
+            HOMEBREW_LIB=""
+        fi
         ACCEL_FLAGS=""
         VEC_FLAGS="-ldl -lmvec"
         ;;
