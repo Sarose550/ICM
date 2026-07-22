@@ -126,19 +126,19 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
  * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.
  * Wrap correction is modeled separately with WRAP_FMA_NS. */
 #ifndef FMA_NS
-#define FMA_NS 0.0500  /* ns per scalar FMA — re-measure via ./bench_grid profile */
+#define FMA_NS 0.0677  /* ns per scalar FMA — re-measure via ./bench_grid profile */
 #endif
 #ifndef FFT_OVERHEAD_NS
-#define FFT_OVERHEAD_NS 631.0974  /* baked into calib_times_ns (full pipeline) */
+#define FFT_OVERHEAD_NS 0.0000  /* baked into calib_times_ns (full pipeline) */
 #endif
 #ifndef WRAP_FMA_NS
-#define WRAP_FMA_NS 0.4942  /* ns per FMA in wrap correction (memory-latency-bound) */
+#define WRAP_FMA_NS 0.5160  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
 #ifndef PAIRED_CACHED_CORR_RATIO
-#define PAIRED_CACHED_CORR_RATIO 1.9080  /* paired cached correlate / full pipeline */
+#define PAIRED_CACHED_CORR_RATIO 1.5600  /* paired cached correlate / full pipeline */
 #endif
 #ifndef INDEP_PAIR_RATIO
-#define INDEP_PAIR_RATIO 1.9080  /* correlate_fft_pair / full pipeline */
+#define INDEP_PAIR_RATIO 2.4400  /* correlate_fft_pair / full pipeline */
 #endif
 /* Hybrid-engine block/leaf constants — per-B lookup tables.
  *
@@ -182,7 +182,7 @@ static const double leaf_fma_ns_per_player[6] = {
  * the leaf-extraction synthetic-division recurrence.  This is a genuine
  * hardware throughput bound, independent of B. */
 #ifndef FP64_DIV_NS
-#define FP64_DIV_NS 3.4890  /* ns per FP64 division — re-measure via bench_div_chain */
+#define FP64_DIV_NS 3.7984  /* ns per FP64 division — re-measure via bench_div_chain */
 #endif
 
 /* ── Cache hierarchy ── */
