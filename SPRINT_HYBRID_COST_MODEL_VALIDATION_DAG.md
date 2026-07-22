@@ -298,6 +298,36 @@ actual dominant remaining gap, not the tree/leaf side. See new node
   - No leftover `.claude/.dag-active-lock.json`
   - This board deleted
 
+## New node (added mid-sprint after M1's finding)
+
+### [ ] M1_INVESTIGATE_LINEAR_FMA_NS
+
+- **Model:** `deepseek`
+- **Depends:** none (dispatched, worker c9fc86, folder 41994c)
+- **Allowed files:** `tools/bench_linear_batched_fma.c`, `build/**`
+- **Task:** direct microbenchmark of the real BQ=8 batched linear engine's
+  inner loop (not the schoolbook `polymul_modk` bench that currently
+  produces `FMA_NS`), to explain the consistent ~1.73-1.80x
+  underprediction found by direct measurement against
+  `cost_model.h`'s `linear_roofline_cost()`.
+- **Exit criteria:** corrected constant proposed, cross-checked against
+  the already-measured real linear-engine times within ~15%
+- **Kill deadline:** 45 min
+- **Binding law:** this board's Context/T2 sections; `CLAUDE.md`'s
+  linear-engine description (BQ=8, interleaved a_batch layout)
+
+### [ ] M2_APPLY_LINEAR_FIX
+
+- **Model:** `supervisor`
+- **Depends:** M1_INVESTIGATE_LINEAR_FMA_NS
+- **Allowed files:** `src/cost_model.h`, `devices/m3_pro/fft_config.h`
+- **Exit criteria:**
+  - Corrected constant applied
+  - `./bench_grid verify` → ALL TESTS PASSED
+  - Real `icm_select_engine()` dispatch re-checked — this is now the
+    key node before re-evaluating V1_DISPATCH_GATE
+- **Kill deadline:** 20 min
+
 ## Separate, gated item (not part of the graph above)
 
 ### GPU1_B200_KERNEL_MICROBENCH

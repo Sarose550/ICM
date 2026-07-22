@@ -134,6 +134,20 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef WRAP_FMA_NS
 #define WRAP_FMA_NS 0.5160  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
+/* Batched linear engine (BQ=8, src/linear_batched_impl.inc) effective
+ * per-work-unit cost for linear_roofline_cost()'s 5*n*k*BATCHED_FMA_NS
+ * formula (5, not 4: forward pass does BQ*(2k-1) FMAs/player, the fused
+ * backward pass does BQ*(3k-1) -- ~5k total, not 4k as the old formula
+ * assumed). FMA_NS itself is measured from an unrelated scalar schoolbook
+ * microbenchmark (polymul_modk) and is NOT representative of this engine's
+ * real interleaved inner loop -- reusing it here underpredicted real
+ * linear-engine cost by a consistent ~1.73-1.80x. BATCHED_FMA_NS is fit
+ * directly against real icm_run_linear_batched() measurements across
+ * n in {512..8192}, k in {120..285} (CV 1.27% across all points -- the
+ * 5*n*k form fits real data far better than the old 4*n*k form did). */
+#ifndef BATCHED_FMA_NS
+#define BATCHED_FMA_NS 0.0954
+#endif
 #ifndef PAIRED_CACHED_CORR_RATIO
 #define PAIRED_CACHED_CORR_RATIO 1.5600  /* paired cached correlate / full pipeline */
 #endif

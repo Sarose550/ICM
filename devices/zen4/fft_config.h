@@ -134,6 +134,21 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef WRAP_FMA_NS
 #define WRAP_FMA_NS 0.4360  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
+/* PLACEHOLDER -- NOT independently measured on Zen4 hardware this session.
+ * M3 Pro found the batched linear engine (src/linear_batched_impl.inc,
+ * BQ=8) needs 5*n*k FMAs/QP (not 4*n*k as the old formula assumed) and a
+ * dedicated constant fit directly against real icm_run_linear_batched()
+ * measurements -- reusing FMA_NS (measured from an unrelated scalar
+ * schoolbook microbenchmark) underpredicted real linear-engine cost by
+ * ~1.73-1.80x there. This value is FMA_NS(zen4) scaled by the same ratio
+ * found on M3 Pro (0.0954/0.0677 ~= 1.409) as a stopgap so the build
+ * doesn't silently use an unrelated constant -- it is NOT a real Zen4
+ * measurement. Re-measure via a Zen4 run of tools/bench_linear_batched_fma.c
+ * (see M3 Pro's SPRINT_HYBRID_COST_MODEL_VALIDATION_DAG.md for methodology)
+ * before trusting Zen4 linear-vs-hybrid dispatch decisions. */
+#ifndef BATCHED_FMA_NS
+#define BATCHED_FMA_NS 0.0973
+#endif
 #ifndef PAIRED_CACHED_CORR_RATIO
 #define PAIRED_CACHED_CORR_RATIO 1.5467  /* paired cached correlate / full pipeline */
 #endif
