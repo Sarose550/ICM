@@ -13,7 +13,8 @@
 #include <time.h>
 #include <fftw3.h>
 #include "icm.h"
-#include "fft_config.h"  /* device-specific calibrated FFT times */
+#include "fft_config.h"       /* device-specific calibrated FFT times */
+#include "fft_cost_model.h"   /* shared FFT cost-model decision logic */
 #ifdef _OPENMP
 #include <omp.h>
 #endif

@@ -8,7 +8,12 @@
 #   1. Builds and runs tools/calibrate.c (FFTW calibration)
 #   2. Copies fft_config.h + fftw_wisdom.dat to devices/<DEVICE>/
 #   3. Builds and runs tools/sample_plans.c (hybrid engine timing)
-#   4. Fits cost-model constants via tools/fit_cost_model.py --write
+#   3b. Builds and runs tools/bench_wrap_fma.c — directly measures WRAP_FMA_NS
+#       (wrap-correction cost) via an isolated microbenchmark, avoiding the
+#       identifiability failure of the indirect full-plan regression for this
+#       single constant.
+#   4. Fits cost-model constants via tools/fit_cost_model.py --write --wrap-ns
+#      (pins WRAP_FMA_NS from step 3b, fits remaining 8 parameters)
 #   5. Rebuilds the library with the new device config
 #   6. Verifies correctness (bench_grid verify) and crossover dispatch
 #
@@ -73,7 +78,7 @@ echo "  Quick:     ${QUICK:-no}"
 echo ""
 
 # ── Step 1: Build and run calibrate ──
-echo "── Step 1/6: FFTW calibration (tools/calibrate.c) ──"
+echo "── Step 1/7: FFTW calibration (tools/calibrate.c) ──"
 echo "  This may take 10–30 minutes..."
 CALIB_BIN="$REPO_ROOT/calibrate"
 gcc -O3 -march=native $HOMEBREW_INC -o "$CALIB_BIN" tools/calibrate.c $HOMEBREW_LIB -lfftw3 -lm
@@ -93,7 +98,7 @@ fi
 
 # ── Step 2: Copy generated files to devices/<DEVICE>/ ──
 echo ""
-echo "── Step 2/6: Copy calibration files to devices/$DEVICE/ ──"
+echo "── Step 2/7: Copy calibration files to devices/$DEVICE/ ──"
 mkdir -p "$DEVICE_DIR"
 
 for f in fft_config.h fftw_wisdom.dat; do
@@ -108,7 +113,7 @@ done
 
 # ── Step 3: Build and run sample_plans ──
 echo ""
-echo "── Step 3/6: Build and run sample_plans.c ──"
+echo "── Step 3/7: Build and run sample_plans.c ──"
 SP_BIN="$REPO_ROOT/sample_plans"
 gcc -O3 -march=native \
     -Isrc \
@@ -125,22 +130,46 @@ echo "  Running sample_plans (this takes several minutes)..."
 "$SP_BIN" > "$CSV_FILE" 2>"$LOG_FILE"
 echo "  ✓ sample_plans complete → $CSV_FILE"
 
-# ── Step 4: Fit cost model constants ──
+# ── Step 4: Build and run bench_wrap_fma (direct WRAP_FMA_NS measurement) ──
 echo ""
-echo "── Step 4/6: Fit cost model (tools/fit_cost_model.py --write) ──"
-python3 tools/fit_cost_model.py "$CSV_FILE" "$CONFIG_H" --write
+echo "── Step 4/7: Direct wrap-correction microbenchmark (tools/bench_wrap_fma.c) ──"
+WRAP_BENCH_BIN="$REPO_ROOT/bench_wrap_fma"
+WRAP_CSV="$REPO_ROOT/wrap_fma_${DEVICE}.csv"
+gcc -O3 -march=native -o "$WRAP_BENCH_BIN" tools/bench_wrap_fma.c -lm
+echo "  Running bench_wrap_fma..."
+"$WRAP_BENCH_BIN" > "$WRAP_CSV"
+echo "  ✓ bench_wrap_fma complete → $WRAP_CSV"
+
+# Extract WRAP_FMA_NS: for the SMALL_2048 regime, take rows with wrap_m ≤ 32
+# (L1-resident inner loop, matches the realistic operating range), compute
+# ns_per_fma = median_ns_per_call / fma_count, and take the median across
+# those rows as a robust single-value estimate.
+WRAP_FMA_NS=$(awk -F, '
+  NR>1 && $1=="SMALL_2048" && $3<=32 {
+    ns = $6 / $5; sum += ns; n++
+  }
+  END {
+    if (n > 0) printf "%.4f", sum / n
+    else print "0.1000"
+  }' "$WRAP_CSV")
+echo "  Extracted WRAP_FMA_NS = $WRAP_FMA_NS (from SMALL_2048, wrap_m ≤ 32, mean ns/FMA)"
+
+# ── Step 5: Fit cost model constants (8 fitted + WRAP_FMA_NS pinned) ──
+echo ""
+echo "── Step 5/7: Fit cost model (tools/fit_cost_model.py --write --wrap-ns $WRAP_FMA_NS) ──"
+python3 tools/fit_cost_model.py "$CSV_FILE" "$CONFIG_H" --write --wrap-ns "$WRAP_FMA_NS"
 echo "  ✓ Cost model fit complete → $CONFIG_H updated"
 
-# ── Step 5: Rebuild ──
+# ── Step 6: Rebuild ──
 echo ""
-echo "── Step 5/6: Rebuild library (make clean && make DEVICE=$DEVICE) ──"
+echo "── Step 6/7: Rebuild library (make clean && make DEVICE=$DEVICE) ──"
 make clean
 make "DEVICE=$DEVICE"
 echo "  ✓ Rebuild complete"
 
-# ── Step 6: Verify ──
+# ── Step 7: Verify ──
 echo ""
-echo "── Step 6/6: Verify correctness and crossover dispatch ──"
+echo "── Step 7/7: Verify correctness and crossover dispatch ──"
 
 echo ""
 echo "--- bench_grid verify ---"
@@ -167,6 +196,7 @@ echo "  Config:        $CONFIG_H"
 echo "  Wisdom:        $WISDOM_DAT"
 echo "  Sample CSV:    $CSV_FILE"
 echo "  Sample log:    $LOG_FILE"
+echo "  Wrap bench CSV:$WRAP_CSV"
 echo ""
 echo "Next steps (manual):"
 echo "  ./bench_grid profile   # measure platform constants (FMA_NS, FFT_OVERHEAD_NS, ratios)"
