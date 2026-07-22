@@ -126,19 +126,19 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
  * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.
  * Wrap correction is modeled separately with WRAP_FMA_NS. */
 #ifndef FMA_NS
-#define FMA_NS 0.4234  /* ns per scalar FMA — re-measure via ./bench_grid profile */
+#define FMA_NS 0.0690  /* ns per scalar FMA — re-measure via ./bench_grid profile */
 #endif
 #ifndef FFT_OVERHEAD_NS
 #define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline) */
 #endif
 #ifndef WRAP_FMA_NS
-#define WRAP_FMA_NS 0.4367  /* ns per FMA in wrap correction (memory-latency-bound) */
+#define WRAP_FMA_NS 0.4360  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
 #ifndef PAIRED_CACHED_CORR_RATIO
-#define PAIRED_CACHED_CORR_RATIO 1.9074  /* paired cached correlate / full pipeline */
+#define PAIRED_CACHED_CORR_RATIO 1.5467  /* paired cached correlate / full pipeline */
 #endif
 #ifndef INDEP_PAIR_RATIO
-#define INDEP_PAIR_RATIO 1.9074  /* correlate_fft_pair / full pipeline */
+#define INDEP_PAIR_RATIO 2.4400  /* correlate_fft_pair / full pipeline */
 #endif
 /* Hybrid-engine block/leaf constants — per-B lookup tables.
  *
@@ -157,24 +157,24 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef BLOCK_BUILD_NS_PER_PLAYER_DEFINED
 #define BLOCK_BUILD_NS_PER_PLAYER_DEFINED
 static const double block_build_ns_per_player[6] = {
-    5.3362,  /* B=8  */
-    6.0105,  /* B=16 */
-    6.4528,  /* B=24 */
-    6.5732,  /* B=32 */
-    7.5059,  /* B=48 */
-    8.7667   /* B=64 */
+    8.7977,  /* B=8  */
+    9.8771,  /* B=16 */
+    10.5437,  /* B=24 */
+    11.2517,  /* B=32 */
+    11.5329,  /* B=48 */
+    12.2740  /* B=64 */
 };
 #endif
 
 #ifndef LEAF_FMA_NS_PER_PLAYER_DEFINED
 #define LEAF_FMA_NS_PER_PLAYER_DEFINED
 static const double leaf_fma_ns_per_player[6] = {
-    5.8750,  /* B=8  */
-    12.1875, /* B=16 */
-    14.9444, /* B=24 */
-    18.6667, /* B=32 */
-    26.0278, /* B=48 */
-    32.7552  /* B=64 */
+    2.1824,  /* B=8  */
+    4.8827,  /* B=16 */
+    8.7597,  /* B=24 */
+    12.2998,  /* B=32 */
+    22.2091,  /* B=48 */
+    31.0635  /* B=64 */
 };
 #endif
 
@@ -182,7 +182,7 @@ static const double leaf_fma_ns_per_player[6] = {
  * the leaf-extraction synthetic-division recurrence.  This is a genuine
  * hardware throughput bound, independent of B. */
 #ifndef FP64_DIV_NS
-#define FP64_DIV_NS 3.2939  /* ns per FP64 division — re-measure via bench_div_chain */
+#define FP64_DIV_NS 3.2951  /* ns per FP64 division — re-measure via bench_div_chain */
 #endif
 
 /* ── Cache hierarchy ── */
