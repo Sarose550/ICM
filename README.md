@@ -137,18 +137,18 @@ is in the paper; raw sweep data is in `results/accuracy_convergence.csv`.
 
 ## Performance
 
-**CPU, single-threaded (ms, Q=256):**
+**CPU, single-threaded (ms, Q=256, uniform stacks, median of 5):**
 
 | n | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n | | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n |
 |---|------|------|-------|-------|-------|-----|-|------|------|-------|-------|-------|-----|
-| | **M3 Pro** |||||| | **Zen 4 7950X** |||||
-| 1024  | 1.71 | 7.16 | 13.2 | 24.4 | 28.9 | 34.8 | | 1.28 | 3.95 | 7.61 | 26.5 | 29.1 | 34.0 |
-| 2048  | 4.11 | 14.3 | 26.3 | 60.9 | 75.2 | 99.8 | | 3.18 | 6.83 | 13.9 | 63.0 | 73.7 | 75.1 |
-| 4096  | 8.18 | 28.5 | 52.6 | 159  | 214  | 232  | | 7.32 | 14.1 | 28.3 | 153  | 161  | 168  |
-| 8192  | 16.2 | 56.6 | 104  | 438  | 483  | 516  | | 14.5 | 28.6 | 53.4 | 343  | 376  | 382  |
-| 16384 | 32.5 | 113  | 208  | 1020 | 1090 | 1480 | | 29.6 | 62.7 | 112  | 805  | 866  | 835  |
-| 32768 | 64.9 | 226  | 418  | 2330 | 3090 | 4680 | | 63.4 | 116  | 217  | 1880 | 1810 | 1840 |
-| 65536 | 130  | 453  | 836  | 6580 | 9710 | 10000| | 117  | 244  | 419  | 3920 | 4170 | 4490 |
+| | **M3 Pro** |||||| | **Zen 4 7950X** (AOCL-FFTW) |||||
+| 1024  | 1.71 | 7.07 | 13.1 | 23.3 | 45.9 | 46.0 | | 1.33 | 3.53 | 7.07 | 20.8 | 24.2 | 25.9 |
+| 2048  | 4.07 | 14.2 | 26.2 | 94.6 | 97.1 | 103  | | 3.92 | 7.10 | 13.4 | 52.1 | 56.7 | 60.4 |
+| 4096  | 8.13 | 28.2 | 52.4 | 201  | 217  | 238  | | 8.00 | 16.8 | 28.6 | 121  | 133  | 150  |
+| 8192  | 16.2 | 56.5 | 105  | 447  | 516  | 549  | | 16.2 | 28.8 | 49.6 | 285  | 341  | 353  |
+| 16384 | 32.3 | 113  | 209  | 1070 | 1180 | 1260 | | 26.2 | 56.7 | 111  | 730  | 771  | 843  |
+| 32768 | 65.1 | 226  | 418  | 2450 | 2700 | 2890 | | 52.2 | 126  | 236  | 1640 | 1840 | 1970 |
+| 65536 | 129  | 450  | 836  | 5600 | 6240 | 7180 | | 116  | 237  | 475  | 3890 | 4360 | 4610 |
 
 **GPU, NVIDIA B200 (ms, Q=256):**
 
@@ -191,9 +191,9 @@ make
 make parallel
 ```
 
-Automatically detects MKL (via dlopen) for dual-dispatch FFT when available.
+Uses system FFTW3. For AMD platforms, AOCL-FFTW is recommended — see below.
 
-### Linux with AOCL-FFTW (AMD)
+### Linux with AOCL-FFTW (AMD Zen 4)
 
 ```bash
 # Install AOCL-FFTW to /usr/local/aocl-fftw
@@ -201,7 +201,9 @@ make DEVICE=zen4
 make DEVICE=zen4 parallel
 ```
 
-Auto-detected if installed at `/usr/local/aocl-fftw`.
+AOCL-FFTW is the sole FFT backend for Zen 4 — a direct A/B test confirmed it is
+cleanly faster than plain FFTW at every calibrated size. Auto-detected if
+installed at `/usr/local/aocl-fftw`.
 
 ### GPU (NVIDIA)
 
@@ -294,4 +296,4 @@ python/                      -- Python ctypes bindings
 MIT. See [LICENSE](LICENSE).
 
 ---
-\* Single-threaded, AMD Ryzen 9 7950X.
+\* Single-threaded, AMD Ryzen 9 7950X (AOCL-FFTW).
