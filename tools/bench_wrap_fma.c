@@ -19,8 +19,10 @@
  * Build: gcc -O3 -march=native -o bench_wrap_fma bench_wrap_fma.c
  *
  * Output: CSV on stdout (regime,na,wrap_m,fft_n,fma_count,median_ns_per_call).
- * The WRAP_FMA_NS estimate = median_ns_per_call / fma_count, averaged over
- * the small-wrap_m region (wrap_m ≤ 32) of the SMALL regime.
+ * WRAP_FMA_NS is extracted as a least-squares SLOPE of median_ns_per_call
+ * vs. fma_count (see tools/calibrate_full.sh) — NOT a raw ns_per_call /
+ * fma_count ratio, which is contaminated by fixed per-call overhead and
+ * overestimates the true marginal cost, especially at small fma_count.
  */
 #include <stdio.h>
 #include <stdlib.h>
