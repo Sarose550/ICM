@@ -1,25 +1,70 @@
 k,n_max,time_ms,engine,block_size,status
-2,1611329,997,linear,0,ok
-5,1562503,971,linear,0,ok
-10,1562506,981,linear,0,ok
-20,1562507,982,linear,0,ok
-50,1312516,979,linear,0,ok
-100,1062546,987,linear,0,ok
-200,578209,899,linear,0,ok
-500,206492,993,hybrid,32,ok
-1000,181343,982,hybrid,32,ok
-2000,162875,993,hybrid,32,ok
-5000,145468,997,hybrid,32,ok
-10000,127187,943,hybrid,32,ok
-13000,122687,971,hybrid,32,ok
-15000,120468,995,hybrid,32,ok
-17000,117406,976,hybrid,32,ok
-19000,118750,961,hybrid,32,ok
-22000,113437,976,hybrid,32,ok
-26000,114156,995,hybrid,32,ok
-30000,105937,974,hybrid,32,ok
-50000,90625,993,hybrid,32,ok
-70000,74375,983,hybrid,24,ok
-90000,90000,10000,hybrid,24,floor
-110000,110000,10000,hybrid,32,floor
-130000,130000,10000,hybrid,32,floor
+k=2: searching for 1s boundary...
+2,1562501,975,linear,0,ok
+  k=2 -> n_max=1562501 (975 ms) [linear B=0]
+k=5: searching for 1s boundary...
+5,1562503,969,linear,0,ok
+  k=5 -> n_max=1562503 (969 ms) [linear B=0]
+k=10: searching for 1s boundary...
+10,1562506,971,linear,0,ok
+  k=10 -> n_max=1562506 (971 ms) [linear B=0]
+k=20: searching for 1s boundary...
+20,410172,975,hybrid,16,ok
+  k=20 -> n_max=410172 (975 ms) [hybrid B=16]
+k=50: searching for 1s boundary...
+50,343782,964,hybrid,32,ok
+  k=50 -> n_max=343782 (964 ms) [hybrid B=32]
+k=100: searching for 1s boundary...
+100,312537,993,hybrid,24,ok
+  k=100 -> n_max=312537 (993 ms) [hybrid B=24]
+k=200: searching for 1s boundary...
+200,226581,980,hybrid,24,ok
+  k=200 -> n_max=226581 (980 ms) [hybrid B=24]
+k=500: searching for 1s boundary...
+500,212734,993,hybrid,32,ok
+  k=500 -> n_max=212734 (993 ms) [hybrid B=32]
+k=1000: searching for 1s boundary...
+1000,181343,978,hybrid,32,ok
+  k=1000 -> n_max=181343 (978 ms) [hybrid B=32]
+k=2000: searching for 1s boundary...
+2000,181437,981,hybrid,24,ok
+  k=2000 -> n_max=181437 (981 ms) [hybrid B=24]
+k=5000: searching for 1s boundary...
+5000,155156,969,hybrid,32,ok
+  k=5000 -> n_max=155156 (969 ms) [hybrid B=32]
+k=10000: searching for 1s boundary...
+10000,145937,996,hybrid,32,ok
+  k=10000 -> n_max=145937 (996 ms) [hybrid B=32]
+k=13000: searching for 1s boundary...
+13000,134875,986,hybrid,24,ok
+  k=13000 -> n_max=134875 (986 ms) [hybrid B=24]
+k=15000: searching for 1s boundary...
+15000,138046,986,hybrid,24,ok
+  k=15000 -> n_max=138046 (986 ms) [hybrid B=24]
+k=17000: searching for 1s boundary...
+17000,132281,974,hybrid,24,ok
+  k=17000 -> n_max=132281 (974 ms) [hybrid B=24]
+k=19000: searching for 1s boundary...
+19000,131218,993,hybrid,24,ok
+  k=19000 -> n_max=131218 (993 ms) [hybrid B=24]
+k=22000: searching for 1s boundary...
+22000,127875,916,hybrid,32,ok
+  k=22000 -> n_max=127875 (916 ms) [hybrid B=32]
+k=26000: searching for 1s boundary...
+26000,128375,971,hybrid,32,ok
+  k=26000 -> n_max=128375 (971 ms) [hybrid B=32]
+k=30000: searching for 1s boundary...
+30000,125156,999,hybrid,32,ok
+  k=30000 -> n_max=125156 (999 ms) [hybrid B=32]
+k=50000: searching for 1s boundary...
+50000,106250,992,hybrid,32,ok
+  k=50000 -> n_max=106250 (992 ms) [hybrid B=32]
+k=70000: searching for 1s boundary...
+70000,87500,984,hybrid,24,ok
+  k=70000 -> n_max=87500 (984 ms) [hybrid B=24]
+k=90000: searching for 1s boundary...
+90000,90000,1026,hybrid,24,ok
+  k=90000 -> n_max=90000 (1026 ms) [hybrid B=24]
+k=110000: searching for 1s boundary...
+110000,110000,1179,hybrid,32,floor
+  k=110000 -> n_max=110000 (1179 ms) [hybrid B=32] FLOOR
