@@ -47,6 +47,7 @@ fftw_wisdom.dat
 !results/parallel_speedup_m3pro.png
 !results/engine_dispatch_m3pro.png
 !results/runtime_vs_n_cpu_m3pro.png
+!results/wrap_fma_cost_curve.png
 zen4_*.txt
 planner_validation.csv
 gpu_limit_frontier.csv
@@ -126,6 +127,7 @@ test_cpu_cost_model_*
 !results/gpu_heatmap_*.csv
 !results/accuracy_convergence.csv
 !results/b_optimal_sweep_*.csv
+!results/wrap_fma_bench_*.csv
 .dsar/
 
 # AI agent project instructions -- not for public repo view
