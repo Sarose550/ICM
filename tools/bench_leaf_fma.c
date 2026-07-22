@@ -19,6 +19,18 @@
  * All timed code inline in main(). Unique data per block.
  *
  * Build: gcc -O3 -march=native -o bench_leaf_fma bench_leaf_fma.c -lm
+ *
+ * Output also includes a clean lookup table (per-player leaf cost,
+ * per_block_ns / B, using only the 6 candidate B values):
+ *   LEAF_FMA_NS_PER_PLAYER_TABLE
+ *   B=8,<value>
+ *   B=16,<value>
+ *   B=24,<value>
+ *   B=32,<value>
+ *   B=48,<value>
+ *   B=64,<value>
+ * This table is parsed by later tooling to populate the per-device
+ * leaf_fma_ns_per_player[] array in fft_config.h.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -252,6 +264,16 @@ int main(void) {
     printf("\n");
     printf("LEAF_FMA_NS=%.4f\n", leaf_fma_ns);
     printf("LEAF_BLOCK_NS=%.4f\n", leaf_block_ns);
+
+    /* ── Emit per-B lookup table (candidate B values only) ────────
+     * Per-player leaf cost = per_block_ns / B (includes amortized
+     * per-block overhead, since the benchmark measures full per-block time). */
+    printf("\n");
+    printf("LEAF_FMA_NS_PER_PLAYER_TABLE\n");
+    int table_B[6] = {8, 16, 24, 32, 48, 64};
+    for (int bi = 0; bi < n_B; bi++) {
+        printf("B=%d,%.4f\n", table_B[bi], y_tpb[bi] / (double)table_B[bi]);
+    }
 
     /* R² */
     double my = 0;

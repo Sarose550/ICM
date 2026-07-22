@@ -140,22 +140,49 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef INDEP_PAIR_RATIO
 #define INDEP_PAIR_RATIO 1.9080  /* correlate_fft_pair / full pipeline */
 #endif
-/* Hybrid-engine block/leaf constants — placeholders until
- * tools/fit_cost_model.py --write overwrites them with a real fit. */
+/* Hybrid-engine block/leaf constants — per-B lookup tables.
+ *
+ * These replace the old 2-parameter linear fit (BLOCK_FMA_NS, BLOCK_MEM_NS,
+ * LEAF_FMA_NS, LEAF_BLOCK_NS) with directly-measured per-player costs at
+ * each of the 6 candidate block sizes B ∈ {8, 16, 24, 32, 48, 64}.
+ *
+ * The per-B cost is genuinely non-linear (reorder-buffer-limited ILP —
+ * see SPRINT_MICROBENCH_MIGRATION_DAG.md "Lookup-table redesign" for the
+ * full mechanism and empirical evidence).  A lookup table captures this
+ * without unphysical negative intercepts.
+ *
+ * PLACEHOLDER VALUES — sampled from tools/bench_block_build and
+ * tools/bench_leaf_fma on this machine.  These WILL BE OVERWRITTEN
+ * by a real per-device calibration run (a separate node in the sprint). */
+#ifndef BLOCK_BUILD_NS_PER_PLAYER_DEFINED
+#define BLOCK_BUILD_NS_PER_PLAYER_DEFINED
+static const double block_build_ns_per_player[6] = {
+    5.3362,  /* B=8  */
+    6.0105,  /* B=16 */
+    6.4528,  /* B=24 */
+    6.5732,  /* B=32 */
+    7.5059,  /* B=48 */
+    8.7667   /* B=64 */
+};
+#endif
+
+#ifndef LEAF_FMA_NS_PER_PLAYER_DEFINED
+#define LEAF_FMA_NS_PER_PLAYER_DEFINED
+static const double leaf_fma_ns_per_player[6] = {
+    5.8750,  /* B=8  */
+    12.1875, /* B=16 */
+    14.9444, /* B=24 */
+    18.6667, /* B=32 */
+    26.0278, /* B=48 */
+    32.7552  /* B=64 */
+};
+#endif
+
+/* FP64 division floor — directly measured, one division per player in
+ * the leaf-extraction synthetic-division recurrence.  This is a genuine
+ * hardware throughput bound, independent of B. */
 #ifndef FP64_DIV_NS
-#define FP64_DIV_NS 3.4890  /* ns per FP64 division — re-fit via fit_cost_model.py */
-#endif
-#ifndef LEAF_FMA_NS
-#define LEAF_FMA_NS 0.0727  /* ns per FMA in leaf blocks — re-fit via fit_cost_model.py */
-#endif
-#ifndef LEAF_BLOCK_NS
-#define LEAF_BLOCK_NS 48.1032  /* ns per leaf block overhead — re-fit via fit_cost_model.py */
-#endif
-#ifndef BLOCK_FMA_NS
-#define BLOCK_FMA_NS 0.4027  /* ns per FMA in block build — re-fit via fit_cost_model.py */
-#endif
-#ifndef BLOCK_MEM_NS
-#define BLOCK_MEM_NS 0.1  /* ns per block-build memory op — re-fit via fit_cost_model.py */
+#define FP64_DIV_NS 3.4890  /* ns per FP64 division — re-measure via bench_div_chain */
 #endif
 
 /* ── Cache hierarchy ── */

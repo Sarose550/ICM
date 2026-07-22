@@ -33,6 +33,18 @@
  *   BLOCK_FMA_NS=<value>
  *   BLOCK_MEM_NS=<value>
  *   R2=<value>
+ *
+ * Then a clean lookup table (using only the 6 candidate B values
+ * {8,16,24,32,48,64}, averaged over nblocks runs):
+ *   BLOCK_BUILD_NS_PER_PLAYER_TABLE
+ *   B=8,<value>
+ *   B=16,<value>
+ *   B=24,<value>
+ *   B=32,<value>
+ *   B=48,<value>
+ *   B=64,<value>
+ * This table is parsed by later tooling to populate the per-device
+ * block_build_ns_per_player[] array in fft_config.h.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -186,6 +198,11 @@ int main(void) {
     double reg_x[MAX_DATA], reg_y[MAX_DATA];
     int ndata = 0;
 
+    /* ── Per-B lookup table (6 candidate B values only) ──────────── */
+    int table_B[6] = {8, 16, 24, 32, 48, 64};
+    double table_sum[6] = {0.0};
+    int table_count[6] = {0};
+
     double global_sink = 0.0;
 
     /* Seed once for reproducible a[] values across all sweeps */
@@ -257,6 +274,15 @@ int main(void) {
                    leaf_psz);
             fflush(stdout);
 
+            /* Accumulate for per-B lookup table (candidate B values only) */
+            for (int ti = 0; ti < 6; ti++) {
+                if (B == table_B[ti]) {
+                    table_sum[ti] += ns_per_player;
+                    table_count[ti]++;
+                    break;
+                }
+            }
+
             /* Store for final regression */
             if (ndata < MAX_DATA) {
                 reg_x[ndata] = (double)(B + 1) / 2.0;
@@ -280,6 +306,15 @@ int main(void) {
     printf("BLOCK_FMA_NS=%.4f\n", slope);
     printf("BLOCK_MEM_NS=%.4f\n", intercept);
     printf("R2=%.6f\n", r2);
+
+    /* ── Emit per-B lookup table (candidate B values only) ──────── */
+    printf("\n");
+    printf("BLOCK_BUILD_NS_PER_PLAYER_TABLE\n");
+    for (int ti = 0; ti < 6; ti++) {
+        double avg = (table_count[ti] > 0)
+                     ? table_sum[ti] / (double)table_count[ti] : 0.0;
+        printf("B=%d,%.4f\n", table_B[ti], avg);
+    }
 
     return 0;
 }

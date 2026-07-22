@@ -2153,6 +2153,22 @@ static int select_best_B(int n, int k);
  * to be defined above (from fft_config.h). */
 #include "cost_model.h"
 
+/* Map candidate block size B to lookup-table index 0-5.
+ * Candidate set is {8, 16, 24, 32, 48, 64} — fixed, 6 entries.
+ * Linear scan is fine; only called from select_engine_ex/select_best_B
+ * (O(1) per call, 6 candidates max). */
+static int B_to_table_index(int B) {
+    switch (B) {
+        case 8:  return 0;
+        case 16: return 1;
+        case 24: return 2;
+        case 32: return 3;
+        case 48: return 4;
+        case 64: return 5;
+        default: return 0; /* fallback: shouldn't happen with valid candidates */
+    }
+}
+
 /* Engine dispatch: compare estimated linear vs hybrid cost for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.
  * n_targets: number of target players for subset queries (0 or n = all players).
@@ -2174,8 +2190,8 @@ static int select_engine_ex(int n, int k, int n_targets) {
     { const char *fb = getenv("ICM_FORCE_B");
       if (fb && fb[0]) { int v = atoi(fb); if (v > 0 && v <= n && v <= k) B = v; } }
     int nblocks = (n + B - 1) / B;
-    /* block_build: per-player FMA work + per-player memory streaming. */
-    double block_build = (double)n * ((double)(B+1) / 2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
+    /* block_build: per-player cost via direct lookup table (non-linear in B). */
+    double block_build = (double)n * block_build_ns_per_player[B_to_table_index(B)];
     TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
     double tree = 0;
     for (int ell = 1; ell < tc->L - 1; ell++) {
@@ -2213,11 +2229,16 @@ static int select_engine_ex(int n, int k, int n_targets) {
     }
     tree_ctx_destroy(tc);
 
-    /* leaf_extract: ECM max(division throughput, FMA chain) + per-block overhead.
+    /* leaf_extract: per-player cost via direct lookup table.
+     * FP64_DIV_NS is the division-bound floor (directly measured, one div per player).
+     * leaf_fma_ns_per_player[] gives the FMA-chain side (per player, already includes
+     * amortized per-block overhead from the benchmark measurement — per_block_ns / B).
+     * The max() decides which bottleneck dominates.
      * For subset queries, only target players need extraction. */
-    double le_div = FP64_DIV_NS, le_fma = 2.0 * B * LEAF_FMA_NS;
-    double leaf_extract = (double)n * (le_div > le_fma ? le_div : le_fma)
-                        + (double)n / B * LEAF_BLOCK_NS;
+    int bidx = B_to_table_index(B);
+    double le_cost_per_player = (FP64_DIV_NS > leaf_fma_ns_per_player[bidx])
+                                ? FP64_DIV_NS : leaf_fma_ns_per_player[bidx];
+    double leaf_extract = (double)n * le_cost_per_player;
     double hybrid_total = block_build + tree + leaf_extract * target_frac;
 
     return (hybrid_total < linear_per_qp) ? B : 0;
@@ -2523,13 +2544,13 @@ static int select_best_B(int n, int k) {
         int n_leaves = (n + B - 1) / B;
         TreeCtx *tc = tree_ctx_create_ex2(n_leaves, B, k, B);
         int L = tc->L;
-        /* block_build: per-player FMA work + per-player memory streaming.
-         * leaf_extract: ECM max(division throughput, FMA chain) + per-block overhead. */
-        double block_build = (double)n * ((double)(B+1) / 2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
-        double leaf_div = FP64_DIV_NS;
-        double leaf_fma = 2.0 * B * LEAF_FMA_NS;
-        double leaf = (double)n * (leaf_div > leaf_fma ? leaf_div : leaf_fma)
-                    + (double)n / B * LEAF_BLOCK_NS;
+        /* block_build: per-player cost via direct lookup table.
+         * leaf_extract: per-player cost via direct lookup table (includes
+         * amortized per-block overhead in the table values). */
+        double block_build = (double)n * block_build_ns_per_player[B_to_table_index(B)];
+        double le_cost_per_player = (FP64_DIV_NS > leaf_fma_ns_per_player[B_to_table_index(B)])
+                                    ? FP64_DIV_NS : leaf_fma_ns_per_player[B_to_table_index(B)];
+        double leaf = (double)n * le_cost_per_player;
         double tree = 0;
         for (int ell = 1; ell < L - 1; ell++) {
             int cps = tc->psz[ell-1];
