@@ -330,16 +330,38 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 > 2.35× speedup on the previously-regressed n=32768,k=n cell with no
 > regressions across spot-checks. `./bench_grid verify`: ALL TESTS PASSED.
 
-### Zen 4 bandwidth constants — known measurement bug
+### Zen 4 bandwidth constants — root cause diagnosed and fixed, pending re-verification
 
 `devices/zen4/fft_config.h` contains `L2_BW_GBS=341868.5` and `L3_BW_GBS=3233.3`,
-both physically impossible (hundreds of TB/s for L2). This bug is pre-existing
-(confirmed in the commit before this sprint started) and was **not fixed this
-session**. These constants feed `blended_bandwidth()` in `src/cost_model.h`,
-which affects `select_engine()` dispatch cost for the linear engine — this
-could bias dispatch toward linear for L2-resident working sets, independent of
-everything else addressed this sprint. Does not affect correctness
-(`./bench_grid verify` is unaffected). Real follow-up work for a future session.
+both physically impossible (hundreds of TB/s for L2). Pre-existing bug
+(confirmed present in the commit before this sprint started). Root cause:
+`tools/calibrate.c`'s `measure_bw()` runs its streaming loop `reps` times,
+but the loop body (`a[i] = b[i]*s + c[i]`) doesn't depend on the repetition
+index — an optimizing compiler can prove the repeated stores are redundant
+and collapse the whole `reps` loop to a single real pass, while the
+byte-count computation still charges for every nominal repetition,
+inflating the reported bandwidth by ~`reps`x. Dividing each Zen4 value by
+its own `reps` count gives 112 / 34 / 32 GB/s for L2 / L3 / DRAM — all
+physically plausible, matching this mechanism exactly. The same source
+doesn't exhibit the bug when compiled for M3 Pro (values were already
+sane), consistent with a GCC/x86 optimization difference.
+
+**Fixed** with a standard compiler memory barrier (`asm volatile` with a
+memory clobber) after each repetition, forcing the compiler to treat
+memory as externally observed. Verified in isolation not to regress
+M3 Pro's already-correct values (it tightens them: 83–114 GB/s scattered →
+a consistent ~115 GB/s across all three cache levels).
+
+**Not yet re-verified with a fresh calibration run on Zen4 hardware** —
+the calibration machine's credential window expired and became
+unreachable before this fix was written. The 112/34/32 GB/s figures above
+are a well-evidenced prediction (exact `reps`-factor match, standard/known
+bug class), not a fresh measurement — `devices/zen4/fft_config.h` itself
+still has the old, wrong values until someone reruns `tools/calibrate` on
+that hardware. These constants feed `blended_bandwidth()` in
+`src/cost_model.h`, affecting `select_engine()` dispatch cost for the
+linear engine — not correctness (`./bench_grid verify` is unaffected
+regardless).
 
 ---
 
