@@ -72,6 +72,12 @@ dist/
 # Claude Code
 .claude/
 
+# DeepSeek Deck worktrees (deck folder create --isolation worktree)
+.deck-worktrees/
+
+# Scratch investigation workspaces (not part of the shipped project)
+scratch/
+
 # OS
 .DS_Store
 
