@@ -36,6 +36,9 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#ifdef __APPLE__
+#include <pthread.h>
+#endif
 
 static volatile int g_B = 0;
 static volatile int g_pk_g = 0;
@@ -60,6 +63,13 @@ static double linreg(int n, const double *x, const double *y, double *intercept)
 }
 
 int main(void) {
+#ifdef __APPLE__
+    /* Pin to P-cores: without this, the scheduler can silently place this
+     * thread on an E-core (half a P-core's FP throughput) under any
+     * contention, corrupting the measurement with no indication in the
+     * tool's own output. See HANDOFF.md's QoS-pinning hypothesis. */
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
     int B_vals[] = {8, 16, 24, 32, 48, 64};
     int n_B = 6, n_reps = 7, n_blocks = 3000;
 

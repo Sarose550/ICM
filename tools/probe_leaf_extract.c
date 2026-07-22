@@ -12,6 +12,9 @@
  *       -o build/probe_leaf_extract tools/probe_leaf_extract.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */
+#ifdef __APPLE__
+#include <pthread.h>
+#endif
 #include "icm.c"
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,6 +225,13 @@ static void probe_phases(int n, const double *S,
 }
 
 int main(void) {
+#ifdef __APPLE__
+    /* Pin to P-cores: without this, the scheduler can silently place this
+     * thread on an E-core (half a P-core's FP throughput) under any
+     * contention, corrupting the measurement with no indication in the
+     * tool's own output. See HANDOFF.md's QoS-pinning hypothesis. */
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
     build_fftw_size_table();
     icm_init(NULL);
 
