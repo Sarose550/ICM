@@ -125,6 +125,7 @@ test_cpu_cost_model_*
 !results/contour_*.csv
 !results/gpu_heatmap_*.csv
 !results/accuracy_convergence.csv
+!results/b_optimal_sweep_*.csv
 .dsar/
 
 # AI agent project instructions -- not for public repo view
