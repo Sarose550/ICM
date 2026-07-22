@@ -1126,8 +1126,6 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
              * Compare TOTAL cost (build + correlate) for both paths, since
              * choosing schoolbook for build also means schoolbook for correlate.
              * Below-sat polys have actual degree cps/2 (upper half is zero). */
-            int d_eff = is_below ? cps / 2 : cps - 1;
-            long long school_cost_flops = (long long)(d_eff + 1) * (d_eff + 1);
             int build_conv_len = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
             int bfn, bwm;
             best_fft_config(build_conv_len, &bfn, &bwm, 0);  /* polymul: no input-wrap */
@@ -1145,11 +1143,21 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
              * validated to give correct B and FFT crossover decisions.
              * The correlate cost is implicitly handled: when schoolbook wins the
              * build comparison, correlate also uses schoolbook, and the cost model
-             * in select_best_B accounts for both via the tree cost sum. */
-            double school_build = school_cost_flops * FMA_NS;
+             * in select_best_B accounts for both via the tree cost sum.
+             * Schoolbook build cost via direct per-size lookup (not FMA_NS formula). */
+            int idx;
+            { int lo=0,hi=N_CALIBRATED_SIZES-1;
+              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
+              idx=lo; }
+            double school_build = schoolbook_mul_ns[idx];
             int p_eff = is_below ? cps/2 + 1 : cps;
             int out_needed = tc->g_needed[ell-1];
-            tc->use_fft[ell] = (fft_build + fft_overhead + build_correction < school_build);
+            /* school_build < 0 is the "unmeasured size" sentinel (cps beyond
+             * bench_schoolbook_tree.c's cutoff) — schoolbook is never chosen
+             * there (FFT always wins at that size), so force FFT rather than
+             * let a negative sentinel win a naive numeric comparison. */
+            tc->use_fft[ell] = (school_build < 0.0) ||
+                                (fft_build + fft_overhead + build_correction < school_build);
 
             if (tc->use_fft[ell]) {
                 tc->build_fft_n[ell] = bfn;
@@ -2221,9 +2229,16 @@ static int select_engine_ex(int n, int k, int n_targets) {
             }
             tree += nr * (build_fft + corr);
         } else {
-            int d_eff = tc->below_sat[ell] ? cps/2 : cps-1;
-            double s = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
-            double c = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
+            /* Schoolbook cost via direct per-size lookup table.
+             * Binary-search calib_sizes[] for cps (exact match guaranteed —
+             * cps is always a power-of-2 multiple of B or a smooth k_padded cap,
+             * both of which are in calib_sizes[] by construction). */
+            int idx;
+            { int lo=0,hi=N_CALIBRATED_SIZES-1;
+              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
+              idx=lo; }
+            double s = schoolbook_mul_ns[idx];
+            double c = (double)cps * tc->g_needed[ell-1] * schoolbook_corr_ns[idx];
             tree += nr * (s + c);
         }
     }
@@ -2580,12 +2595,16 @@ static int select_best_B(int n, int k) {
                 }
                 tree += nr * (build_fft + corr);
             } else {
+                /* Schoolbook cost via direct per-size lookup table
+                 * (mirrors the identical lookup in select_engine_ex). */
                 int is_below = tc->below_sat[ell];
-                int d_eff = is_below ? cps/2 : cps-1;
-                double school_mul, school_corr;
-                    school_mul = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
-                /* Correlate uses scalar (inner loop is memory-bound at FMA_NS) */
-                school_corr = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
+                int this_cps = cps; (void)is_below;
+                int idx;
+                { int lo=0,hi=N_CALIBRATED_SIZES-1;
+                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<this_cps)lo=m+1;else hi=m;}
+                  idx=lo; }
+                double school_mul = schoolbook_mul_ns[idx];
+                double school_corr = (double)cps * tc->g_needed[ell-1] * schoolbook_corr_ns[idx];
                 tree += nr * (school_mul + school_corr);
             }
         }
