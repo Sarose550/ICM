@@ -396,5 +396,88 @@ int main(void) {
     printf("prediction: block_build_ns_per_player[%d]=%.4f\n",
            B_to_table_index(B), block_build_ns_per_player[B_to_table_index(B)]);
 
+    /* ── B-SWEEP PHASE: n=8192, k=320, sweep B ∈ {8,16,24,32,48,64} ──
+     * Same fresh-HybridCtx-per-rep discipline as the main sweep above.
+     * n=8192 is large enough that per-block overhead is well amortised;
+     * k=320 is near the real crossover region (not an extreme value).
+     * Each B runs N_REPS independent HybridCtx alloc→probe→destroy cycles. */
+    printf("\n\n=== B-SWEEP (n=8192, k=320, Q=%d, %d reps median) ===\n\n",
+           Q_PROBE, N_REPS);
+    printf("%-6s %12s %12s %12s\n",
+           "B", "leaf_ns/qp", "leaf_ns/player", "pred_ns/player");
+    printf("%-6s %12s %12s %12s\n",
+           "", "", "(measured)", "(current model)");
+
+    {
+        int bs_n = 8192, bs_k = 320;
+        int B_vals[] = {8, 16, 24, 32, 48, 64};
+        int n_Bvals = 6;
+        double leaf_table[6];  /* store measured ns/player for final table */
+
+        double *S_bs = (double *)malloc(bs_n * sizeof(double));
+        double *payout_bs = (double *)malloc(bs_k * sizeof(double));
+        if (!S_bs || !payout_bs) { fprintf(stderr, "OOM\n"); return 1; }
+        srand(42);
+        for (int i = 0; i < bs_n; i++)
+            S_bs[i] = 100.0 + 9900.0 * ((double)rand() / RAND_MAX);
+        for (int q = 0; q < bs_k; q++)
+            payout_bs[q] = 1.0 / (q + 1) - 1.0 / (q + 2);
+
+        for (int bi = 0; bi < n_Bvals; bi++) {
+            int Bv = B_vals[bi];
+            fprintf(stderr, "B-sweep: B=%d n=%d k=%d...\n", Bv, bs_n, bs_k);
+
+            double leaf_samples[N_REPS];
+            double block_samples[N_REPS];
+
+            for (int rep = 0; rep < N_REPS; rep++) {
+                HybridCtx *hc = hybrid_ctx_create(bs_n, S_bs, bs_k, Bv);
+                if (!hc) { fprintf(stderr, "hc failed at B=%d\n", Bv); return 1; }
+
+                double block_total, tree_total, leaf_total;
+                probe_phases(bs_n, S_bs, payout_bs, bs_k, hc,
+                             &block_total, &tree_total, &leaf_total);
+
+                block_samples[rep] = block_total / Q_PROBE;
+                leaf_samples[rep] = leaf_total / Q_PROBE;
+
+                hybrid_ctx_destroy(hc);
+            }
+
+            qsort(block_samples, N_REPS, sizeof(double), cmp_double);
+            qsort(leaf_samples, N_REPS, sizeof(double), cmp_double);
+
+            double med_block = block_samples[N_REPS / 2];
+            double med_leaf = leaf_samples[N_REPS / 2];
+            double leaf_ns_per_player = med_leaf / (double)bs_n;
+            double block_ns_per_player = med_block / (double)bs_n;
+            leaf_table[bi] = leaf_ns_per_player;
+
+            int bidx = B_to_table_index(Bv);
+            double le_cost = (FP64_DIV_NS > leaf_fma_ns_per_player[bidx])
+                             ? FP64_DIV_NS : leaf_fma_ns_per_player[bidx];
+
+            printf("%-6d %12.1f %12.4f %12.4f\n",
+                   Bv, med_leaf, leaf_ns_per_player, le_cost);
+        }
+
+        printf("\n=== FINAL leaf_fma_ns_per_player[] TABLE ===\n");
+        printf("/* Paste into devices/m3_pro/fft_config.h —\n");
+        printf("   replace the LEAF_FMA_NS_PER_PLAYER_DEFINED block. */\n");
+        printf("static const double leaf_fma_ns_per_player[6] = {\n");
+        for (int bi = 0; bi < n_Bvals; bi++) {
+            const char *comment = (B_vals[bi] == 8)  ? "  /* B=8  */" :
+                                  (B_vals[bi] == 16) ? "  /* B=16 */" :
+                                  (B_vals[bi] == 24) ? "  /* B=24 */" :
+                                  (B_vals[bi] == 32) ? "  /* B=32 */" :
+                                  (B_vals[bi] == 48) ? "  /* B=48 */" :
+                                                        "  /* B=64 */";
+            printf("    %.4f,%s\n", leaf_table[bi], comment);
+        }
+        printf("};\n");
+
+        free(S_bs); free(payout_bs);
+    }
+
     return 0;
 }

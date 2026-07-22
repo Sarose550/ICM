@@ -166,15 +166,22 @@ static const double block_build_ns_per_player[6] = {
 };
 #endif
 
+/* Recalibrated 2026-07-22 from tools/probe_leaf_extract.c's B-sweep phase
+ * (n=8192, k=320, fresh HybridCtx per rep -- matching a real single
+ * icm_equity() call's cold allocation, unlike the old bench_leaf_fma.c
+ * table which was 2-2.3x too high: it only ever exercised the expensive
+ * forward-divide branch, but real production data is ~99.9% the cheap
+ * "zero" branch (aj underflows, no division at all). See HANDOFF.md and
+ * DISPATCH_GAP_ANALYSIS.md. */
 #ifndef LEAF_FMA_NS_PER_PLAYER_DEFINED
 #define LEAF_FMA_NS_PER_PLAYER_DEFINED
 static const double leaf_fma_ns_per_player[6] = {
-    5.8750,  /* B=8  */
-    12.1875, /* B=16 */
-    14.9444, /* B=24 */
-    18.6667, /* B=32 */
-    26.0278, /* B=48 */
-    32.7552  /* B=64 */
+    2.8234,  /* B=8  */
+    3.5062,  /* B=16 */
+    5.4698,  /* B=24 */
+    7.8955,  /* B=32 */
+    12.8751, /* B=48 */
+    19.2914  /* B=64 */
 };
 #endif
 

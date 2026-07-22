@@ -4,12 +4,18 @@
  * with per-level timing, and compares against the cost model's per-level
  * prediction formula from select_engine_ex().
  *
- * Output CSV: n,k,B,level,cps,nr,use_fft,fft_cache_ok,measured_ns,predicted_ns,ratio
- * Plus block-build and leaf-divide measured time per row for context.
+ * Output CSV (aggregated per (n,k,B) cell):
+ *   n,k,B,num_schoolbook,geo_schoolbook,
+ *   num_fft_cached,geo_fft_cached,
+ *   num_fft_uncached,geo_fft_uncached,min_fft_uncached,max_fft_uncached,
+ *   block_build_ns,leaf_divide_ns
+ *
+ * Where geo_* is the geometric mean of (measured_ns / predicted_ns) across
+ * all levels in that bucket, and num_* is the count of levels in that bucket.
  *
  * Build (macOS M3 Pro):
  *   gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
- *       -o probe_tree_levels tools/probe_tree_levels.c \
+ *       -o build/probe_tree_levels tools/probe_tree_levels.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */
 #include "icm.c"
@@ -206,11 +212,71 @@ static int cmp_double(const void *a, const void *b) {
     return (da > db) ? 1 : (da < db) ? -1 : 0;
 }
 
+/* ── Bucket helper ── */
+typedef struct {
+    double *ratios;
+    int count;
+    int cap;
+} Bucket;
+
+static void bucket_init(Bucket *b) {
+    b->ratios = NULL;
+    b->count = 0;
+    b->cap = 0;
+}
+
+static void bucket_add(Bucket *b, double ratio) {
+    if (b->count >= b->cap) {
+        int new_cap = b->cap ? b->cap * 2 : 16;
+        b->ratios = (double *)realloc(b->ratios, new_cap * sizeof(double));
+        b->cap = new_cap;
+    }
+    b->ratios[b->count++] = ratio;
+}
+
+static double bucket_geo_mean(const Bucket *b) {
+    if (b->count == 0) return 0.0;
+    double sum_log = 0.0;
+    int valid = 0;
+    for (int i = 0; i < b->count; i++) {
+        if (b->ratios[i] > 0.0) {
+            sum_log += log(b->ratios[i]);
+            valid++;
+        }
+    }
+    if (valid == 0) return 0.0;
+    return exp(sum_log / valid);
+}
+
+static double bucket_min(const Bucket *b) {
+    if (b->count == 0) return 0.0;
+    double v = b->ratios[0];
+    for (int i = 1; i < b->count; i++)
+        if (b->ratios[i] < v) v = b->ratios[i];
+    return v;
+}
+
+static double bucket_max(const Bucket *b) {
+    if (b->count == 0) return 0.0;
+    double v = b->ratios[0];
+    for (int i = 1; i < b->count; i++)
+        if (b->ratios[i] > v) v = b->ratios[i];
+    return v;
+}
+
+static void bucket_free(Bucket *b) {
+    free(b->ratios);
+    b->ratios = NULL;
+    b->count = b->cap = 0;
+}
+
 /* ── Driver ── */
 
 #define MAX_REPS 80
 
-static void probe_one(int n, int k, int B) {
+static void probe_one(int n, int k, int B,
+                       Bucket *sb, Bucket *fft_c, Bucket *fft_u,
+                       double *out_block_ns, double *out_leaf_ns) {
     double *S = (double *)malloc(n * sizeof(double));
     double *payout = (double *)malloc(k * sizeof(double));
     double *a = (double *)malloc(n * sizeof(double));
@@ -248,19 +314,7 @@ static void probe_one(int n, int k, int B) {
     int n_reps = 0;
 
     for (int rep = 0; rep < MAX_REPS; rep++) {
-        /* Must reset the HybridCtx workspace before each rep, because
-         * tree_build_levels + tree_propagate_g mutate tc->ws in place.
-         * The simplest way: destroy and recreate. But that's expensive.
-         * Instead, we save/restore the relevant parts of the workspace.
-         * Actually, the easiest correct approach: just re-run the block build
-         * from scratch each time, which overwrites the leaf data. The tree
-         * build overwrites upper levels and propagate overwrites g buffers.
-         * A fresh start is guaranteed by memset of the full workspace. */
         memset(tc->ws, 0, tc->ws_size * sizeof(double));
-
-        /* Clear FFT coefficient caches (they get written during build) */
-        /* They're just arrays that get overwritten — no need to clear explicitly
-         * since tree_build_levels writes them before reading. */
 
         double t_block0 = now_ns();
 
@@ -270,7 +324,6 @@ static void probe_one(int n, int k, int B) {
         int N_tree = tc->N;
         int leaf_psz = tc->psz[0];
         double *plev_data = tc->ws;
-        int *psz = tc->psz;
 
         for (int b = 0; b < nblocks; b++) {
             int start = b * B_val, end = start + B_val;
@@ -316,40 +369,6 @@ static void probe_one(int n, int k, int B) {
         /* ── Leaf divide (timed for context) ── */
         double t_leaf0 = now_ns();
 
-        double *g_leaf = tc->ws + tc->plev_total;
-        /* g_leaf was just written by tree_propagate_g_timed in g_child buffer,
-         * which alternates between g_buf0 and g_buf1. After the loop,
-         * g_parent points to the leaf-level g buffer. However, tree_propagate_g_timed
-         * doesn't return g_leaf — we need to compute where it landed.
-         * The final g_parent after the loop (ell goes down to 1) will be at
-         * g_buf1 if (top % 2 == 1), else g_buf0. But since top = L-1, and L
-         * varies, we need to be careful. Let's just use the last swap result.
-         *
-         * Actually, let's compute it: init g_parent = g_buf0.
-         * For ell=top: g_child = g_buf1, after loop g_parent = g_child = g_buf1.
-         * For ell=top-1: g_child = g_buf0, after loop g_parent = g_child = g_buf0.
-         * So leaf level (ell=0) is in g_buf0 if (top % 2 == 0), else g_buf1.
-         * But we don't need to be precise here — this is just context timing.
-         * Let's extract g_leaf properly by re-running tree_propagate_g and
-         * capturing its return value. Or we can just skip leaf divide timing
-         * and note it as approximate.
-         *
-         * SIMPLIFICATION: We'll track the final g_leaf from tree_propagate_g_timed
-         * by returning it. Let me modify the approach: tree_propagate_g_timed
-         * now stores the final g_leaf pointer in a pass-by-reference parameter. */
-        /* For now, let's just time the leaf divide by re-doing it manually.
-         * We need to figure out which buffer has g_leaf. After the loop in
-         * tree_propagate_g_timed, the last swap put leaf-g in whichever buffer
-         * was g_child on the last iteration (ell=1). Let's compute:
-         *   init: g_parent = g_buf0
-         *   ell=top: g_child = g_buf1, g_parent ← g_buf1
-         *   ell=top-1: g_child = g_buf0, g_parent ← g_buf0
-         *   ...
-         *   After ell=1 iteration: g_parent = g_buf0 if (top-1) is even,
-         *   else g_buf1.
-         * So leaf data is in g_buf0 if ((L-1)-1) is even, i.e., L is even.
-         * Leaf = g_buf0 if L%2==0, else g_buf1.
-         */
         double *leaf_g = (L % 2 == 0)
             ? (tc->ws + tc->plev_total)
             : (tc->ws + tc->plev_total + tc->max_g);
@@ -420,16 +439,13 @@ static void probe_one(int n, int k, int B) {
         n_reps++;
     }
 
-    /* ── Compute medians and emit CSV rows ── */
-    /* Sort and take median for block build */
+    /* ── Compute medians and bucket per-level ratios ── */
     qsort(block_samples, n_reps, sizeof(double), cmp_double);
-    double med_block = block_samples[n_reps / 2];
+    *out_block_ns = block_samples[n_reps / 2];
 
-    /* Sort and take median for leaf divide */
     qsort(leaf_samples, n_reps, sizeof(double), cmp_double);
-    double med_leaf = leaf_samples[n_reps / 2];
+    *out_leaf_ns = leaf_samples[n_reps / 2];
 
-    /* Per-level: sum build + propagate, then take median */
     for (int ell = 1; ell < L - 1; ell++) {
         double combined[MAX_REPS];
         for (int r = 0; r < n_reps; r++)
@@ -440,17 +456,17 @@ static void probe_one(int n, int k, int B) {
         double predicted = predict_level_ns(tc, ell);
         double ratio = (predicted > 0) ? med_measured / predicted : 0;
 
-        int cps = tc->psz[ell-1];
-        int nr = tc->n_real[ell];
         int use_fft = tc->use_fft[ell];
         int cache_ok = tc->fft_cache_ok[ell];
 
-        printf("%d,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.4f,%.3f,%.3f\n",
-               n, k, B, ell, cps, nr, use_fft, cache_ok,
-               med_measured, predicted, ratio,
-               med_block, med_leaf);
+        if (!use_fft) {
+            bucket_add(sb, ratio);
+        } else if (cache_ok) {
+            bucket_add(fft_c, ratio);
+        } else {
+            bucket_add(fft_u, ratio);
+        }
     }
-    fflush(stdout);
 
     hybrid_ctx_destroy(hc);
 
@@ -458,37 +474,130 @@ cleanup:
     free(S); free(payout); free(a); free(inner);
 }
 
+/* ── Plan dumper (for diagnostic verification) ── */
+static void dump_plan(int n, int k, int B) {
+    double *S = (double *)malloc(n * sizeof(double));
+    if (!S) return;
+    srand(42);
+    for (int i = 0; i < n; i++)
+        S[i] = 100.0 + 9900.0 * ((double)rand() / RAND_MAX);
+    HybridCtx *hc = hybrid_ctx_create(n, S, k, B);
+    if (!hc) { free(S); return; }
+    TreeCtx *tc = hc->tc;
+    int L = tc->L;
+    fprintf(stderr, "  PLAN n=%d k=%d B=%d L=%d:\n", n, k, B, L);
+    for (int ell = 1; ell < L - 1; ell++) {
+        fprintf(stderr, "    ell=%d cps=%d nr=%d use_fft=%d cache_ok=%d "
+                "bfn=%d bwm=%d cfn=%d cwm=%d g_need=%d below=%d\n",
+                ell, tc->psz[ell-1], tc->n_real[ell],
+                tc->use_fft[ell], tc->fft_cache_ok[ell],
+                tc->build_fft_n[ell], tc->build_wrap_m[ell],
+                tc->corr_fft_n[ell], tc->corr_wrap_m[ell],
+                tc->g_needed[ell-1], tc->below_sat[ell]);
+    }
+    hybrid_ctx_destroy(hc);
+    free(S);
+}
+
 int main(void) {
     build_fftw_size_table();
     icm_init(NULL);
 
-    int n_vals[] = {512, 1024, 4096, 8192};
-    int n_n = 4;
-    int k_vals[] = {40, 120, 160, 200, 260, 300};
-    int n_k = 6;
-    int B_vals[] = {8, 32};
-    int n_B = 2;
+    /* Sweep grid designed to hit the FFT-uncached crossover region on M3 Pro.
+     * n: powers of two from 512 to 16384
+     * k: medium-to-large payout counts that span the hybrid/linear crossover
+     * B: 8 (the block size selected by production dispatch for these sizes) */
+    int n_vals[] = {512, 1024, 2048, 4096, 8192, 16384};
+    int n_n = 6;
+    int k_vals[] = {80, 120, 160, 200, 240, 280, 320, 400};
+    int n_k = 8;
+    int B = 8;
 
     /* Header */
-    printf("n,k,B,level,cps,nr,use_fft,fft_cache_ok,measured_ns,predicted_ns,ratio,block_build_ns,leaf_divide_ns\n");
+    printf("n,k,B,num_schoolbook,geo_schoolbook,"
+           "num_fft_cached,geo_fft_cached,"
+           "num_fft_uncached,geo_fft_uncached,min_fft_uncached,max_fft_uncached,"
+           "block_build_ns,leaf_divide_ns\n");
 
+    /* ── Phase 1: dump plans for a few representative cells to stderr ── */
+    fprintf(stderr, "=== Plan diagnostics (B=8) ===\n");
+    dump_plan(512, 400, 8);
+    dump_plan(2048, 400, 8);
+    dump_plan(8192, 400, 8);
+    dump_plan(16384, 400, 8);
+
+    /* Also try B=32 for comparison (known to hit uncached on Zen4) */
+    fprintf(stderr, "=== Plan diagnostics (B=32) ===\n");
+    dump_plan(4096, 400, 32);
+    dump_plan(16384, 400, 32);
+    dump_plan(16384, 2000, 32);
+
+    /* ── Phase 2: main sweep (B=8) ── */
     for (int ni = 0; ni < n_n; ni++) {
         int n = n_vals[ni];
         for (int ki = 0; ki < n_k; ki++) {
             int k = k_vals[ki];
-            if (k > n) k = n;
-            for (int bi = 0; bi < n_B; bi++) {
-                int B = B_vals[bi];
-                if (B > k || B > n) continue;
+            if (k > n) continue;  /* skip invalid cells */
 
-                /* Confirm select_best_B still picks the expected B */
-                int bestB = select_best_B(n, k);
-                if (B == 8 && bestB != 8) {
-                    fprintf(stderr, "NOTE: select_best_B(%d,%d)=%d (not 8)\n", n, k, bestB);
-                }
+            int bestB = select_best_B(n, k);
+            fprintf(stderr, "Probing n=%d k=%d B=%d (best_B=%d)...\n", n, k, B, bestB);
 
-                fprintf(stderr, "Probing n=%d k=%d B=%d (best_B=%d)...\n", n, k, B, bestB);
-                probe_one(n, k, B);
+            Bucket sb, fft_c, fft_u;
+            bucket_init(&sb);
+            bucket_init(&fft_c);
+            bucket_init(&fft_u);
+
+            double block_ns = 0, leaf_ns = 0;
+            probe_one(n, k, B, &sb, &fft_c, &fft_u, &block_ns, &leaf_ns);
+
+            double geo_sb = bucket_geo_mean(&sb);
+            double geo_fft_c = bucket_geo_mean(&fft_c);
+            double geo_fft_u = bucket_geo_mean(&fft_u);
+            double min_fft_u = bucket_min(&fft_u);
+            double max_fft_u = bucket_max(&fft_u);
+
+            printf("%d,%d,%d,%d,%.4f,%d,%.4f,%d,%.4f,%.4f,%.4f,%.3f,%.3f\n",
+                   n, k, B,
+                   sb.count, geo_sb,
+                   fft_c.count, geo_fft_c,
+                   fft_u.count, geo_fft_u, min_fft_u, max_fft_u,
+                   block_ns, leaf_ns);
+            fflush(stdout);
+
+            bucket_free(&sb);
+            bucket_free(&fft_c);
+            bucket_free(&fft_u);
+        }
+    }
+
+    /* ── Phase 3: spot-check with B=32 to see if uncached appears ── */
+    fprintf(stderr, "=== Spot check B=32 (known uncached on Zen4) ===\n");
+    {
+        int b32_n[] = {4096, 8192, 16384};
+        int b32_k[] = {400, 800, 2000};
+        for (int ni = 0; ni < 3; ni++) {
+            int n = b32_n[ni];
+            for (int ki = 0; ki < 3; ki++) {
+                int k = b32_k[ki];
+                if (k > n) continue;
+                fprintf(stderr, "Probing n=%d k=%d B=32...\n", n, k);
+                Bucket sb, fft_c, fft_u;
+                bucket_init(&sb); bucket_init(&fft_c); bucket_init(&fft_u);
+                double block_ns = 0, leaf_ns = 0;
+                probe_one(n, k, 32, &sb, &fft_c, &fft_u, &block_ns, &leaf_ns);
+                double geo_sb = bucket_geo_mean(&sb);
+                double geo_fft_c = bucket_geo_mean(&fft_c);
+                double geo_fft_u = bucket_geo_mean(&fft_u);
+                double min_fft_u = bucket_min(&fft_u);
+                double max_fft_u = bucket_max(&fft_u);
+                printf("%d,%d,%d,%d,%.4f,%d,%.4f,%d,%.4f,%.4f,%.4f,%.3f,%.3f\n",
+                       n, k, 32,
+                       sb.count, geo_sb,
+                       fft_c.count, geo_fft_c,
+                       fft_u.count, geo_fft_u, min_fft_u, max_fft_u,
+                       block_ns, leaf_ns);
+                fflush(stdout);
+                bucket_free(&sb); bucket_free(&fft_c); bucket_free(&fft_u);
             }
         }
     }
