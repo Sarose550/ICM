@@ -139,6 +139,12 @@ is in the paper; raw sweep data is in `results/accuracy_convergence.csv`.
 
 **CPU, single-threaded (ms, Q=256, uniform stacks, median of 5):**
 
+> **⚠️ Note:** The M3 Pro columns in this table predate the July 2026 cost-model
+> fixes that shifted the linear→hybrid dispatch crossover from k≈260–320 to
+> k≈100–120. Cells near the crossover boundary (k=100 through k=200) may
+> dispatch a different engine post-fix. See [RESULTS.md](RESULTS.md) for details
+> and a full note on regeneration.
+
 | n | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n | | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n |
 |---|------|------|-------|-------|-------|-----|-|------|------|-------|-------|-------|-----|
 | | **M3 Pro** |||||| | **Zen 4 7950X** (AOCL-FFTW) |||||

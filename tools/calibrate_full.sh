@@ -7,36 +7,50 @@
 # Runs the complete calibration pipeline from the repo root:
 #   1. Builds and runs tools/calibrate.c (FFTW calibration)
 #   2. Copies fft_config.h + fftw_wisdom.dat to devices/<DEVICE>/
+#   2.5 Injects placeholder arrays/constants into fft_config.h so
+#       subsequent measurement steps that write into the header can
+#       find their target patterns (calibrate.c only emits the base
+#       calib_sizes[]/calib_times_ns[] + scalar #defines).
 #   3. Builds and runs tools/sample_plans.c (hybrid engine timing)
 #   4. Builds and runs tools/bench_wrap_fma.c — directly measures WRAP_FMA_NS
-#      (wrap-correction cost) via an isolated microbenchmark, avoiding the
-#      identifiability failure of the indirect full-plan regression for this
-#      single constant.
+#      (wrap-correction cost) via an isolated microbenchmark.
 #   5. Builds and runs tools/bench_div_chain.c — directly measures
 #      FP64_DIV_NS (leaf-extraction division cost) via a dependency-chained
-#      microbenchmark. Same identifiability failure as WRAP_FMA_NS: observed
-#      on M3 Pro converging to a physically implausible 0.5ns and hitting
-#      its fit bound when left free.
+#      microbenchmark.
 #   6. Builds bench_grid, runs `./bench_grid profile` — extracts FMA_NS
 #      (schoolbook slope, cps=16→32), PAIRED_CACHED_CORR_RATIO and
 #      INDEP_PAIR_RATIO (phase-split table, fft_n ≥ 4096).
 #   7. Builds and runs tools/bench_block_build.c — directly measures the
 #      block-build per-player cost at each candidate B, writes per-B lookup
-#      table into fft_config.h (BLOCK_FMA_NS/BLOCK_MEM_NS replaced by
-#      block_build_ns_per_player[]).
-#   8. Builds and runs tools/bench_leaf_fma.c — directly measures the
-#      leaf-extraction per-player cost at each candidate B, writes per-B
-#      lookup table into fft_config.h (LEAF_FMA_NS/LEAF_BLOCK_NS replaced by
-#      leaf_fma_ns_per_player[]).
-#   9. Runs tools/fit_cost_model.py --write with ALL 6 scalar pins
+#      table into fft_config.h (block_build_ns_per_player[]).
+#   8. Builds and runs tools/probe_leaf_extract.c — measures the leaf-
+#      extraction per-player cost at each candidate B via the B-sweep phase
+#      (n=8192, k=320, fresh HybridCtx per rep — matches real engine
+#      behaviour).  Replaces the old bench_leaf_fma.c which had a fundamental
+#      methodology bug: it only exercised the expensive forward-divide branch;
+#      real production data is ~99.9% the cheap "zero" branch.  Writes the
+#      per-B lookup table leaf_fma_ns_per_player[] into fft_config.h.
+#   9. Builds and runs tools/bench_schoolbook_tree.c — directly measures
+#      polymul_modk() and correlate_school() at each calib_sizes[] entry
+#      (cps ≤ 1024, sentinel -1.0 above).  Writes schoolbook_mul_ns[] and
+#      schoolbook_corr_ns[] lookup tables into fft_config.h.
+#  10. Builds and runs tools/bench_linear_batched_fma.c — directly measures
+#      the batched linear engine's inner-loop per-FMA cost.  Extracts
+#      BATCHED_FMA_NS (regression slope, combined forward+backward k-sweep)
+#      and writes it into fft_config.h.  The cost model in src/cost_model.h
+#      uses this as 5*n*k*BATCHED_FMA_NS (not 4*n*k*FMA_NS — the batched
+#      engine performs ~5k FMAs per player per QP, not the 4k the old
+#      scalar-schoolbook-based formula assumed).
+#  11. Runs tools/fit_cost_model.py --write with ALL 6 scalar pins
 #      (WRAP_FMA_NS, FP64_DIV_NS, FMA_NS, PAIRED_CACHED_CORR_RATIO,
 #      INDEP_PAIR_RATIO, FFT_OVERHEAD_NS=0.0).  ZERO free parameters remain
 #      — scipy optimization is skipped; the script assembles the fully-pinned
 #      config directly.
-#  10. Rebuilds the library with the new device config
-#  11. Verifies correctness (bench_grid verify) and crossover dispatch
+#  12. Rebuilds the library with the new device config
+#  13. Verifies correctness (bench_grid verify) and crossover dispatch
 #
-# This can take 10–30+ minutes, dominated by step 1 (FFTW calibration).
+# This can take 15–45+ minutes, dominated by step 1 (FFTW calibration)
+# and step 8 (probe_leaf_extract full sweep + B-sweep).
 set -euo pipefail
 
 # ── Find repo root (this script lives in tools/) ──
@@ -103,8 +117,10 @@ echo "  Platform:  $OS"
 echo "  Quick:     ${QUICK:-no}"
 echo ""
 
-# ── Step 1: Build and run calibrate ──
-echo "── Step 1/11: FFTW calibration (tools/calibrate.c) ──"
+# ═══════════════════════════════════════════════════════════════════════
+# Step 1: Build and run calibrate
+# ═══════════════════════════════════════════════════════════════════════
+echo "── Step 1/13: FFTW calibration (tools/calibrate.c) ──"
 echo "  This may take 10–30 minutes..."
 CALIB_BIN="$REPO_ROOT/calibrate"
 gcc -O3 -march=native $HOMEBREW_INC -o "$CALIB_BIN" tools/calibrate.c $HOMEBREW_LIB -lfftw3 -lm
@@ -122,9 +138,11 @@ if [ ! -f "$REPO_ROOT/fftw_wisdom.dat" ]; then
     exit 1
 fi
 
-# ── Step 2: Copy generated files to devices/<DEVICE>/ ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 2: Copy generated files to devices/<DEVICE>/
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 2/11: Copy calibration files to devices/$DEVICE/ ──"
+echo "── Step 2/13: Copy calibration files to devices/$DEVICE/ ──"
 mkdir -p "$DEVICE_DIR"
 
 for f in fft_config.h fftw_wisdom.dat; do
@@ -137,9 +155,127 @@ for f in fft_config.h fftw_wisdom.dat; do
     echo "  ✓ Copied $f → devices/$DEVICE/"
 done
 
-# ── Step 3: Build and run sample_plans ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 2.5: Inject placeholder arrays/constants into fft_config.h
+#
+# calibrate.c only emits calib_sizes[]/calib_times_ns[] + scalar
+# #defines.  The measurement steps below (block_build, probe_leaf_extract,
+# bench_schoolbook_tree, bench_linear_batched_fma) all need their target
+# arrays/constants to exist in fft_config.h — both for COMPILATION (tools
+# that #include "icm.c" reference leaf_fma_ns_per_player[] etc.) and for
+# the inline Python scripts that find-and-replace array contents.
+#
+# This step injects placeholder arrays/constants before the
+# "Cost model functions" comment, so every subsequent step can find its
+# target.  The placeholder values are physically implausible sentinels;
+# they MUST be overwritten by the measurement steps before the final build.
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 3/11: Build and run sample_plans.c ──"
+echo "── Step 2.5/13: Inject placeholder arrays into fft_config.h ──"
+
+cat > /tmp/_inject_placeholders.py << 'PYEOF'
+import sys, re
+
+config_path = sys.argv[1]
+
+with open(config_path, 'r') as f:
+    text = f.read()
+
+# Locate the insertion point: right before "/* ── Cost model functions ── */"
+anchor = '/* ── Cost model functions ── */'
+idx = text.find(anchor)
+if idx < 0:
+    print("ERROR: could not find Cost model functions anchor in fft_config.h", file=sys.stderr)
+    sys.exit(1)
+
+# Check if placeholders already exist (idempotent — don't double-inject)
+if 'BATCHED_FMA_NS_PLACEHOLDER_INJECTED' in text:
+    print("  Placeholders already injected — skipping.")
+    sys.exit(0)
+
+placeholder_block = '''
+/* ── Batched linear engine constant ───────────────────────────
+ * Measured by tools/bench_linear_batched_fma.c (combined forward+backward
+ * k-sweep regression).  5*n*k*BATCHED_FMA_NS replaces the old 4*n*k*FMA_NS
+ * formula in src/cost_model.h's linear_roofline_cost() — the batched
+ * engine performs ~5k FMAs per player per QP, not ~4k.  PLACEHOLDER. */
+#ifndef BATCHED_FMA_NS
+#define BATCHED_FMA_NS 999.0  /* PLACEHOLDER — will be overwritten by step 10 */
+#endif
+
+/* ── Hybrid-engine block-build lookup table ────────────────────
+ * Directly-measured per-player block-build cost at each candidate B.
+ * Replaces the old 2-parameter linear fit (BLOCK_FMA_NS, BLOCK_MEM_NS).
+ * Generated by tools/bench_block_build.c — step 7.  PLACEHOLDER. */
+#ifndef BLOCK_BUILD_NS_PER_PLAYER_DEFINED
+#define BLOCK_BUILD_NS_PER_PLAYER_DEFINED
+static const double block_build_ns_per_player[6] = {
+    999.0,  /* B=8  — PLACEHOLDER */
+    999.0,  /* B=16 — PLACEHOLDER */
+    999.0,  /* B=24 — PLACEHOLDER */
+    999.0,  /* B=32 — PLACEHOLDER */
+    999.0,  /* B=48 — PLACEHOLDER */
+    999.0   /* B=64 — PLACEHOLDER */
+};
+#endif
+
+/* ── Hybrid-engine leaf-extraction lookup table ─────────────────
+ * Directly-measured per-player leaf-extraction cost at each candidate B.
+ * Replaces the old 2-parameter linear fit (LEAF_FMA_NS, LEAF_BLOCK_NS).
+ * Generated by tools/probe_leaf_extract.c B-sweep phase — step 8.
+ * Replaces the old bench_leaf_fma.c which had a methodology bug (only
+ * exercised the expensive forward-divide branch — ~0.1% of real calls).
+ * PLACEHOLDER. */
+#ifndef LEAF_FMA_NS_PER_PLAYER_DEFINED
+#define LEAF_FMA_NS_PER_PLAYER_DEFINED
+static const double leaf_fma_ns_per_player[6] = {
+    999.0,  /* B=8  — PLACEHOLDER */
+    999.0,  /* B=16 — PLACEHOLDER */
+    999.0,  /* B=24 — PLACEHOLDER */
+    999.0,  /* B=32 — PLACEHOLDER */
+    999.0,  /* B=48 — PLACEHOLDER */
+    999.0   /* B=64 — PLACEHOLDER */
+};
+#endif
+
+/* ── Schoolbook cost lookup tables ─────────────────────────────
+ * Direct per-size measurements of polymul_modk() and correlate_school()
+ * indexed identically to calib_sizes[].  Generated by
+ * tools/bench_schoolbook_tree.c — step 9.  PLACEHOLDER.
+ *
+ * Explicitly filled with a physically-implausible 999.0 sentinel (NOT a
+ * bare `static const double x[N];` declaration) -- a bare declaration
+ * with no initializer is zero-initialized in C, which would silently
+ * make schoolbook multiply look FREE (0 ns) if step 9 is ever skipped
+ * or fails to parse its own output (its writer script prints a WARNING
+ * and exits 0 on parse failure, so `set -e` would NOT catch that case
+ * and abort the pipeline) -- dangerous, since it would bias dispatch
+ * toward schoolbook silently and bench_grid verify only checks equity
+ * correctness, not dispatch quality, so it would not be caught by CI.
+ * A 999.0 sentinel fails safe in the opposite direction: schoolbook
+ * would just look pathologically expensive and never get selected. */
+static const double schoolbook_mul_ns[N_CALIBRATED_SIZES] = {[0 ... N_CALIBRATED_SIZES-1] = 999.0};
+static const double schoolbook_corr_ns[N_CALIBRATED_SIZES] = {[0 ... N_CALIBRATED_SIZES-1] = 999.0};
+
+/* BATCHED_FMA_NS_PLACEHOLDER_INJECTED — sentinel to detect double-injection */
+'''
+
+text = text[:idx] + placeholder_block + text[idx:]
+
+with open(config_path, 'w') as f:
+    f.write(text)
+
+print(f"  ✓ Injected placeholder arrays/constants into {config_path}")
+PYEOF
+
+python3 /tmp/_inject_placeholders.py "$CONFIG_H"
+echo "  ✓ Placeholder injection complete"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 3: Build and run sample_plans
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "── Step 3/13: Build and run sample_plans.c ──"
 SP_BIN="$REPO_ROOT/sample_plans"
 gcc -O3 -march=native \
     -Isrc \
@@ -156,9 +292,11 @@ echo "  Running sample_plans (this takes several minutes)..."
 "$SP_BIN" > "$CSV_FILE" 2>"$LOG_FILE"
 echo "  ✓ sample_plans complete → $CSV_FILE"
 
-# ── Step 4: Build and run bench_wrap_fma (direct WRAP_FMA_NS measurement) ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 4: Build and run bench_wrap_fma (direct WRAP_FMA_NS measurement)
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 4/11: Direct wrap-correction microbenchmark (tools/bench_wrap_fma.c) ──"
+echo "── Step 4/13: Direct wrap-correction microbenchmark (tools/bench_wrap_fma.c) ──"
 WRAP_BENCH_BIN="$REPO_ROOT/bench_wrap_fma"
 WRAP_CSV="$REPO_ROOT/wrap_fma_${DEVICE}.csv"
 gcc -O3 -march=native -o "$WRAP_BENCH_BIN" tools/bench_wrap_fma.c -lm
@@ -194,9 +332,11 @@ WRAP_FMA_NS=$(awk -F, '
   }' "$WRAP_CSV")
 echo "  Extracted WRAP_FMA_NS = $WRAP_FMA_NS (least-squares slope, SMALL_2048, wrap_m in [64,384])"
 
-# ── Step 5: Build and run bench_div_chain (direct FP64_DIV_NS measurement) ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 5: Build and run bench_div_chain (direct FP64_DIV_NS measurement)
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 5/11: Direct division-chain microbenchmark (tools/bench_div_chain.c) ──"
+echo "── Step 5/13: Direct division-chain microbenchmark (tools/bench_div_chain.c) ──"
 DIV_BENCH_BIN="$REPO_ROOT/bench_div_chain"
 DIV_CSV="$REPO_ROOT/div_chain_${DEVICE}.csv"
 gcc -O3 -march=native -o "$DIV_BENCH_BIN" tools/bench_div_chain.c
@@ -210,9 +350,11 @@ else
     echo "  Measured FP64_DIV_NS = $FP64_DIV_NS ns (dependency-chained, matches leaf-extraction usage)"
 fi
 
-# ── Step 6: Build bench_grid, run profile → FMA_NS, PAIRED_CACHED_CORR_RATIO, INDEP_PAIR_RATIO ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 6: Build bench_grid, run profile → FMA_NS, PAIRED_CACHED_CORR_RATIO, INDEP_PAIR_RATIO
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 6/11: Profile FFT phases + schoolbook cost (./bench_grid profile) ──"
+echo "── Step 6/13: Profile FFT phases + schoolbook cost (./bench_grid profile) ──"
 BENCH_GRID_BIN="$REPO_ROOT/bench_grid"
 gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
     -Isrc \
@@ -287,9 +429,11 @@ INDEP_PAIR_RATIO=$(awk '
   }' "$PROFILE_LOG")
 echo "  INDEP_PAIR_RATIO = $INDEP_PAIR_RATIO  (avg over fft_n ≥ 4096)"
 
-# ── Step 7: Build and run bench_block_build → per-B lookup table ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 7: Build and run bench_block_build → per-B lookup table
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 7/11: Direct block-build microbenchmark (tools/bench_block_build.c) ──"
+echo "── Step 7/13: Direct block-build microbenchmark (tools/bench_block_build.c) ──"
 BLOCK_BENCH_BIN="$REPO_ROOT/bench_block_build"
 gcc -O3 -march=native -o "$BLOCK_BENCH_BIN" tools/bench_block_build.c -lm
 echo "  Running bench_block_build..."
@@ -298,7 +442,6 @@ echo "$BLOCK_OUT" > "$REPO_ROOT/block_build_${DEVICE}.log"
 echo "  ✓ bench_block_build complete → $REPO_ROOT/block_build_${DEVICE}.log"
 
 # Write the per-B lookup table into fft_config.h via a temp Python script.
-# (Inline python3 -c is blocked by the sandbox; temp files work fine.)
 cat > /tmp/_write_block_table.py << 'PYEOF'
 import sys, re
 
@@ -332,7 +475,7 @@ with open(config_path, 'r') as f:
 array_pattern = r'(static const double block_build_ns_per_player\[6\]\s*=\s*\{)'
 match = re.search(array_pattern, text)
 if not match:
-    print('WARNING: block_build_ns_per_player array not found in header', file=sys.stderr)
+    print('WARNING: block_build_ns_per_player array not found in header — placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 start = match.end()
@@ -357,39 +500,81 @@ PYEOF
 echo "$BLOCK_OUT" | python3 /tmp/_write_block_table.py "$CONFIG_H"
 echo "  ✓ Block-build lookup table written to $CONFIG_H"
 
-# ── Step 8: Build and run bench_leaf_fma → per-B lookup table ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 8: Build and run probe_leaf_extract.c → per-B leaf lookup table
+#
+# REPLACES the old bench_leaf_fma.c (step 8 in previous versions).
+# bench_leaf_fma.c had a fundamental methodology bug: it only exercised
+# the expensive forward-divide branch of the leaf-extraction recurrence,
+# but real production data is ~99.9% the cheap "zero" branch (aj underflows
+# to 0, no division at all).  This caused leaf_fma_ns_per_player[] to be
+# systematically 2–2.3× too high.  probe_leaf_extract.c embeds the real
+# engine_hybrid_core timing, measuring the actual code path taken in
+# production.  See HANDOFF.md and DISPATCH_GAP_ANALYSIS.md.
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 8/11: Direct leaf-FMA microbenchmark (tools/bench_leaf_fma.c) ──"
-LEAF_BENCH_BIN="$REPO_ROOT/bench_leaf_fma"
-gcc -O3 -march=native -o "$LEAF_BENCH_BIN" tools/bench_leaf_fma.c -lm
-echo "  Running bench_leaf_fma..."
-LEAF_OUT="$("$LEAF_BENCH_BIN")"
-echo "$LEAF_OUT" > "$REPO_ROOT/leaf_fma_${DEVICE}.log"
-echo "  ✓ bench_leaf_fma complete → $REPO_ROOT/leaf_fma_${DEVICE}.log"
+echo "── Step 8/13: Leaf-extraction via probe_leaf_extract.c B-sweep phase ──"
+echo "  (Replaces bench_leaf_fma.c — methodology bug: measured wrong code branch)"
+LEAF_PROBE_BIN="$REPO_ROOT/probe_leaf_extract"
+gcc -O3 -march=native \
+    -Isrc \
+    -I"$DEVICE_DIR" \
+    $HOMEBREW_INC \
+    -o "$LEAF_PROBE_BIN" \
+    tools/probe_leaf_extract.c \
+    $HOMEBREW_LIB \
+    -lfftw3 -lm \
+    $ACCEL_FLAGS $VEC_FLAGS
+echo "  ✓ Built probe_leaf_extract"
 
-# Write the per-B lookup table into fft_config.h via a temp Python script.
-cat > /tmp/_write_leaf_table.py << 'PYEOF'
+echo "  Running probe_leaf_extract (full sweep + B-sweep — this takes several minutes)..."
+LEAF_PROBE_OUT="$("$LEAF_PROBE_BIN")"
+echo "$LEAF_PROBE_OUT" > "$REPO_ROOT/leaf_probe_${DEVICE}.log"
+echo "  ✓ probe_leaf_extract complete → $REPO_ROOT/leaf_probe_${DEVICE}.log"
+
+# Parse the B-sweep phase output to extract leaf_ns_per_player for each B.
+# The B-sweep table has format:
+#   === B-SWEEP (n=8192, k=320, ...) ===
+#   B      leaf_ns/qp  leaf_ns/player  pred_ns/player
+#          (measured)   (current model)
+#   8      23130.5      2.8234          2.8234
+#   ...
+# We extract the leaf_ns/player column (3rd numeric column after the B label).
+cat > /tmp/_write_leaf_probe_table.py << 'PYEOF'
 import sys, re
 
-# Parse B=value,value lines from LEAF_FMA_NS_PER_PLAYER_TABLE section
-table = {}
-in_table = False
-for line in sys.stdin:
-    line = line.strip()
-    if line == 'LEAF_FMA_NS_PER_PLAYER_TABLE':
-        in_table = True
-        continue
-    if in_table and line.startswith('B='):
-        parts = line.split(',')
-        if len(parts) == 2:
-            b = int(parts[0].split('=')[1])
-            val = float(parts[1])
-            table[b] = val
-    elif in_table and not line.startswith('B='):
+lines = sys.stdin.read().splitlines()
+
+# Find the B-sweep section
+b_sweep_start = None
+for i, line in enumerate(lines):
+    if line.startswith('=== B-SWEEP'):
+        b_sweep_start = i
         break
 
+if b_sweep_start is None:
+    print('WARNING: B-SWEEP section not found in probe_leaf_extract output', file=sys.stderr)
+    sys.exit(0)
+
+# Parse B-value rows from the B-sweep table
+# Format: "8      23130.5      2.8234          2.8234"
+table = {}
+for line in lines[b_sweep_start:]:
+    line = line.strip()
+    # Skip header/separator lines
+    if not line or line.startswith('===') or line.startswith('B ') or not line[0].isdigit():
+        continue
+    parts = line.split()
+    if len(parts) >= 3:
+        try:
+            b_val = int(parts[0])
+            leaf_ns_per_player = float(parts[2])  # leaf_ns/player column
+            table[b_val] = leaf_ns_per_player
+        except (ValueError, IndexError):
+            continue
+
 if len(table) != 6:
-    print(f'WARNING: expected 6 B values, got {len(table)}: {table}', file=sys.stderr)
+    print(f'WARNING: expected 6 B values from B-sweep, got {len(table)}: {table}', file=sys.stderr)
     sys.exit(0)
 
 b_order = [8, 16, 24, 32, 48, 64]
@@ -401,19 +586,19 @@ with open(config_path, 'r') as f:
 array_pattern = r'(static const double leaf_fma_ns_per_player\[6\]\s*=\s*\{)'
 match = re.search(array_pattern, text)
 if not match:
-    print('WARNING: leaf_fma_ns_per_player array not found in header', file=sys.stderr)
+    print('WARNING: leaf_fma_ns_per_player array not found in header — placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 start = match.end()
 end = text.index('};', start) + 2
 
-lines = ['static const double leaf_fma_ns_per_player[6] = {']
+lines_out = ['static const double leaf_fma_ns_per_player[6] = {']
 for i, b in enumerate(b_order):
     comma = ',' if i < 5 else ''
-    lines.append(f'    {table[b]:.4f}{comma}  /* B={b:<2d} */')
-lines.append('};')
+    lines_out.append(f'    {table[b]:.4f}{comma}  /* B={b:<2d} */')
+lines_out.append('};')
 
-new_array = '\n'.join(lines)
+new_array = '\n'.join(lines_out)
 text = text[:match.start()] + new_array + text[end:]
 
 with open(config_path, 'w') as f:
@@ -423,12 +608,278 @@ print(f'  Wrote leaf_fma_ns_per_player[] to {config_path}')
 for b in b_order:
     print(f'    B={b:<2d}  {table[b]:.4f}')
 PYEOF
-echo "$LEAF_OUT" | python3 /tmp/_write_leaf_table.py "$CONFIG_H"
-echo "  ✓ Leaf-FMA lookup table written to $CONFIG_H"
+echo "$LEAF_PROBE_OUT" | python3 /tmp/_write_leaf_probe_table.py "$CONFIG_H"
+echo "  ✓ Leaf-extraction lookup table written to $CONFIG_H"
 
-# ── Step 9: Run fit_cost_model.py with ALL scalar pins (ZERO free params) ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 9: Build and run bench_schoolbook_tree → per-size lookup tables
+#
+# This step was flagged as "not yet wired into calibrate_full.sh" in
+# commit 8012244.  It directly measures polymul_modk() and
+# correlate_school() at each calib_sizes[] entry (cps ≤ 1024, sentinel
+# -1.0 above the cutoff).  The per-size tables schoolbook_mul_ns[] and
+# schoolbook_corr_ns[] replace the single FMA_NS constant for schoolbook-
+# level cost estimation at small polynomial sizes where operations are
+# latency/dependency-chain-bound, not FMA-throughput-bound.
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 9/11: Assemble fully-pinned config (tools/fit_cost_model.py --write) ──"
+echo "── Step 9/13: Schoolbook per-size microbenchmark (tools/bench_schoolbook_tree.c) ──"
+SCHOOLBOOK_BENCH_BIN="$REPO_ROOT/bench_schoolbook_tree"
+gcc -O3 -march=native \
+    -Isrc \
+    -I"$DEVICE_DIR" \
+    $HOMEBREW_INC \
+    -o "$SCHOOLBOOK_BENCH_BIN" \
+    tools/bench_schoolbook_tree.c \
+    $HOMEBREW_LIB \
+    -lfftw3 -lm \
+    $ACCEL_FLAGS $VEC_FLAGS
+echo "  ✓ Built bench_schoolbook_tree"
+
+echo "  Running bench_schoolbook_tree..."
+SCHOOLBOOK_OUT="$("$SCHOOLBOOK_BENCH_BIN")"
+echo "$SCHOOLBOOK_OUT" > "$REPO_ROOT/schoolbook_tree_${DEVICE}.log"
+echo "  ✓ bench_schoolbook_tree complete → $REPO_ROOT/schoolbook_tree_${DEVICE}.log"
+
+# Parse the two tables and write them into fft_config.h.
+cat > /tmp/_write_schoolbook_tables.py << 'PYEOF'
+import sys, re
+
+stdin_text = sys.stdin.read()
+
+# Parse SCHOOLBOOK_MUL_NS_TABLE section
+mul_table = {}
+corr_table = {}
+current_section = None
+
+for line in stdin_text.splitlines():
+    line = line.strip()
+    if line == 'SCHOOLBOOK_MUL_NS_TABLE':
+        current_section = 'mul'
+        continue
+    if line == 'SCHOOLBOOK_CORR_NS_TABLE':
+        current_section = 'corr'
+        continue
+    if current_section and ',' in line:
+        parts = line.split(',')
+        if len(parts) == 2:
+            try:
+                cps = int(parts[0])
+                val = float(parts[1])
+                if current_section == 'mul':
+                    mul_table[cps] = val
+                else:
+                    corr_table[cps] = val
+            except ValueError:
+                continue
+
+config_path = sys.argv[1]
+
+with open(config_path, 'r') as f:
+    text = f.read()
+
+# ── Replace schoolbook_mul_ns[] ──
+mul_pattern = r'(static const double schoolbook_mul_ns\[N_CALIBRATED_SIZES\]\s*=\s*\{)'
+mul_match = re.search(mul_pattern, text)
+if not mul_match:
+    # Fallback: try to find the array without initializer (placeholder form)
+    mul_pattern2 = r'(static const double schoolbook_mul_ns\[N_CALIBRATED_SIZES\];)'
+    mul_match = re.search(mul_pattern2, text)
+    if mul_match:
+        # Replace the declaration-only with a full initializer
+        pass
+    else:
+        print('WARNING: schoolbook_mul_ns array not found in header — placeholder missing?', file=sys.stderr)
+        sys.exit(0)
+
+if mul_match:
+    # Parse N_CALIBRATED_SIZES from the config
+    n_match = re.search(r'#define N_CALIBRATED_SIZES (\d+)', text)
+    if not n_match:
+        print('WARNING: N_CALIBRATED_SIZES not found', file=sys.stderr)
+        sys.exit(0)
+    N = int(n_match.group(1))
+
+    # Parse calib_sizes[] to get the index ordering
+    sizes_match = re.search(r'static const int calib_sizes\[N_CALIBRATED_SIZES\]\s*=\s*\{([^}]+)\}',
+                            text, re.DOTALL)
+    if not sizes_match:
+        print('WARNING: calib_sizes not found', file=sys.stderr)
+        sys.exit(0)
+    sizes_str = sizes_match.group(1)
+    calib_sizes = [int(x) for x in re.findall(r'\d+', sizes_str)]
+
+    # Build the array in calib_sizes order
+    values = []
+    for cps in calib_sizes:
+        val = mul_table.get(cps, -1.0)
+        values.append(val)
+
+    # Format the array
+    lines_out = ['static const double schoolbook_mul_ns[N_CALIBRATED_SIZES] = {']
+    row_vals = []
+    for i, v in enumerate(values):
+        row_vals.append(f'{v:.2f}' if v >= 0 else '-1.0')
+        if len(row_vals) == 10 or i == len(values) - 1:
+            comma = ',' if i < len(values) - 1 else ''
+            lines_out.append('   ' + ','.join(row_vals) + comma)
+            row_vals = []
+    lines_out.append('};')
+
+    new_array = '\n'.join(lines_out)
+
+    # For placeholder form (declaration-only), replace the whole line
+    if ';' in mul_match.group(0) and '{' not in mul_match.group(0):
+        text = text[:mul_match.start()] + new_array + text[mul_match.end():]
+    else:
+        # For full initializer form, replace between { and };
+        start = mul_match.end()
+        end = text.index('};', start) + 2
+        text = text[:mul_match.start()] + new_array + text[end:]
+
+    non_neg = sum(1 for v in values if v >= 0)
+    print(f'  Wrote schoolbook_mul_ns[] ({non_neg} non-sentinel values)')
+
+# ── Replace schoolbook_corr_ns[] ──
+corr_pattern = r'(static const double schoolbook_corr_ns\[N_CALIBRATED_SIZES\]\s*=\s*\{)'
+corr_match = re.search(corr_pattern, text)
+if not corr_match:
+    corr_pattern2 = r'(static const double schoolbook_corr_ns\[N_CALIBRATED_SIZES\];)'
+    corr_match = re.search(corr_pattern2, text)
+    if not corr_match:
+        print('WARNING: schoolbook_corr_ns array not found in header — placeholder missing?', file=sys.stderr)
+        sys.exit(0)
+
+if corr_match:
+    n_match = re.search(r'#define N_CALIBRATED_SIZES (\d+)', text)
+    N = int(n_match.group(1))
+
+    sizes_match = re.search(r'static const int calib_sizes\[N_CALIBRATED_SIZES\]\s*=\s*\{([^}]+)\}',
+                            text, re.DOTALL)
+    sizes_str = sizes_match.group(1)
+    calib_sizes = [int(x) for x in re.findall(r'\d+', sizes_str)]
+
+    values = []
+    for cps in calib_sizes:
+        val = corr_table.get(cps, -1.0)
+        values.append(val)
+
+    lines_out = ['static const double schoolbook_corr_ns[N_CALIBRATED_SIZES] = {']
+    row_vals = []
+    for i, v in enumerate(values):
+        row_vals.append(f'{v:.4f}' if v >= 0 else '-1.0')
+        if len(row_vals) == 10 or i == len(values) - 1:
+            comma = ',' if i < len(values) - 1 else ''
+            lines_out.append('   ' + ','.join(row_vals) + comma)
+            row_vals = []
+    lines_out.append('};')
+
+    new_array = '\n'.join(lines_out)
+
+    if ';' in corr_match.group(0) and '{' not in corr_match.group(0):
+        text = text[:corr_match.start()] + new_array + text[corr_match.end():]
+    else:
+        start = corr_match.end()
+        end = text.index('};', start) + 2
+        text = text[:corr_match.start()] + new_array + text[end:]
+
+    non_neg = sum(1 for v in values if v >= 0)
+    print(f'  Wrote schoolbook_corr_ns[] ({non_neg} non-sentinel values)')
+
+with open(config_path, 'w') as f:
+    f.write(text)
+
+print(f'  Schoolbook lookup tables written to {config_path}')
+PYEOF
+echo "$SCHOOLBOOK_OUT" | python3 /tmp/_write_schoolbook_tables.py "$CONFIG_H"
+echo "  ✓ Schoolbook lookup tables written to $CONFIG_H"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 10: Build and run bench_linear_batched_fma → BATCHED_FMA_NS
+#
+# The batched linear engine (BQ=8, src/linear_batched_impl.inc) performs
+# ~5k FMAs per player per QP (forward: BQ*(2k-1), backward: BQ*(3k-1)),
+# not the ~4k the old scalar-schoolbook-based formula assumed.  The cost
+# model in src/cost_model.h's linear_roofline_cost() uses:
+#   compute_ns = 5.0 * n * k * BATCHED_FMA_NS;
+# This step measures BATCHED_FMA_NS directly from the verbatim inner loops.
+#
+# NOTE: tools/bench_linear_batched_fma.c exists on disk but may not yet be
+# committed to git.  If the build fails with "file not found", this tool
+# needs to be committed first (see HANDOFF.md).
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "── Step 10/13: Batched-linear-engine constant (tools/bench_linear_batched_fma.c) ──"
+LINEAR_BENCH_BIN="$REPO_ROOT/bench_linear_batched_fma"
+
+if [ ! -f "$REPO_ROOT/tools/bench_linear_batched_fma.c" ]; then
+    echo "  ⚠ WARNING: tools/bench_linear_batched_fma.c not found in repo."
+    echo "    This tool is not yet committed to git.  The BATCHED_FMA_NS"
+    echo "    constant will be left at its placeholder value (999.0)."
+    echo "    See HANDOFF.md for the tool status.  Skipping this step."
+else
+    gcc -O3 -march=native -o "$LINEAR_BENCH_BIN" tools/bench_linear_batched_fma.c -lm
+    echo "  ✓ Built bench_linear_batched_fma"
+
+    echo "  Running bench_linear_batched_fma..."
+    LINEAR_OUT="$("$LINEAR_BENCH_BIN" 2>&1)"
+    echo "$LINEAR_OUT" > "$REPO_ROOT/linear_batched_${DEVICE}.log"
+    echo "  ✓ bench_linear_batched_fma complete → $REPO_ROOT/linear_batched_${DEVICE}.log"
+
+    # Extract BATCHED_FMA_NS from stderr: "BATCHED_FMA_NS = 0.0954 ns/FMA"
+    BATCHED_FMA_NS=$(echo "$LINEAR_OUT" | grep -E '^# BATCHED_FMA_NS = ' | head -1 | awk '{print $4}')
+    if [ -z "$BATCHED_FMA_NS" ]; then
+        # Try alternative format
+        BATCHED_FMA_NS=$(echo "$LINEAR_OUT" | grep -E 'BATCHED_FMA_NS = [0-9]' | head -1 | sed 's/.*= //' | awk '{print $1}')
+    fi
+
+    if [ -n "$BATCHED_FMA_NS" ]; then
+        echo "  Extracted BATCHED_FMA_NS = $BATCHED_FMA_NS (combined forward+backward k-sweep regression)"
+
+        # Write BATCHED_FMA_NS into fft_config.h via the same #ifndef/#define pattern
+        cat > /tmp/_write_batched_fma.py << 'PYEOF'
+import sys, re
+
+batched_ns = float(sys.argv[1])
+config_path = sys.argv[2]
+
+with open(config_path, 'r') as f:
+    text = f.read()
+
+pattern = (
+    r'(#ifndef\s+BATCHED_FMA_NS\s*\n'
+    r'#define\s+BATCHED_FMA_NS\s+)'
+    r'([\d.eE+\-]+)'
+    r'([^\n]*\n#endif)'
+)
+match = re.search(pattern, text)
+if not match:
+    print('WARNING: BATCHED_FMA_NS #ifndef/#define block not found — placeholder missing?', file=sys.stderr)
+    sys.exit(0)
+
+old_val = float(match.group(2))
+new_val_str = f'{batched_ns:.4f}'
+replacement = match.group(1) + new_val_str + match.group(3)
+text = text[:match.start()] + replacement + text[match.end():]
+
+with open(config_path, 'w') as f:
+    f.write(text)
+
+print(f'  Wrote BATCHED_FMA_NS = {batched_ns:.4f} (was {old_val:.4f})')
+PYEOF
+        python3 /tmp/_write_batched_fma.py "$BATCHED_FMA_NS" "$CONFIG_H"
+        echo "  ✓ BATCHED_FMA_NS written to $CONFIG_H"
+    else
+        echo "  WARNING: could not extract BATCHED_FMA_NS from bench_linear_batched_fma output"
+        echo "    Leaving placeholder value in $CONFIG_H — manual fix required."
+    fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 11: Run fit_cost_model.py with ALL scalar pins (ZERO free params)
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "── Step 11/13: Assemble fully-pinned config (tools/fit_cost_model.py --write) ──"
 FIT_CMD="python3 tools/fit_cost_model.py \"$CSV_FILE\" \"$CONFIG_H\" --write"
 FIT_CMD="$FIT_CMD --wrap-ns \"$WRAP_FMA_NS\""
 if [ -n "$FP64_DIV_NS" ]; then
@@ -442,16 +893,20 @@ echo "  Running: $FIT_CMD"
 eval "$FIT_CMD"
 echo "  ✓ Fully-pinned config written to $CONFIG_H (0 free parameters)"
 
-# ── Step 10: Rebuild ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 12: Rebuild
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 10/11: Rebuild library (make clean && make DEVICE=$DEVICE) ──"
+echo "── Step 12/13: Rebuild library (make clean && make DEVICE=$DEVICE) ──"
 make clean
 make "DEVICE=$DEVICE"
 echo "  ✓ Rebuild complete"
 
-# ── Step 11: Verify ──
+# ═══════════════════════════════════════════════════════════════════════
+# Step 13: Verify
+# ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 11/11: Verify correctness and crossover dispatch ──"
+echo "── Step 13/13: Verify correctness and crossover dispatch ──"
 
 echo ""
 echo "--- bench_grid verify ---"
@@ -482,15 +937,28 @@ echo "  Wrap bench CSV:$WRAP_CSV"
 echo "  Div bench CSV: $DIV_CSV"
 echo "  Profile log:   $PROFILE_LOG"
 echo "  Block log:     $REPO_ROOT/block_build_${DEVICE}.log"
-echo "  Leaf log:      $REPO_ROOT/leaf_fma_${DEVICE}.log"
+echo "  Leaf log:      $REPO_ROOT/leaf_probe_${DEVICE}.log"
+echo "  Schoolbook log:$REPO_ROOT/schoolbook_tree_${DEVICE}.log"
+echo "  Linear log:    $REPO_ROOT/linear_batched_${DEVICE}.log"
 echo ""
 echo "  All scalar constants pinned — zero free parameters in cost model:"
-echo "    WRAP_FMA_NS            = $WRAP_FMA_NS"
-echo "    FP64_DIV_NS           = ${FP64_DIV_NS:-unpinned}"
-echo "    FMA_NS                 = $FMA_NS"
-echo "    PAIRED_CACHED_CORR_RATIO = $PAIRED_CACHED_CORR_RATIO"
-echo "    INDEP_PAIR_RATIO       = $INDEP_PAIR_RATIO"
-echo "    FFT_OVERHEAD_NS        = 0.0"
+echo "    WRAP_FMA_NS               = $WRAP_FMA_NS"
+echo "    FP64_DIV_NS              = ${FP64_DIV_NS:-unpinned}"
+echo "    FMA_NS                    = $FMA_NS"
+echo "    PAIRED_CACHED_CORR_RATIO  = $PAIRED_CACHED_CORR_RATIO"
+echo "    INDEP_PAIR_RATIO          = $INDEP_PAIR_RATIO"
+echo "    FFT_OVERHEAD_NS           = 0.0"
+if [ -n "${BATCHED_FMA_NS:-}" ]; then
+    echo "    BATCHED_FMA_NS            = $BATCHED_FMA_NS"
+else
+    echo "    BATCHED_FMA_NS            = (not measured — bench_linear_batched_fma.c missing or failed)"
+fi
+echo ""
+echo "  Lookup tables populated in $CONFIG_H:"
+echo "    block_build_ns_per_player[6]  (step 7)"
+echo "    leaf_fma_ns_per_player[6]     (step 8, probe_leaf_extract B-sweep)"
+echo "    schoolbook_mul_ns[]           (step 9, bench_schoolbook_tree)"
+echo "    schoolbook_corr_ns[]          (step 9, bench_schoolbook_tree)"
 echo ""
 echo "Next steps (manual):"
 echo "  ./bench_grid profile   # re-run profiling for manual inspection"

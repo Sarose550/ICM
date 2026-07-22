@@ -11,6 +11,16 @@ Q=256 quadrature points.
 > from aggregate regression — see [Calibration methodology](#calibration-methodology) below.
 > Engine dispatch: `select_engine()` cost-based, B auto-selected (typically B=16).
 
+> **⚠️ NOTE (post-cost-model-fix, July 2026): The performance table below was
+> generated before this session's cost-model fixes (leaf-extraction 2×
+> overprediction fix + batched-linear FMA undercount fix). These fixes shifted
+> `icm_select_engine()`'s M3 Pro dispatch crossover from k≈260–320 (old, buggy)
+> to k≈100–120 (k=120 still linear, k=160 hybrid across n∈{512,1024,2048,4096,8192}
+> in `bench_grid crossover`). Cells near the crossover boundary (roughly
+> k=100 through k=200) may dispatch a different engine post-fix. The table
+> should be regenerated with a fresh `./bench_grid` run for authoritative
+> post-fix numbers.**
+
 ### Performance (ms, uniform stacks, median of 5) - M3 Pro
 
 Single-threaded vs 12-thread parallel, per (n, k) cell:
@@ -105,7 +115,7 @@ limits peak parallel speedup to ~8x vs Zen 4's ~14x on 16 homogeneous P-cores.
 > Contour data from an earlier sweep — may shift slightly with the corrected
 > calibration. Grid numbers above are authoritative.
 
-### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=16). Linear→hybrid crossover at k≈140.
+### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=16). Linear→hybrid crossover at k≈100–120 (post-fix; see note above).
 
 ---
 
@@ -302,7 +312,7 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 > to 10.2% and pushes `FFT_OVERHEAD_NS`/`FMA_NS` to compensate — a collinearity
 > limitation in the current `sample_plans` training data, not a correctness
 > issue. `./bench_grid verify` passes ALL TESTS and `./bench_grid crossover`
-> shows a clean, monotonic linear→hybrid transition at k≈140.
+> shows a clean, monotonic linear→hybrid transition at k≈100–120 (post-fix; k=120 linear, k=160 hybrid across n tested).
 
 ### Zen 4 (AMD Ryzen 9 7950X, AVX-512, AOCL-FFTW)
 

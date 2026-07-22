@@ -237,7 +237,28 @@ actual dominant remaining gap, not the tree/leaf side. See new node
   - Re-run tree-level probe — FFT-path ratio moves toward 1.0
 - **Kill deadline:** 30 min
 
-### [ ] V1_DISPATCH_GATE
+### [x] V1_DISPATCH_GATE — PASSED (M3 Pro)
+
+`icm_select_engine()` now switches to hybrid at k=100-120 across all n
+in {512,1024,2048,4096,8192}, matching `bench_grid crossover`'s own
+empirical L→H transition (k=120 linear, k=160 hybrid, every n) closely
+— n=2048/4096/8192 land exactly at the empirical boundary (k=120);
+n=512/1024 switch slightly early (k=100/115). This is the real,
+hard-won acceptance criterion from `HANDOFF.md`, not an aggregate ratio
+or `bench_grid crossover`'s own empirical winner alone — verified via
+direct `icm_select_engine()` calls. **Root cause was NOT primarily the
+tree/leaf side** (leaf fix + wrap-correction fix moved the crossover
+only modestly and in the wrong direction respectively) — **it was the
+linear engine's cost model**, untouched all session until M1/M2, off by
+a genuine FMA-count bug (assumed 4*n*k, real code does 5*n*k) compounded
+with reusing an unrelated microbenchmark's constant.
+
+Not pursuing further micro-tuning of the small residual n=512/1024 gap —
+diminishing returns given how close this already is, and "ground truth"
+itself (`bench_grid crossover`'s own measured winner) has its own noise
+floor. Proceeding to onboarding/docs/paper-sync waves.
+
+### [ ] V1_DISPATCH_GATE (superseded, kept for history)
 
 - **Model:** `supervisor`
 - **Depends:** L2_APPLY_LEAF_FIX, T3_APPLY_TREE_FIX
@@ -251,7 +272,28 @@ actual dominant remaining gap, not the tree/leaf side. See new node
 - **Kill deadline:** 20 min
 - **Binding law:** `HANDOFF.md` §"What Worked" (the dispatch-vs-crossover distinction), §"Next Steps" item 3
 
-### [ ] G1_ONBOARDING_DOCS
+### [x] G1_ONBOARDING_DOCS — DONE (with one bug caught + fixed in review)
+
+Worker 4a1c83 rewrote `tools/calibrate_full.sh` (11→13 steps): added
+placeholder injection (2.5), swapped `bench_leaf_fma.c`→
+`probe_leaf_extract.c` B-sweep (8), added schoolbook (9) and batched-linear
+(10) calibration steps. **Supervisor review caught a real bug before
+committing**: the injected schoolbook placeholder arrays
+(`schoolbook_mul_ns[]`/`schoolbook_corr_ns[]`) were bare
+`static const double x[N];` declarations with no initializer — legal C,
+but zero-initialized, meaning if step 9 is ever silently skipped
+(its own writer prints a WARNING and exits 0 on parse failure, which
+`set -e` would NOT catch), schoolbook multiply would look FREE (0 ns)
+instead of failing loud — dangerous, since it would silently bias
+dispatch toward schoolbook and `bench_grid verify` only checks equity
+correctness, not dispatch quality. Fixed by explicitly filling both
+placeholders with the same `999.0` fail-safe sentinel used elsewhere in
+the same injected block. Verified the fix doesn't break the existing
+write-back parser, and that the GNU range-initializer syntax compiles.
+Also committed `tools/bench_linear_batched_fma.c` (M1's tool, was only
+on disk, never in git) since the onboarding script now references it.
+
+### [ ] G1_ONBOARDING_DOCS (superseded, kept for history)
 
 - **Model:** `deepseek`
 - **Depends:** V1_DISPATCH_GATE
@@ -264,7 +306,18 @@ actual dominant remaining gap, not the tree/leaf side. See new node
 - **Kill deadline:** 45 min
 - **Binding law:** `HANDOFF.md` §"Guiding principles" (professional open-source packaging)
 
-### [ ] G3_OPTIMIZATION_GUIDE_AUDIT
+### [x] G3_OPTIMIZATION_GUIDE_AUDIT — DONE
+
+Worker 5a6525 corrected 12 categories of stale content in
+`OPTIMIZATION_GUIDE.md`: FMA_NS/WRAP_FMA_NS/FFT_OVERHEAD_NS values,
+schoolbook formula→lookup-table description, PAIRED_CACHED_CORR_RATIO/
+INDEP_PAIR_RATIO values (removed a stale "converged to same value on
+both devices" claim), added the linear-engine `5*n*k*BATCHED_FMA_NS`
+description, updated the Zen4 porting walkthrough's example values, and
+flagged 3 informal bandwidth numbers with TODO comments pending
+verification against measured constants.
+
+### [ ] G3_OPTIMIZATION_GUIDE_AUDIT (superseded, kept for history)
 
 - **Model:** `deepseek`
 - **Depends:** V1_DISPATCH_GATE
@@ -275,7 +328,16 @@ actual dominant remaining gap, not the tree/leaf side. See new node
     pre-schoolbook-fix numbers) corrected or flagged
 - **Kill deadline:** 45 min
 
-### [ ] P1_PAPER_README_SYNC
+### [x] P1_PAPER_README_SYNC — DONE
+
+Worker 72b642 added stale-table warnings to `RESULTS.md` and `README.md`
+(old crossover k≈260-320/k≈140 → new k≈100-120, with the caveat that
+cells near the old boundary may now dispatch differently) rather than
+silently leaving pre-fix numbers uncorrected or inventing new ones.
+Left Zen4 claims untouched (out of scope, unverified this session) and
+did not touch `~/Documents/ICM_paper` (separate sibling repo).
+
+### [ ] P1_PAPER_README_SYNC (superseded, kept for history)
 
 - **Model:** `deepseek`
 - **Depends:** V1_DISPATCH_GATE
@@ -316,7 +378,24 @@ actual dominant remaining gap, not the tree/leaf side. See new node
 - **Binding law:** this board's Context/T2 sections; `CLAUDE.md`'s
   linear-engine description (BQ=8, interleaved a_batch layout)
 
-### [ ] M2_APPLY_LINEAR_FIX
+### [x] M2_APPLY_LINEAR_FIX — DONE, gap closed (commit `c481336`)
+
+Applied `BATCHED_FMA_NS=0.0954` (corrected `5*n*k` FMA-count form) to
+`src/cost_model.h` + `devices/m3_pro/fft_config.h`. `bench_grid verify`:
+ALL TESTS PASSED. Real `icm_select_engine()` dispatch crossover on M3 Pro
+now switches to hybrid at k=100-120 across n in {512..8192} — matches
+`bench_grid crossover`'s own empirical L→H transition (k=120 still
+linear, k=160 hybrid, for every n) far more closely than the k~260-320
+this DAG started from. **This closes the multi-session cost-model gap
+for M3 Pro** (V1_DISPATCH_GATE below).
+
+Zen4's `BATCHED_FMA_NS=0.0973` is a flagged PLACEHOLDER (scaled from
+Zen4's own `FMA_NS` by the M3 Pro ratio) — NOT independently measured.
+Needs a real Zen4 run of `tools/bench_linear_batched_fma.c` before
+trusting Zen4 dispatch — tracked as a follow-up, out of scope for this
+board (no Zen4 hardware access this session).
+
+### [ ] M2_APPLY_LINEAR_FIX (superseded, kept for history)
 
 - **Model:** `supervisor`
 - **Depends:** M1_INVESTIGATE_LINEAR_FMA_NS
@@ -341,4 +420,8 @@ actual dominant remaining gap, not the tree/leaf side. See new node
 
 | Wave | Nodes dispatched | Deny lock written at | Deny lock released at | Notes |
 |------|------------------|----------------------|-----------------------|-------|
-| W0   | L1_RUN_LEAF_RECALIB (076878), T1_WIDEN_TREE_PROBE (9e1de8), folder 41994c | 2026-07-22 | | dispatched |
+| W0   | L1_RUN_LEAF_RECALIB (076878), T1_WIDEN_TREE_PROBE (9e1de8), folder 41994c | 2026-07-22 | 2026-07-22 | leaf tool superseded, tree probe found dead FFT-uncached path |
+| W0b  | L1b_RECONCILE_LEAF (d9ea96, errored but useful), L1c_FINAL_LEAF_TABLE (7e6346) | 2026-07-22 | 2026-07-22 | leaf table cross-validated within 2% |
+| W1   | T2_PROPOSE_TREE_FIX (40c2be, errored but surfaced real WRAP_FMA_NS/FMA_NS bug) | 2026-07-22 | 2026-07-22 | supervisor fixed directly |
+| W2   | M1_INVESTIGATE_LINEAR_FMA (c9fc86) | 2026-07-22 | 2026-07-22 | root cause + fix identified, supervisor applied (M2) — **V1 gate passed** |
+| W3   | G1_ONBOARDING_DOCS (4a1c83), G3_OPTIMIZATION_GUIDE_AUDIT (5a6525), P1_PAPER_README_SYNC (72b642) | 2026-07-22 | | dispatched |
