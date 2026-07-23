@@ -134,20 +134,20 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef WRAP_FMA_NS
 #define WRAP_FMA_NS 0.4360  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
-/* PLACEHOLDER -- NOT independently measured on Zen4 hardware this session.
- * M3 Pro found the batched linear engine (src/linear_batched_impl.inc,
- * BQ=8) needs 5*n*k FMAs/QP (not 4*n*k as the old formula assumed) and a
- * dedicated constant fit directly against real icm_run_linear_batched()
- * measurements -- reusing FMA_NS (measured from an unrelated scalar
- * schoolbook microbenchmark) underpredicted real linear-engine cost by
- * ~1.73-1.80x there. This value is FMA_NS(zen4) scaled by the same ratio
- * found on M3 Pro (0.0954/0.0677 ~= 1.409) as a stopgap so the build
- * doesn't silently use an unrelated constant -- it is NOT a real Zen4
- * measurement. Re-measure via a Zen4 run of tools/bench_linear_batched_fma.c
- * (see M3 Pro's SPRINT_HYBRID_COST_MODEL_VALIDATION_DAG.md for methodology)
- * before trusting Zen4 linear-vs-hybrid dispatch decisions. */
+/* Real Zen4 measurement (2026-07-22, box 84.32.71.47). The batched linear
+ * engine (src/linear_batched_impl.inc, BQ=8) needs 5*n*k FMAs/QP (not
+ * 4*n*k as the old formula assumed). tools/bench_linear_batched_fma.c's
+ * own isolated-inner-loop regression gave 0.0923 ns/FMA, but direct
+ * measurement via icm_run_linear_batched() at n in {512..8192}, k in
+ * {150,200,250} (the crossover-relevant, non-checkpointed range -- k=50
+ * is overhead-dominated, k>=300 crosses the L2 checkpointing threshold,
+ * both excluded) gives BATCHED_FMA_NS = 0.0543 with the corrected 5*n*k
+ * form, CV 3.7% -- same "isolated microbenchmark doesn't match real
+ * embedded cost" pattern found repeatedly this session (schoolbook, leaf
+ * extraction, M3 Pro's own linear engine), so the direct end-to-end
+ * measurement is used here, not the isolated tool's own regression. */
 #ifndef BATCHED_FMA_NS
-#define BATCHED_FMA_NS 0.0973
+#define BATCHED_FMA_NS 0.0543
 #endif
 #ifndef PAIRED_CACHED_CORR_RATIO
 #define PAIRED_CACHED_CORR_RATIO 1.5467  /* paired cached correlate / full pipeline */
