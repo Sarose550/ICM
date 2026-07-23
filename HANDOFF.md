@@ -119,21 +119,46 @@ durable law) — the durable summary is this file.
 
 ### What's explicitly NOT done yet
 
-- **Zen4 is unverified.** Only the shared-code wrap-correction fix
-  (root cause 2) automatically applies to Zen4 (it's in `src/icm.c`,
-  not device-specific). The leaf-extraction fix was M3-Pro-only this
-  session (Zen4's leaf bias runs the OPPOSITE direction per the old
-  `DISPATCH_GAP_ANALYSIS.md` — underpredicts, not overpredicts — so the
-  same mechanism may not even apply the same way there). Zen4's
-  `BATCHED_FMA_NS=0.0973` in `devices/zen4/fft_config.h` is an explicitly
-  flagged PLACEHOLDER (scaled from Zen4's own `FMA_NS` by the M3 Pro
-  ratio), NOT a real measurement. **Do not trust Zen4 dispatch decisions
-  until `tools/bench_linear_batched_fma.c` and the leaf B-sweep are run
-  for real on Zen4 hardware** (`185.8.107.239` — an ad-hoc, freshly
-  `git init`'d local repo lives there, unrelated to the real GitHub
-  history; use the established pattern of scp-ing files into a local
-  worktree and committing there rather than trying to `git fetch`/`pull`
-  directly from the box).
+- **Zen4 verification: DONE partially, real progress, gap not fully closed
+  as of 2026-07-22 (box `84.32.71.47`, see `reference_zen4_new_password.md`).**
+  Set up cleanly via a real `git clone`/`git pull` from GitHub this time
+  (not the old ad-hoc `git init` pattern — that box, `185.8.107.239`, is
+  gone/superseded). While verifying, found and fixed the real correctness
+  bug documented above (`correlate_fft`/`correlate_fft_pair` missing wrap
+  correction) — confirmed on this exact hardware, `bench_grid verify`
+  now passes cleanly. Then applied the SAME fix methodology as M3 Pro:
+  - `BATCHED_FMA_NS`: replaced the flagged placeholder (0.0973) with a
+    real measurement (0.0543), fit directly against
+    `icm_run_linear_batched()` on Zen4, restricted to the
+    crossover-relevant, non-checkpointed k range (150-250; k=50 is
+    overhead-dominated, k>=300 crosses the L2 checkpoint threshold).
+    `tools/bench_linear_batched_fma.c`'s own isolated-inner-loop
+    regression gave 0.0923 — notably different from the direct
+    end-to-end measurement (0.0543) actually used, same
+    isolated-vs-embedded pattern as everywhere else this session.
+  - `leaf_fma_ns_per_player[]`: replaced with `probe_leaf_extract.c`'s
+    B-sweep measurement. Old table over-predicted (geo_mean=0.743) —
+    **same direction as M3 Pro**, contradicting the OLD (now-superseded)
+    `DISPATCH_GAP_ANALYSIS.md` claim that Zen4 underpredicted. That
+    claim was from an earlier, different calibration state — trust this
+    session's fresh measurement instead.
+  - `block_build_ns_per_player[]`: checked, already well-calibrated
+    (within ~1% of a fresh measurement) — not a contributor, left as-is.
+
+  **Net result**: real dispatch crossover moved from k~95-100 (before
+  any fixes, worse than the k~160-200 pre-session estimate) through
+  k~180-200 (after the linear-engine fix alone) to **k~155-180** (after
+  the leaf fix too — this moved the WRONG way, same as the wrap-
+  correction fix did on M3 Pro, revealing hybrid is still modeled too
+  cheap somewhere else). Ground truth (`bench_grid crossover`'s own
+  empirical L→H transition, unaffected by any of these constants) is
+  k~240-260, confirmed unchanged throughout. **Gap not fully closed** —
+  next suspect is the tree/schoolbook FFT-path formulas on Zen4
+  specifically (not yet re-validated with real per-level probes the way
+  M3 Pro's were). Do not declare Zen4 dispatch trustworthy until this is
+  closed — same acceptance criterion as M3 Pro: the real
+  `icm_select_engine()` decision must match `bench_grid crossover`'s
+  empirical transition, not just "moved in the right direction."
 - **RESULTS.md's performance tables predate these fixes** — flagged with
   a stale-data warning (not regenerated — needs a fresh `./bench_grid`
   run) by this session's docs-audit pass.
@@ -239,17 +264,20 @@ durable law) — the durable summary is this file.
 
 ## Next Steps
 
-1. **Zen4 verification** (needs real Zen4 hardware — box exists at
-   `185.8.107.239`, ask before touching it): run `tools/bench_linear_batched_fma.c`
-   and `tools/probe_leaf_extract.c`'s B-sweep for real on Zen4, replace
-   the flagged placeholder `BATCHED_FMA_NS`, re-verify Zen4's leaf table
-   (different bias direction than M3 Pro, don't assume the same fix
-   applies), then re-check `icm_select_engine()` dispatch against Zen4's
-   ground-truth crossover (k~260-270 per earlier sessions — re-verify
-   this is still the right target after any Zen4-side fixes).
+1. **Finish closing the Zen4 dispatch gap** (needs real Zen4 hardware —
+   box at `84.32.71.47` as of 2026-07-22, credentials in
+   `reference_zen4_new_password.md`, ask before touching/re-provisioning
+   it). Linear-engine and leaf fixes both applied and real-measured;
+   real dispatch is at k~155-180 vs ground truth k~240-260. Next suspect:
+   the tree/schoolbook FFT-path formulas on Zen4 — build a per-level
+   real-vs-predicted probe (mirror `tools/probe_tree_levels.c`'s M3 Pro
+   methodology) instead of guessing. Do not declare Zen4 done until
+   `icm_select_engine()`'s real decision matches `bench_grid crossover`'s
+   empirical transition.
 2. **Regenerate result data** (G1A/G1B) invalidated by the broken-cost-model
    window, now that M3 Pro dispatch is trustworthy — full performance
    grids, contour sweeps, per `CLAUDE.md`'s M3 Pro validation steps.
+   Zen4's grids should wait until its dispatch gap is closed too.
 3. **Paper sync**: Table 1/2 shared-k-column rework in
    `~/Documents/ICM_paper`, using post-fix numbers.
 4. **GPU kernel microbenchmark (B200)** — independent of all the above,
