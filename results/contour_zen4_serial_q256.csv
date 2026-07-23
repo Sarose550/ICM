@@ -1,58 +1,20 @@
 k,n_max,time_ms,engine,block_size,status
-k=2: searching for 1s boundary...
-2,427247,998,linear,0,ok
-  k=2 -> n_max=427247 (998 ms) [linear B=0]
-k=5: searching for 1s boundary...
-5,390629,972,linear,0,ok
-  k=5 -> n_max=390629 (972 ms) [linear B=0]
-k=10: searching for 1s boundary...
-10,361336,971,linear,0,ok
-  k=10 -> n_max=361336 (971 ms) [linear B=0]
-k=20: searching for 1s boundary...
-20,102557,997,hybrid,16,ok
-  k=20 -> n_max=102557 (997 ms) [hybrid B=16]
-k=50: searching for 1s boundary...
-50,82076,995,hybrid,32,ok
-  k=50 -> n_max=82076 (995 ms) [hybrid B=32]
-k=100: searching for 1s boundary...
-100,66492,997,hybrid,24,ok
-  k=100 -> n_max=66492 (997 ms) [hybrid B=24]
-k=200: searching for 1s boundary...
-200,58746,989,hybrid,24,ok
-  k=200 -> n_max=58746 (989 ms) [hybrid B=24]
-k=500: searching for 1s boundary...
-500,50250,994,hybrid,32,ok
-  k=500 -> n_max=50250 (994 ms) [hybrid B=32]
-k=1000: searching for 1s boundary...
-1000,43875,990,hybrid,32,ok
-  k=1000 -> n_max=43875 (990 ms) [hybrid B=32]
-k=2000: searching for 1s boundary...
-2000,36500,986,hybrid,24,ok
-  k=2000 -> n_max=36500 (986 ms) [hybrid B=24]
-k=5000: searching for 1s boundary...
-5000,32343,993,hybrid,32,ok
-  k=5000 -> n_max=32343 (993 ms) [hybrid B=32]
-k=10000: searching for 1s boundary...
-10000,28750,996,hybrid,32,ok
-  k=10000 -> n_max=28750 (996 ms) [hybrid B=32]
-k=13000: searching for 1s boundary...
-13000,27625,984,hybrid,32,ok
-  k=13000 -> n_max=27625 (984 ms) [hybrid B=32]
-k=15000: searching for 1s boundary...
-15000,27187,1000,hybrid,32,ok
-  k=15000 -> n_max=27187 (1000 ms) [hybrid B=32]
-k=17000: searching for 1s boundary...
-17000,27625,993,hybrid,32,ok
-  k=17000 -> n_max=27625 (993 ms) [hybrid B=32]
-k=19000: searching for 1s boundary...
-19000,26125,988,hybrid,32,ok
-  k=19000 -> n_max=26125 (988 ms) [hybrid B=32]
-k=22000: searching for 1s boundary...
-22000,25437,999,hybrid,32,ok
-  k=22000 -> n_max=25437 (999 ms) [hybrid B=32]
-k=26000: searching for 1s boundary...
-26000,26000,1040,hybrid,32,ok
-  k=26000 -> n_max=26000 (1040 ms) [hybrid B=32]
-k=30000: searching for 1s boundary...
-30000,30000,1193,hybrid,32,floor
-  k=30000 -> n_max=30000 (1193 ms) [hybrid B=32] FLOOR
+2,427247,987,linear,0,ok
+5,380863,990,linear,0,ok
+10,371102,995,linear,0,ok
+20,302751,972,linear,0,ok
+50,210976,969,linear,0,ok
+100,128980,965,linear,0,ok
+200,68504,925,linear,0,ok
+500,54913,978,hybrid,32,ok
+1000,48468,997,hybrid,24,ok
+2000,42500,999,hybrid,24,ok
+5000,34531,972,hybrid,24,ok
+10000,31562,1000,hybrid,24,ok
+13000,30062,946,hybrid,24,ok
+15000,30468,964,hybrid,24,ok
+17000,29750,975,hybrid,24,ok
+19000,29687,989,hybrid,24,ok
+22000,27500,972,hybrid,24,ok
+26000,27625,987,hybrid,24,ok
+30000,30000,1108,hybrid,24,floor
