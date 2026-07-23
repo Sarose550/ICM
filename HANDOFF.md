@@ -50,7 +50,7 @@ Nothing standing was dropped when the board was written; it's additive,
 not a restart. Full rationale and the exact algorithm are in the board's
 own "Context" section — don't re-derive it, read it there. **The actual
 deliverable is one simple orchestrator script per device**
-(`tools/calibrate_bselect.py`, board node A4) that a user runs as a single
+(`tools/calibrate_block_size.py`, board node A4) that a user runs as a single
 command — the C/CUDA timing tools are measurement primitives it calls,
 not something a user chains by hand.
 

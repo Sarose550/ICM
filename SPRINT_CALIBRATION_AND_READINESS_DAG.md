@@ -139,7 +139,7 @@ naive rectangular `n` x `k/n`-fraction grid. Agreed direction (user,
     `gpu_fft_config.h`. The C/CUDA timing binaries (`calibrate_best_b`,
     `validate_best_b`, and their GPU equivalents) are measurement
     *primitives*; a single top-level orchestrator script
-    (`tools/calibrate_bselect.py`, shared logic parameterized by device)
+    (`tools/calibrate_block_size.py`, shared logic parameterized by device)
     drives skeleton generation, the skeleton sweep, and the full adaptive
     refinement loop above, then injects the final result and re-verifies.
     Don't leave this as several tools a user has to chain by hand.
@@ -238,7 +238,7 @@ graph TD
 | `tools/calibrate_best_b.c`, `tools/validate_best_b.c`, `devices/m3_pro/fft_config.h` | Serialized: A2 must land before A4/B2 | A2, A4, B2 |
 | `tools/calibrate_gpu_best_b.cu`, `tools/validate_planner_gpu.cu`, `devices/b200/gpu_fft_config.h` | Serialized: A3 (and B1's findings) must land before A4/B4 | A3, B1, A4, B4 |
 | `devices/zen4/fft_config.h` | Serialized: A2 must land before A4/B3 | A2, A4, B3 |
-| `tools/calibrate_bselect.py` | Single owner: A4 | A4 |
+| `tools/calibrate_block_size.py` | Single owner: A4 | A4 |
 | Repo-wide comment cleanup (C3) vs. any node still editing source in the same wave | C3 must run in a LATER wave than A2/A3/A4 to avoid touching files those nodes are mid-editing | A2, A3, A4, C3 |
 | `CLAUDE.md` | Supervisor-only, never delegated | C5 |
 | `~/Documents/ICM_paper` | Separate repo, out of scope for all main-repo nodes except C2 | C2 |
@@ -376,12 +376,12 @@ graph TD
 - **Model:** `deepseek`
 - **Depends:** A1_GEN_SKELETON_SCRIPT, A2_UPGRADE_CPU_PRIMITIVES,
   A3_UPGRADE_GPU_PRIMITIVES
-- **Allowed files:** `tools/calibrate_bselect.py` (new)
+- **Allowed files:** `tools/calibrate_block_size.py` (new)
 - **Task:** This is the actual end-user deliverable -- one command per
   device, matching this repo's existing `tools/calibrate_full.sh`
   simplicity convention. Implement the full algorithm from this board's
   Context item 5, verbatim:
-  1. CLI: `python3 tools/calibrate_bselect.py --device {m3_pro,zen4,b200}
+  1. CLI: `python3 tools/calibrate_block_size.py --device {m3_pro,zen4,b200}
      [--clean-streak-target 25] [--max-probes-per-band 150]
      [--gap-threshold 0.02]`.
   2. Call A1's skeleton generator to get the skeleton + bands CSVs.
@@ -457,13 +457,13 @@ graph TD
   devices/m3_pro/fftw_wisdom.dat fftw_wisdom.dat` (mandatory -- past
   incident this session, wisdom silently degrades if skipped), record the
   wisdom file's byte count for later comparison, then STOP -- do not
-  invoke `tools/calibrate_bselect.py` itself. Report back: binary paths,
+  invoke `tools/calibrate_block_size.py` itself. Report back: binary paths,
   confirmed build success, wisdom byte count baseline.
 
 - **Sub-step (b) -- Model: `supervisor`.** Launch the actual adaptive run
   directly (per this board's Context section on the documented DeepSeek
   local-background-process teardown constraint): `python3
-  tools/calibrate_bselect.py --device m3_pro ...` via supervisor's own
+  tools/calibrate_block_size.py --device m3_pro ...` via supervisor's own
   Bash tool with `run_in_background`, monitored via `Monitor`/
   `ScheduleWakeup` exactly as done for the B200 sweeps this session. After
   it completes: verify the wisdom file's byte count is unchanged from
@@ -490,7 +490,7 @@ graph TD
   1. SSH in, sync A4's orchestrator + A2's upgraded primitives, build
      `calibrate_best_b`/`validate_best_b` there, copy wisdom, verify byte
      count baseline (same mandatory safety steps as B2).
-  2. Launch `tools/calibrate_bselect.py --device zen4 ...` on the REMOTE
+  2. Launch `tools/calibrate_block_size.py --device zen4 ...` on the REMOTE
      box as a genuinely detached process: `nohup ... < /dev/null >
      calib.log 2>&1 &` over SSH, then **explicitly verify detachment
      succeeded** before ending this node's turn -- e.g. disconnect and
@@ -526,7 +526,7 @@ graph TD
   may inform whether more sample density there is even useful, or whether
   the region needs a different kind of fix entirely). Rent a B200
   instance (reuse the same rental as B1 if still efficient back-to-back),
-  build A3's upgraded primitives, run `tools/calibrate_bselect.py --device
+  build A3's upgraded primitives, run `tools/calibrate_block_size.py --device
   b200 ...`. Inject final result into `devices/b200/gpu_fft_config.h`'s
   `gbselect_n[]`/`gbselect_k[]`/`gbselect_B[]`. Rebuild, re-run
   `validate_planner_gpu` to confirm match rate, run `bench_gpu_fused
