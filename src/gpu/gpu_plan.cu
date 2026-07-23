@@ -730,7 +730,49 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
 
 /* ── B selection / engine dispatch ─────────────────────────────── */
 
+/* Empirical 2D nearest-neighbor lookup over the calibrated (n,k,B) grid
+ * in devices/<DEVICE>/gpu_fft_config.h (gbselect_n[]/gbselect_k[]/
+ * gbselect_B[], produced by tools/calibrate_gpu_best_b.c). Same rationale
+ * and structure as src/fft_cost_model.h's empirical_best_B() on CPU: B is
+ * a discrete choice among kBCandidates, so nearest-neighbor (not
+ * interpolation) is the right lookup. Confirmed via
+ * tools/validate_planner_gpu.cu that the old summed-analytical estimate
+ * below (estimate_candidate_cost) is measurably wrong (12/12 mismatches
+ * at n>=65536, systematically picking B=128 over the real-optimal B=64,
+ * 2-4% slower) — same failure mode as the CPU select_best_B() bug fixed
+ * earlier this session. */
+int gpu_empirical_best_B(int n, int k) {
+    double log_n = log((double)n);
+    int best_n = gbselect_n[0];
+    double best_n_dist = fabs(log_n - log((double)gbselect_n[0]));
+    for (int i = 1; i < GPU_N_BSELECT_POINTS; i++) {
+        double d = fabs(log_n - log((double)gbselect_n[i]));
+        if (d < best_n_dist) { best_n_dist = d; best_n = gbselect_n[i]; }
+    }
+    double log_k = log((double)k);
+    int best_B = 64; /* sane fallback; overwritten below as long as the table is non-empty */
+    double best_k_dist = 1e18;
+    for (int i = 0; i < GPU_N_BSELECT_POINTS; i++) {
+        if (gbselect_n[i] != best_n) continue;
+        double d = fabs(log_k - log((double)gbselect_k[i]));
+        if (d < best_k_dist) { best_k_dist = d; best_B = gbselect_B[i]; }
+    }
+    return best_B;
+}
+
 int gpu_select_best_B_est(int n, int k_pad, const std::vector<int> &smooth) {
+    int emp_B = gpu_empirical_best_B(n, k_pad);
+    int largest_valid = -1;
+    for (int i = 0; i < MAX_B_CANDIDATES; ++i) {
+        int B = kBCandidates[i];
+        if (B > n || B > k_pad) continue;
+        if (B == emp_B) return B;
+        if (B > largest_valid) largest_valid = B;
+    }
+    if (largest_valid > 0) return largest_valid;
+
+    /* No candidate fits n/k_pad at all (shouldn't happen in practice) —
+     * fall back to the analytical estimate. */
     CandidateCost best{};
     best.B = 16;
     for (int i = 0; i < MAX_B_CANDIDATES; ++i) {

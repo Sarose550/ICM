@@ -236,6 +236,10 @@ gpu_sample_plans: tools/gpu_sample_plans.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_d
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/gpu_sample_plans.o tools/gpu_sample_plans.cu
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_sample_plans.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
 
+calibrate_gpu_best_b: tools/calibrate_gpu_best_b.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu_best_b.o tools/calibrate_gpu_best_b.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu_best_b.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+
 gpu_phase_profile: tools/gpu_phase_profile.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/gpu_phase_profile.o tools/gpu_phase_profile.cu
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_phase_profile.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
@@ -250,7 +254,7 @@ test_cpu_cost_model: tools/test_cpu_cost_model.c src/icm.c src/icm.h devices/$(D
 	# codebase are legitimately unreferenced from this translation unit.
 	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -o $@ tools/test_cpu_cost_model.c $(LDFLAGS)
 
-.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model campaign_b200
+.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model campaign_b200 calibrate_gpu_best_b
 
 campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	bash tools/run_b200_campaign.sh

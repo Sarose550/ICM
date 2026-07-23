@@ -288,12 +288,38 @@ planner_validation.csv` has the raw 12-row mismatch table. Instance
 destroyed immediately after downloading both files — total B200 wall
 time was well under the budget.
 
-**Not yet fixed** — this needs the same scope of work as the CPU
-crossover-table/B-selection-table rewrite (a real empirical-table
-mechanism, not a quick clamp), which took most of a session on CPU. Needs
-its own dedicated pass, likely another short paid B200 session to build
-out a proper `(n,k,B)` calibration grid analogous to
-`tools/calibrate_best_b.c`.
+### FIXED: empirical GPU B-selection table (2026-07-23, second B200 session)
+
+Same methodology as the CPU fix: added `tools/calibrate_gpu_best_b.cu`
+(median of 3 reps — GPU timing is far less noisy than CPU wall-clock, so
+7 wasn't needed) sweeping a representative subset of `kBCandidates`
+across a 32-point `(n,k)` grid spanning n=4096 through the 1,572,864
+frontier (`k` = n/8, n/4, n/2, n). Added `gpu_empirical_best_B(n,k)` in
+`src/gpu/gpu_plan.cu` (2D nearest-neighbor lookup over
+`gbselect_n[]`/`gbselect_k[]`/`gbselect_B[]` in
+`devices/b200/gpu_fft_config.h`, mirroring CPU's `empirical_best_B()`
+exactly) and rewired `gpu_select_best_B_est()` to consult it first,
+falling back to the old analytical estimate only if no candidate fits
+`n`/`k_pad` at all (mirrors CPU's `select_best_B()` fallback structure).
+
+Ran the full 32-point calibration sweep on real B200 hardware (second
+short paid session, same $6.89/hr instance class, ~35 min total —
+largest points near the 1.5M frontier take ~1s per candidate). Real
+data: B=64 dominant for n up to 524288 (matches the `validate_planner_gpu`
+finding exactly), B=32 at n=1048576, and B=96/192/112 at n=1572864
+depending on k — notably more varied at the largest scale than CPU's
+tables ever were, plausibly because VRAM/occupancy effects become
+relevant near the frontier.
+
+**Verified fixed**: re-ran `tools/validate_planner_gpu.cu` after
+rebuilding — **12/12 matches (100%)**, up from 0/12, with auto/best
+timings now identical to measurement noise (e.g. n=524288,k=n: auto
+214.78ms vs best 214.75ms). Also ran `bench_gpu_fused verify` (installed
+plain FFTW via apt for the CPU cross-check reference — unrelated to the
+CPU AOCL-FFTW-wisdom rule, just a build dependency) — all cases PASS, no
+correctness regression. Instance destroyed immediately after downloading
+results. Raw data: `results_b200_validation2/` (calibration CSV/log,
+post-fix `validate_planner_gpu` output).
 
 ## What Worked
 
@@ -385,12 +411,10 @@ out a proper `(n,k,B)` calibration grid analogous to
    whether to attempt a memory-footprint reduction in the hybrid engine
    or just document it honestly as a known scaling limit — this is a
    real design tradeoff decision, not a bug fix.
-2. **Build a real empirical B-selection table for the GPU cost model**,
-   same methodology as `tools/calibrate_best_b.c` on CPU — confirmed
-   100% mismatch (B=128 auto vs B=64 real optimum, 2-4% slower) on real
-   B200 hardware. Seed data already collected:
-   `results_b200_validation/{gpu_sample_plans_b200.csv,
-   planner_validation.csv}`. Needs its own dedicated pass/session.
+2. ~~Build a real empirical B-selection table for the GPU cost model~~
+   **DONE** — `gpu_empirical_best_B()` + `tools/calibrate_gpu_best_b.cu`,
+   verified 12/12 match (up from 0/12) via `validate_planner_gpu`, see
+   finding above.
 3. **Paper sync**: Table 1/2 shared-k-column rework in
    `~/Documents/ICM_paper`, using post-fix numbers; recompute the real
    dispatch-accuracy figure (replacing a stale "95.5%" claim); strip 21

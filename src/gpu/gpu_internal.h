@@ -300,6 +300,7 @@ void build_tree_geometry(int n_leaves, int leaf_degree, int k_pad,
                          std::vector<int> &n_real, int &N, int &L);
 double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &smooth);
 int gpu_select_best_B_est(int n, int k_pad, const std::vector<int> &smooth);
+int gpu_empirical_best_B(int n, int k);
 int gpu_select_engine_est(int n, int k_pad, int B, const std::vector<int> &smooth);
 bool build_plan_metadata(GpuPlan *plan);
 bool device_sort_players(GpuPlan *plan);
