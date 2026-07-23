@@ -2341,6 +2341,29 @@ static int select_engine_ex(int n, int k, int n_targets) {
     double leaf_extract = (double)n * le_cost_per_player;
     double hybrid_total = block_build + tree + leaf_extract * target_frac;
 
+    /* Full-equity queries (n_targets == 0): use the empirically-measured
+     * crossover table instead of the summed analytical cost comparison.
+     * Every individual constant feeding hybrid_total/linear_per_qp was
+     * validated against real embedded execution, yet the aggregate
+     * go/no-go decision still didn't match the real measured crossover
+     * on real hardware (chased at length on both M3 Pro and Zen4) --
+     * matches a known result in the autotuning literature (FFTW
+     * MEASURE/PATIENT vs its own ESTIMATE heuristic; ATLAS's AEOS):
+     * closed-form cost models miss microarchitectural effects even when
+     * every constant is individually correct. See
+     * src/fft_cost_model.h's empirical_crossover_k() (LAPACK ILAENV NX
+     * precedent) and tools/calibrate_crossover.c for the calibration.
+     *
+     * Subset queries (n_targets > 0) still use the analytical comparison
+     * above -- the empirical table was only calibrated for full-equity
+     * dispatch; subset behavior was never measured directly. B selection
+     * (select_best_B, above) is untouched either way -- only the
+     * linear-vs-hybrid boundary changes. */
+    if (n_targets <= 0 || n_targets >= n) {
+        double k_cross = empirical_crossover_k(n);
+        return ((double)k < k_cross) ? 0 : B;
+    }
+
     return (hybrid_total < linear_per_qp) ? B : 0;
 }
 

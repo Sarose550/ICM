@@ -225,6 +225,22 @@ static const double leaf_fma_ns_per_player[6] = {
 #define DRAM_BW_GBS 33.0
 #endif
 
+/* ── Empirical linear-vs-hybrid crossover table ──────────────────────
+ * Measured 2026-07-22 (box 84.32.71.47) via tools/calibrate_crossover.c:
+ * direct binary search on real timing (median of 7 reps, Q=256,
+ * icm_select_best_B() for the hybrid side -- matches bench_grid
+ * crossover's own methodology exactly, just far less noisy since
+ * bench_grid crossover takes a single un-averaged sample per cell).
+ * See src/fft_cost_model.h's empirical_crossover_k() for how this is
+ * consulted (log-linear interpolation between bracketing n, LAPACK
+ * ILAENV NX precedent). n=512's value (194) sits notably below the rest
+ * (231-242) -- plausible small-n edge effect, not re-verified further. */
+#ifndef N_CROSSOVER_POINTS
+#define N_CROSSOVER_POINTS 6
+static const int crossover_n[N_CROSSOVER_POINTS] = {512, 1024, 2048, 4096, 8192, 16384};
+static const int crossover_k[N_CROSSOVER_POINTS] = {194, 231, 242, 242, 242, 242};
+#endif
+
 /* ── Cost model functions ──
  * best_fft_config() and best_fft_config_joint() are defined in
  * src/fft_cost_model.h — shared logic across all CPU devices.

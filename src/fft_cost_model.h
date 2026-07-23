@@ -21,6 +21,57 @@
 #define FFT_COST_MODEL_H
 
 #include <stddef.h>  /* NULL */
+#include <math.h>    /* log, exp */
+
+/* ── Empirical linear-vs-hybrid crossover lookup ──────────────────────
+ *
+ * Precedent: LAPACK's ILAENV ISPEC=3 (NX) parameter -- a problem-size
+ * crossover between two algorithms (blocked vs unblocked), determined by
+ * direct empirical benchmarking on the target machine rather than a
+ * closed-form cost model, consulted at runtime as a cheap threshold
+ * comparison. No live racing of both candidates in production.
+ *
+ * Rationale: every individual constant feeding the summed analytical
+ * cost formula (calib_times_ns[], WRAP_FMA_NS, the ratio constants,
+ * leaf/block/linear per-element costs) has been directly validated
+ * against real embedded execution, yet the AGGREGATE go/no-go decision
+ * still didn't match the true measured crossover on real hardware (this
+ * was chased at length on both M3 Pro and Zen4). This matches a known
+ * result in the autotuning literature (FFTW's PATIENT/MEASURE modes vs
+ * its own ESTIMATE heuristic; ATLAS's AEOS install-time search): closed-
+ * form cost models miss microarchitectural effects that are hard to
+ * represent as summed terms, even when every constant is individually
+ * correct. The fix is to stop summing terms for the FINAL decision and
+ * measure the real crossover directly instead (tools/calibrate_crossover.c),
+ * baking the result into a small per-device table.
+ *
+ * Requires (from the including translation unit's fft_config.h):
+ *   N_CROSSOVER_POINTS
+ *   crossover_n[]  (ascending problem sizes)
+ *   crossover_k[]  (measured crossover k at each corresponding n)
+ *
+ * Scope: this covers FULL-equity dispatch only (n_targets == 0). Subset
+ * queries (n_targets > 0) still use the analytical formula in
+ * select_engine_ex(), since the empirical table was calibrated only for
+ * the full-equity case and subset behavior was never measured directly --
+ * revisit if subset dispatch is shown to need the same fix. */
+static double empirical_crossover_k(int n) {
+    int lo = 0, hi = N_CROSSOVER_POINTS - 1;
+    if (n <= crossover_n[0]) return (double)crossover_k[0];
+    if (n >= crossover_n[hi]) return (double)crossover_k[hi];
+    while (hi - lo > 1) {
+        int mid = (lo + hi) / 2;
+        if (crossover_n[mid] <= n) lo = mid; else hi = mid;
+    }
+    if (crossover_n[lo] == n) return (double)crossover_k[lo];
+    double log_n  = log((double)n);
+    double log_n0 = log((double)crossover_n[lo]);
+    double log_n1 = log((double)crossover_n[hi]);
+    double log_k0 = log((double)crossover_k[lo]);
+    double log_k1 = log((double)crossover_k[hi]);
+    double t = (log_n - log_n0) / (log_n1 - log_n0);
+    return exp(log_k0 + t * (log_k1 - log_k0));
+}
 
 /* Joint optimization of build + paired cached correlate at one shared FFT size.
  * p_eff = build_conv/2 + 1 (polynomial size at this level) for input-wrap cost. */
