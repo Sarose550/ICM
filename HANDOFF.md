@@ -33,21 +33,49 @@ and GPU (`gpu_select_best_B_est()`) dispatch now use empirical B-selection
 lookup tables (fixed this session — see "GPU B-selection" section below),
 but both tables were built from a naive rectangular grid. The board widens
 the calibration methodology (7-smooth-biased skeleton `n` values reusing
-the codebase's own smooth-number tables, three `k`-anchor categories
-including a "tiny 2-16" and "almost-7-smooth minus 1" set, off-grid
-validation driving adaptive refinement rather than blind densification,
-reduced-rep timing) and applies it to all three platforms (M3 Pro, Zen4,
-B200) — while ALSO carrying forward every standing item from this file's
-"Next Steps" (paper sync, codebase cleanup, subset-dispatch check, the
-Zen4 memory-wall documentation decision, and the still-unresolved PR #7
-merge decision). Nothing standing was dropped when the board was written;
-it's additive, not a restart. Full rationale for the calibration-widening
-decisions is in the board's own "Context" section — don't re-derive it,
-read it there.
+the codebase's own smooth-number tables; `k`-anchors covering tiny values
+2-16, "almost-7-smooth-minus-1" up to 256, AND relative fractions spanning
+the FULL range from n/12 up through k=n itself — not just a narrow
+"typical payout %" band, since `n` here is players/payouts remaining at
+call time, and late-tournament calls can have `k` be most or all of a
+much-smaller `n`; a fully-specified per-band adaptive refinement loop
+with a convergence-based stopping rule — N consecutive clean off-grid
+probes, not a fixed point budget, tracked independently per `n`-band so
+an easy region can't mask an under-covered one; and reduced-rep timing)
+and applies it to all three platforms (M3 Pro, Zen4, B200) — while ALSO
+carrying forward every standing item from this file's "Next Steps" (paper
+sync, codebase cleanup, subset-dispatch check, the Zen4 memory-wall
+documentation decision, and the still-unresolved PR #7 merge decision).
+Nothing standing was dropped when the board was written; it's additive,
+not a restart. Full rationale and the exact algorithm are in the board's
+own "Context" section — don't re-derive it, read it there. **The actual
+deliverable is one simple orchestrator script per device**
+(`tools/calibrate_bselect.py`, board node A4) that a user runs as a single
+command — the C/CUDA timing tools are measurement primitives it calls,
+not something a user chains by hand.
 
 **Key constraint carried into the board:** calibration POINTS are chosen
 adaptively (offline, ahead of time); nothing is adaptive or probed live at
 runtime — dispatch stays O(1) nearest-neighbor lookup, unchanged.
+
+**Model-routing correction, learned mid-session:** DeepSeek workers CAN
+use SSH/network (`deck spawn --allow-network`) — an earlier board draft
+wrongly assumed they're always network-blocked. Zen4 (rented, staying up
+regardless) is fine to delegate with that flag. B200 is never delegated
+to DeepSeek (cost + destructive-action risk, per explicit user
+instruction). M3 Pro is more subtle: a DOCUMENTED prior-session constraint
+(`feedback_deepseek_deck_long_processes.md`) says DeepSeek workers cannot
+reliably keep a local background process alive past their own session —
+even `nohup`/`setsid` got killed when the sandbox tore down, observed
+directly during last week's M3 Pro calibration run — so the board scopes
+M3 Pro's actual long calibration RUN to supervisor (launched directly,
+monitored via `Monitor`/`ScheduleWakeup`), with DeepSeek only doing the
+bounded setup work. General rule threaded through the whole board: any
+DeepSeek node whose work is a long-running execution does setup + kicks
+it off + verifies the launch succeeded, then hands off to supervisor for
+monitoring rather than waiting itself — don't trust a DeepSeek worker to
+babysit something that risks burning significant wall-clock time with no
+one competent watching if it stalls.
 
 **Standing account/credential notes**: Zen4 box `185.8.107.239` (see
 `reference_zen4_new_password.md` memory) was still up and reachable as of
