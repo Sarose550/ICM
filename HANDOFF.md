@@ -140,21 +140,49 @@ crossover-table methodology change is what actually closed it.
    broken FFTW build — re-copy `devices/<DEVICE>/fftw_wisdom.dat` to the
    repo root before any run if in doubt.
 
-### Explicitly deferred (by user instruction)
+### Follow-up completed: `select_best_B()` had the same problem, now fixed too
 
-- **`select_best_B()`** (block-size choice within the hybrid engine) is
-  untouched. If dispatch still looks off in a way traceable to a bad B
-  choice, address it as its own scoped follow-up — do not fold it into
-  the crossover-table fix.
+Checked for methodological consistency (same class of formula, same
+"summed constants fragile in aggregate" risk) before trusting it for
+result-data regeneration. `tools/validate_best_b.c` confirmed
+`select_best_B()` was measurably wrong — 7-11% slower on M3 Pro (12/19
+test points off, systematic bias toward B=64 when B=32 real-wins), 2-9%
+slower on Zen4 (bias toward B=48 when B=24 real-wins). Same root cause,
+same direction, as the crossover bug.
+
+Fixed the same way (commit `c70ca4e`): `tools/calibrate_best_b.c`
+directly times every candidate B at a 34-point (n,k) grid per device
+(median of 7 reps, Q=256); `src/fft_cost_model.h`'s new
+`empirical_best_B()` does 2D nearest-neighbor lookup (not
+interpolation — B is discrete, no meaningful value between B=32 and
+B=64). `select_best_B()` itself is drastically simplified — the entire
+summed-constants tree-cost loop removed, replaced by the table lookup
+with a safety fallback (largest valid candidate ≤ n and ≤ k) for values
+outside the calibrated range.
+
+Real optimum clusters tightly around B=32 on M3 Pro (one clean, isolated
+exception at k=400/n≥2048 → B=48) and around B=24/32 on Zen4 (noisier —
+these two are close enough that the winner flips between adjacent grid
+points; used the raw measured data as-is rather than smoothing, since
+even a "wrong" pick between them costs little per the validation data).
+`bench_grid verify`: ALL TESTS PASSED on both platforms.
+`icm_select_best_B()` now matches the calibration data exactly across
+the test grid; `bench_grid crossover`'s L→H transition unchanged on both
+platforms, confirming no regression to the crossover-table fix.
+
+### Explicitly deferred (still open)
+
 - **Subset-query dispatch** (`n_targets > 0`) still uses the old
-  analytical formula. Never measured/calibrated directly this session.
+  analytical formula for both the linear-vs-hybrid decision and B
+  selection. Never measured/calibrated directly this session — revisit
+  if subset dispatch is shown to need the same treatment.
 
 ### Not yet done
 
 - **Regenerate result data** (performance grids, contour sweeps) on both
-  platforms now that dispatch is trustworthy — per `CLAUDE.md`'s
-  M3 Pro/Zen4 validation steps. The numbers in `RESULTS.md` predate all
-  of this session's fixes.
+  platforms now that BOTH dispatch decisions (linear-vs-hybrid AND B
+  selection) are trustworthy — per `CLAUDE.md`'s M3 Pro/Zen4 validation
+  steps. The numbers in `RESULTS.md` predate all of this session's fixes.
 - **Paper sync**: Table 1/2 shared-k-column rework in
   `~/Documents/ICM_paper`, using post-fix numbers.
 - **GPU kernel microbenchmark (B200)** — independent of all CPU work
@@ -250,13 +278,13 @@ crossover-table methodology change is what actually closed it.
 ## Next Steps
 
 1. **Regenerate result data** (performance grids, contour sweeps) on
-   both M3 Pro and Zen4 now that dispatch is trustworthy on both.
+   both M3 Pro and Zen4 — both dispatch decisions (linear-vs-hybrid and
+   B selection) are now trustworthy on both platforms.
 2. **Paper sync**: Table 1/2 shared-k-column rework in
    `~/Documents/ICM_paper`, using post-fix numbers.
-3. **If `select_best_B()` still looks wrong** in the regenerated data,
-   address it as its own scoped follow-up (same crossover-table
-   methodology could apply, calibrated separately — but confirm it's
-   actually broken first, don't assume).
+3. **Subset-query dispatch** (`n_targets > 0`) still uses the old
+   analytical formula for both decisions — check if it's actually a
+   problem before assuming it needs the same table-based treatment.
 4. **GPU kernel microbenchmark (B200)** — needs explicit user go-ahead
    to spin up a paid instance.
 5. **Decide with the user whether to merge PR #7.**
