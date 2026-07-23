@@ -717,12 +717,20 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     }
 }
 
+/* Forward declaration: defined below, needed by correlate_fft's wrap
+ * correction (added after the initial version lacked it -- see the fix
+ * note in correlate_fft). */
+static inline void correlate_wrap_input_correction(double *out, int len_out,
+                                             const double *P, int len_P,
+                                             const double *g, int len_g,
+                                             int fft_n);
+
 /* Correlate via FFT (from scratch — FFTs both g and P):
  * out[m] = sum_j P[j] * g[m+j] */
 static inline __attribute__((always_inline)) void correlate_fft(const double *g, int len_g,
                           const double *P, int len_P,
                           double *out, int len_out,
-                          FFTCache *fc, int fft_n) {
+                          FFTCache *fc, int fft_n, int wrap_m) {
     FFTPlan *plan = fft_cache_get(fc, fft_n);
     fft_n = plan->fft_n;
     int cn = fft_n / 2 + 1;
@@ -753,6 +761,39 @@ static inline __attribute__((always_inline)) void correlate_fft(const double *g,
         int idx = m + offset;
         out[m] = (idx < fft_n) ? plan->rbuf[idx] * inv : 0;
     }
+
+    /* wrap_m > 0: fft_n was chosen smaller than the full convolution length
+     * (len_g + len_P - 1), so cyclic aliasing must be corrected. This
+     * function computes correlation via a P-reversed cyclic convolution
+     * (out[m] == conv_true[m+offset], offset = len_P-1) -- a different
+     * indexing scheme from correlate_fft_cached_*_wrap (conjugate-FFT
+     * correlation, no offset), so the correction must be expressed in
+     * terms of the OUTPUT index m, not the raw cyclic buffer position.
+     * For i=0..wrap_m, r=fft_n+i is the true (unshifted) position that
+     * aliases into cyclic slot i; its output index is m_high=r-offset,
+     * and slot i's own output index (if any) is m_low=i-offset. Without
+     * this, positions beyond fft_n were silently left at 0 instead of
+     * their true value -- a real bug found via Zen4 dispatch differing
+     * from M3 Pro's at small tree sizes (this path is only used at the
+     * tree root, which never picked a wrap-requiring size on M3 Pro's
+     * calibration data, masking the bug there). */
+    if (wrap_m > 0) {
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += P[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) out[m_low] -= high;
+            out[m_high] = high;
+        }
+    }
 }
 
 /* Correlate g with TWO polynomials, sharing the forward FFT of g.
@@ -761,7 +802,7 @@ static inline __attribute__((always_inline)) void correlate_fft(const double *g,
 static inline __attribute__((always_inline)) void correlate_fft_pair(const double *g, int len_g,
                                 const double *PL, const double *PR, int len_P,
                                 double *outL, double *outR, int len_out,
-                                FFTCache *fc, int fft_n) {
+                                FFTCache *fc, int fft_n, int wrap_m) {
     FFTPlan *plan = fft_cache_get(fc, fft_n);
     fft_n = plan->fft_n;
     int cn = fft_n / 2 + 1;
@@ -788,6 +829,33 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     int offset = len_P - 1;
     for (int m = 0; m < len_out; m++)
         outL[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
+    if (wrap_m > 0) {
+        /* correlate_fft_pair computes correlation via a P-reversed cyclic
+         * convolution: out[m] == conv_true[m+offset] (offset = len_P-1).
+         * This is a DIFFERENT indexing scheme from correlate_fft_cached_*_wrap
+         * (which uses conjugate-FFT correlation directly, no offset) -- the
+         * "high"/"pos" correction cannot be copied verbatim between the two;
+         * it must be expressed in terms of the OUTPUT index m, not the raw
+         * cyclic buffer position. For i=0..wrap_m, r=fft_n+i is the true
+         * (unshifted) position that aliases into cyclic slot i; its output
+         * index is m_high = r-offset, and the position i's own output index
+         * (if any) is m_low = i-offset. */
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += PR[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) outL[m_low] -= high;
+            outL[m_high] = high;
+        }
+    }
 
     /* Second correlate: g × PL → outR (reuse g_hat) */
     for (int j = 0; j < len_P; j++) fc->rbuf2[j] = PL[len_P - 1 - j];
@@ -800,6 +868,23 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     fft_exec_inv(plan);
     for (int m = 0; m < len_out; m++)
         outR[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
+    if (wrap_m > 0) {
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += PL[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) outR[m_low] -= high;
+            outR[m_high] = high;
+        }
+    }
 }
 
 /* Correlate via FFT with CACHED FFT(P) — saves one forward FFT.
@@ -1477,7 +1562,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                     } else if (use_fft) {
                         correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
                                            gL, gR, out_needed, tc->fft,
-                                           tc->corr_fft_n[ell]);
+                                           tc->corr_fft_n[ell], tc->corr_wrap_m[ell]);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
@@ -1524,7 +1609,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                     } else if (use_fft) {
                         correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
                                            gL, gR, out_needed, tc->fft,
-                                           tc->corr_fft_n[ell]);
+                                           tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
@@ -1540,7 +1625,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                                                   tc->fft, fft_R, cached_fft_n, cwm);
                     } else if (use_fft) {
                         correlate_fft(gp, g_eff, PR, p_eff, gL, out_needed,
-                                      tc->fft, tc->corr_fft_n[ell]);
+                                      tc->fft, tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                     }
@@ -1555,7 +1640,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                                                   tc->fft, fft_L, cached_fft_n, cwm);
                     } else if (use_fft) {
                         correlate_fft(gp, g_eff, PL, p_eff, gR, out_needed,
-                                      tc->fft, tc->corr_fft_n[ell]);
+                                      tc->fft, tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
                     }
