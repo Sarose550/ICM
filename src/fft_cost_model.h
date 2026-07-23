@@ -73,6 +73,47 @@ static double empirical_crossover_k(int n) {
     return exp(log_k0 + t * (log_k1 - log_k0));
 }
 
+/* ── Empirical hybrid-engine block-size (B) lookup ────────────────────
+ *
+ * select_best_B() (src/icm.c) chooses which block size B in
+ * {8,16,24,32,48,64} the hybrid engine uses, via the same summed-
+ * analytical-constants approach as the (now-fixed) linear-vs-hybrid
+ * crossover. Direct validation (tools/validate_best_b.c) confirmed the
+ * SAME class of error: measurably wrong by 7-11% on M3 Pro (systematic
+ * bias toward B=64 when B=32 real-wins) and 2-9% on Zen4 (bias toward
+ * B=48 when B=24 real-wins) -- same root cause, same direction
+ * (overestimating the benefit of larger B), as the crossover decision.
+ *
+ * Unlike the crossover table (a continuous threshold, log-linearly
+ * interpolated), B is a discrete/categorical choice -- there is no
+ * meaningful interpolation between B=32 and B=64. Lookup is nearest-
+ * neighbor over a 2D (n,k) grid instead (log-distance on each axis):
+ * find the calibrated n closest to the query, then among that n's
+ * entries, the calibrated k closest to the query.
+ *
+ * Requires (from fft_config.h): N_BSELECT_POINTS, bselect_n[],
+ * bselect_k[], bselect_B[] (flat parallel arrays from
+ * tools/calibrate_best_b.c; not necessarily sorted -- linear scan over
+ * ~30-40 points per call is negligible). */
+static int empirical_best_B(int n, int k) {
+    double log_n = log((double)n);
+    int best_n = bselect_n[0];
+    double best_n_dist = fabs(log_n - log((double)bselect_n[0]));
+    for (int i = 1; i < N_BSELECT_POINTS; i++) {
+        double d = fabs(log_n - log((double)bselect_n[i]));
+        if (d < best_n_dist) { best_n_dist = d; best_n = bselect_n[i]; }
+    }
+    double log_k = log((double)k);
+    int best_B = 32; /* sane fallback; overwritten below as long as the table is non-empty */
+    double best_k_dist = 1e18;
+    for (int i = 0; i < N_BSELECT_POINTS; i++) {
+        if (bselect_n[i] != best_n) continue;
+        double d = fabs(log_k - log((double)bselect_k[i]));
+        if (d < best_k_dist) { best_k_dist = d; best_B = bselect_B[i]; }
+    }
+    return best_B;
+}
+
 /* Joint optimization of build + paired cached correlate at one shared FFT size.
  * p_eff = build_conv/2 + 1 (polynomial size at this level) for input-wrap cost. */
 static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,

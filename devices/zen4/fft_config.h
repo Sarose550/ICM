@@ -241,6 +241,28 @@ static const int crossover_n[N_CROSSOVER_POINTS] = {512, 1024, 2048, 4096, 8192,
 static const int crossover_k[N_CROSSOVER_POINTS] = {194, 231, 242, 242, 242, 242};
 #endif
 
+/* ── Empirical hybrid block-size (B) table ───────────────────────────
+ * Measured 2026-07-22 (box 84.32.71.47) via tools/calibrate_best_b.c:
+ * direct timing (median of 7 reps, Q=256) of the real hybrid engine at
+ * every candidate B, per (n,k) grid point. See src/fft_cost_model.h's
+ * empirical_best_B() for how this is consulted (2D nearest-neighbor,
+ * not interpolation -- B is a discrete choice). Confirmed via
+ * tools/validate_best_b.c that select_best_B()'s old analytical formula
+ * was measurably wrong here (2-9% slower, systematic bias toward
+ * B=48). Real optimum on Zen4 clusters entirely around B=24/32, never
+ * 8/16/48/64 -- these two are close enough that the winner flips
+ * somewhat noisily between adjacent grid points (e.g. n=4096:
+ * k=250->32, k=400->24, k=800->24, k=1500->32); nearest-neighbor lookup
+ * on the raw measured data was used as-is rather than smoothing, since
+ * even a "wrong" pick between these two is a small, bounded cost per
+ * the validation data. */
+#ifndef N_BSELECT_POINTS
+#define N_BSELECT_POINTS 34
+static const int bselect_n[N_BSELECT_POINTS] = {512,512,512,1024,1024,1024,1024,2048,2048,2048,2048,2048,2048,4096,4096,4096,4096,4096,4096,4096,8192,8192,8192,8192,8192,8192,8192,16384,16384,16384,16384,16384,16384,16384};
+static const int bselect_k[N_BSELECT_POINTS] = {150,250,400,150,250,400,800,150,250,400,800,1500,2000,150,250,400,800,1500,2000,4000,150,250,400,800,1500,2000,4000,150,250,400,800,1500,2000,4000};
+static const int bselect_B[N_BSELECT_POINTS] = {32,32,32,32,32,32,32,32,32,24,32,32,32,32,32,24,24,32,24,32,32,32,24,24,32,24,32,32,32,32,24,24,24,24};
+#endif
+
 /* ── Cost model functions ──
  * best_fft_config() and best_fft_config_joint() are defined in
  * src/fft_cost_model.h — shared logic across all CPU devices.

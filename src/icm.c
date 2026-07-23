@@ -2657,70 +2657,32 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
  * planning decisions (schoolbook vs FFT, joint vs independent, FFT sizes).
  * O(log n) per candidate, negligible vs engine work. */
 static int select_best_B(int n, int k) {
+    /* Empirically-measured lookup (tools/calibrate_best_b.c), replacing
+     * the old summed-analytical-constants comparison -- validated
+     * (tools/validate_best_b.c) that the analytical version was
+     * measurably wrong (7-11% slower on M3 Pro, 2-9% on Zen4, same
+     * systematic bias toward oversized B as the linear-vs-hybrid
+     * crossover had before its own fix). See
+     * src/fft_cost_model.h's empirical_best_B() (2D nearest-neighbor,
+     * not interpolation -- B is a discrete choice, not a continuous
+     * threshold).
+     *
+     * The calibration grid starts at n=512, k=150; for values outside
+     * that practical range the nearest-neighbor lookup can still return
+     * a B that doesn't fit this specific (n,k) (e.g. B=32 for n=20) --
+     * fall back to the largest valid candidate at or below n and k in
+     * that case, never invalid. */
     int candidates[] = {8, 16, 24, 32, 48, 64};
     int n_cand = 6;
-    double best_cost = 1e18;
-    int best_B = 16;
+    int emp_B = empirical_best_B(n, k);
+    int largest_valid = -1;
     for (int ci = 0; ci < n_cand; ci++) {
         int B = candidates[ci];
         if (B > k || B > n) continue;
-        int n_leaves = (n + B - 1) / B;
-        TreeCtx *tc = tree_ctx_create_ex2(n_leaves, B, k, B);
-        int L = tc->L;
-        /* block_build: per-player cost via direct lookup table.
-         * leaf_extract: per-player cost via direct lookup table (includes
-         * amortized per-block overhead in the table values). */
-        double block_build = (double)n * block_build_ns_per_player[B_to_table_index(B)];
-        double le_cost_per_player = (FP64_DIV_NS > leaf_fma_ns_per_player[B_to_table_index(B)])
-                                    ? FP64_DIV_NS : leaf_fma_ns_per_player[B_to_table_index(B)];
-        double leaf = (double)n * le_cost_per_player;
-        double tree = 0;
-        for (int ell = 1; ell < L - 1; ell++) {
-            int cps = tc->psz[ell-1];
-            int nr = tc->n_real[ell];
-            if (tc->use_fft[ell]) {
-                int bfn = tc->build_fft_n[ell];
-                int bwm = tc->build_wrap_m[ell];
-                int idx = 0;
-                { int lo=0,hi=N_CALIBRATED_SIZES-1;
-                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-                  idx=lo; }
-                double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                                 + (double)bwm*(bwm+1)/2.0*WRAP_FMA_NS;
-                double corr;
-                if (tc->fft_cache_ok[ell]) {
-                    corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                         + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*WRAP_FMA_NS;
-                } else {
-                    int cfn = tc->corr_fft_n[ell];
-                    int cwm = tc->corr_wrap_m[ell];
-                    int cidx=0;
-                    {int lo=0,hi=N_CALIBRATED_SIZES-1;
-                     while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
-                     cidx=lo;}
-                    corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                         + (double)cwm*(cwm+1)*WRAP_FMA_NS;
-                }
-                tree += nr * (build_fft + corr);
-            } else {
-                /* Schoolbook cost via direct per-size lookup table
-                 * (mirrors the identical lookup in select_engine_ex). */
-                int is_below = tc->below_sat[ell];
-                int this_cps = cps; (void)is_below;
-                int idx;
-                { int lo=0,hi=N_CALIBRATED_SIZES-1;
-                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<this_cps)lo=m+1;else hi=m;}
-                  idx=lo; }
-                double school_mul = schoolbook_mul_ns[idx];
-                double school_corr = (double)cps * tc->g_needed[ell-1] * schoolbook_corr_ns[idx];
-                tree += nr * (school_mul + school_corr);
-            }
-        }
-        tree_ctx_destroy(tc);
-        double total = block_build + leaf + tree;
-        if (total < best_cost) { best_cost = total; best_B = B; }
+        if (B == emp_B) return B;
+        if (B > largest_valid) largest_valid = B;
     }
-    return best_B;
+    return (largest_valid > 0) ? largest_valid : 8;
 }
 
 /* ==============================================================

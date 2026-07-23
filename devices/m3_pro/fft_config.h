@@ -358,6 +358,24 @@ static const int crossover_n[N_CROSSOVER_POINTS] = {512, 1024, 2048, 4096, 8192,
 static const int crossover_k[N_CROSSOVER_POINTS] = {123, 124, 122, 122, 122, 122};
 #endif
 
+/* ── Empirical hybrid block-size (B) table ───────────────────────────
+ * Measured 2026-07-22 via tools/calibrate_best_b.c: direct timing
+ * (median of 7 reps, Q=256) of the real hybrid engine at every
+ * candidate B, per (n,k) grid point. See src/fft_cost_model.h's
+ * empirical_best_B() for how this is consulted (2D nearest-neighbor,
+ * not interpolation -- B is a discrete choice). Confirmed via
+ * tools/validate_best_b.c that select_best_B()'s old analytical formula
+ * was measurably wrong here (7-11% slower, systematic bias toward
+ * B=64) -- same root cause as the crossover fix, applied consistently.
+ * B=32 dominates almost everywhere on M3 Pro; the one consistent
+ * exception is k=400 at n>=2048, where B=48 real-wins. */
+#ifndef N_BSELECT_POINTS
+#define N_BSELECT_POINTS 34
+static const int bselect_n[N_BSELECT_POINTS] = {512,512,512,1024,1024,1024,1024,2048,2048,2048,2048,2048,2048,4096,4096,4096,4096,4096,4096,4096,8192,8192,8192,8192,8192,8192,8192,16384,16384,16384,16384,16384,16384,16384};
+static const int bselect_k[N_BSELECT_POINTS] = {150,250,400,150,250,400,800,150,250,400,800,1500,2000,150,250,400,800,1500,2000,4000,150,250,400,800,1500,2000,4000,150,250,400,800,1500,2000,4000};
+static const int bselect_B[N_BSELECT_POINTS] = {32,32,32,32,32,32,32,32,32,48,32,32,32,32,32,48,32,32,32,32,32,32,48,32,32,32,32,32,32,48,32,32,32,32};
+#endif
+
 /* ── Cost model functions ──
  * best_fft_config() and best_fft_config_joint() are defined in
  * src/fft_cost_model.h — shared logic across all CPU devices.
