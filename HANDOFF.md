@@ -20,6 +20,33 @@ code, an accurate paper, a friction-free device-porting story, and
 nothing stale, hand-waved, or silently broken. This has been true across
 multiple sessions.
 
+## Update (same session, continued): real correctness bug found + fixed on Zen4
+
+While starting the Zen4 verification work below (fresh box, `84.32.71.47`,
+see `reference_zen4_new_password.md` memory), `bench_grid verify` failed
+hard (`xchk FAIL`, up to 65% diff) starting at n=32 — a genuine numerical
+correctness bug, not a calibration/dispatch issue. Root cause:
+`correlate_fft()` and `correlate_fft_pair()` (`src/icm.c`, the non-cached
+correlate variants used only at the tree's root level) had **no
+wrap-correction logic at all**, unlike their "cached" siblings which
+already implement it correctly. Whenever the root's calibrated FFT size
+was smaller than the full convolution length (`corr_wrap_m > 0`), output
+positions beyond `fft_n` were silently left at 0 instead of their true
+value. Confirmed **universal, not Zen4-specific** — reproduced the
+byte-for-byte identical wrong answer on M3 Pro by forcing the same code
+path with a scratch patch (not committed) and the exact failing data; it
+was masked on M3 Pro purely because that platform's calibration data
+never happened to select a wrap-requiring root-level FFT size, for any
+size tested so far. Fixed (commit `dce6b74`) by re-deriving the aliasing
+correction correctly — the first attempt copied the cached-variant's
+correction verbatim, but that function uses a different indexing scheme
+(conjugate-FFT correlation, no shift, vs. these functions' P-reversed
+cyclic convolution shifted by `offset = len_P-1`), which actually made
+results *worse* until caught by testing the isolated primitive against a
+schoolbook reference. `bench_grid verify`: ALL TESTS PASSED on both M3
+Pro and, after pulling the fix, on the actual Zen4 box where the bug was
+found. Zen4 calibration work (below) proceeded after this was resolved.
+
 ## Status as of this session (2026-07-22) — the M3 Pro dispatch-crossover investigation is CLOSED
 
 The multi-session investigation into why `icm_select_engine()`'s real
