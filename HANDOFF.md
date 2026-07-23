@@ -20,242 +20,227 @@ code, an accurate paper, a friction-free device-porting story, and
 nothing stale, hand-waved, or silently broken. This has been true across
 multiple sessions.
 
-## Update (same session, continued): real correctness bug found + fixed on Zen4
-
-While starting the Zen4 verification work below (fresh box, `84.32.71.47`,
-see `reference_zen4_new_password.md` memory), `bench_grid verify` failed
-hard (`xchk FAIL`, up to 65% diff) starting at n=32 — a genuine numerical
-correctness bug, not a calibration/dispatch issue. Root cause:
-`correlate_fft()` and `correlate_fft_pair()` (`src/icm.c`, the non-cached
-correlate variants used only at the tree's root level) had **no
-wrap-correction logic at all**, unlike their "cached" siblings which
-already implement it correctly. Whenever the root's calibrated FFT size
-was smaller than the full convolution length (`corr_wrap_m > 0`), output
-positions beyond `fft_n` were silently left at 0 instead of their true
-value. Confirmed **universal, not Zen4-specific** — reproduced the
-byte-for-byte identical wrong answer on M3 Pro by forcing the same code
-path with a scratch patch (not committed) and the exact failing data; it
-was masked on M3 Pro purely because that platform's calibration data
-never happened to select a wrap-requiring root-level FFT size, for any
-size tested so far. Fixed (commit `dce6b74`) by re-deriving the aliasing
-correction correctly — the first attempt copied the cached-variant's
-correction verbatim, but that function uses a different indexing scheme
-(conjugate-FFT correlation, no shift, vs. these functions' P-reversed
-cyclic convolution shifted by `offset = len_P-1`), which actually made
-results *worse* until caught by testing the isolated primitive against a
-schoolbook reference. `bench_grid verify`: ALL TESTS PASSED on both M3
-Pro and, after pulling the fix, on the actual Zen4 box where the bug was
-found. Zen4 calibration work (below) proceeded after this was resolved.
-
-## Status as of this session (2026-07-22) — the M3 Pro dispatch-crossover investigation is CLOSED
+## Status as of 2026-07-22 — the CPU dispatch-crossover investigation is CLOSED on both platforms
 
 The multi-session investigation into why `icm_select_engine()`'s real
-dispatch decision didn't match the ground-truth measured crossover (the
-thing the last several sessions kept circling back to) **is resolved for
-M3 Pro**. Real dispatch crossover moved from k~260-320 (session start) to
-k~100-120, matching `bench_grid crossover`'s own empirical linear→hybrid
-transition (k=120 still linear, k=160 hybrid, across n in
-{512,1024,2048,4096,8192}) closely. The sprint board for this exact
-investigation was `SPRINT_HYBRID_COST_MODEL_VALIDATION_DAG.md`, now
-deleted per the supervisor-dag skill's R_CLOSE step (ephemeral, not
-durable law) — the durable summary is this file.
+dispatch decision didn't match the ground-truth measured crossover is
+**resolved on both M3 Pro and Zen4**, via a methodology change, not
+another constant fix. Both platforms now have `icm_select_engine()`
+matching `bench_grid crossover`'s empirical L→H transition essentially
+exactly.
 
-### The actual root causes (in case this pattern recurs elsewhere)
+### The resolution: replaced the summed-constants formula with an empirically-measured crossover table
 
-1. **Leaf-extraction cost model overpredicted 2x on M3 Pro.** The old
+Every individual constant feeding the old analytical cost formula
+(`calib_times_ns[]`, `WRAP_FMA_NS`, `PAIRED_CACHED_CORR_RATIO`,
+`leaf_fma_ns_per_player[]`, `BATCHED_FMA_NS`, `block_build_ns_per_player[]`)
+was, over the course of this session, directly validated against real
+embedded execution and found individually accurate or fixed to be so —
+see "Root causes fixed along the way" below. Yet the AGGREGATE go/no-go
+dispatch decision still didn't match reality, on both platforms, by a
+wide margin, even after four parallel DeepSeek analyses each targeting a
+different remaining hypothesis (schoolbook dead-code, FFT-cached ratio,
+wrap-correction contribution, missing overhead terms) came back small or
+inconclusive.
+
+Research (this session) confirmed this matches a well-established result
+in the HPC autotuning literature: closed-form analytical cost models are
+fragile in aggregate even when every individual term is correct, because
+summing terms can't capture real microarchitectural effects (cache
+associativity, prefetch behavior, TLB pressure). FFTW's own `ESTIMATE`
+mode is an admitted-inaccurate heuristic for exactly this reason — its
+`MEASURE`/`PATIENT` modes abandon modeling and time real candidates
+directly. ATLAS's AEOS paradigm does the same at install time. The
+precise structural analog is **LAPACK's `ILAENV` ISPEC=3 (`NX`)
+parameter**: a problem-size crossover between two algorithms (blocked vs
+unblocked), determined by direct empirical benchmarking per machine, no
+live racing in production — just a cheap runtime threshold read.
+
+Implemented (commit `27cc356`):
+- `tools/calibrate_crossover.c` — binary-searches the real crossover
+  `k_cross(n)` via median-of-7-reps timing at a sparse grid of n
+  (512..16384), matching `bench_grid crossover`'s exact methodology
+  (same payout convention, Q=256, `icm_select_best_B()` for the hybrid
+  side) but far less noisy. **Important finding along the way**:
+  `bench_grid crossover` itself takes only a single, un-averaged sample
+  per cell — a real, non-trivial noise source that was silently
+  distorting the "ground truth" this whole investigation had been
+  chasing (visible as a cold-start bias on the linear engine's first
+  call in single-shot timing). This is a one-time, offline calibration
+  step — it never runs in production, same as FFTW wisdom generation.
+- `src/fft_cost_model.h`'s `empirical_crossover_k()` — log-linear
+  interpolation between the two bracketing calibrated `n` values,
+  clamping (not extrapolating) outside the measured range.
+- Per-device `crossover_n[]`/`crossover_k[]` tables in each
+  `fft_config.h`, following the existing calibrated-constant convention.
+- `select_engine_ex()` (`src/icm.c`) now uses the table for full-equity
+  queries (`n_targets <= 0`). Subset queries still use the analytical
+  formula — the table was only calibrated for full-equity dispatch.
+  **`select_best_B()` (the block-size choice within hybrid) is
+  untouched** — explicit user instruction: "if B selection is still an
+  issue we'll address it after." Revisit separately if needed.
+
+### Verified results
+
+- **M3 Pro**: `crossover_n`/`crossover_k` = `{512,1024,2048,4096,8192,16384}`
+  / `{123,124,122,122,122,122}` — remarkably tight and consistent.
+  Dispatch now matches `bench_grid crossover`'s empirical transition
+  (k=120 still L, k=160 H, for every n) essentially exactly.
+- **Zen4** (box `84.32.71.47`, see `reference_zen4_new_password.md`):
+  `crossover_k` = `{194,231,242,242,242,242}` for the same n grid.
+  Dispatch now matches `bench_grid crossover`'s empirical transition
+  (k=240 still L, k=260 H, for n≥1024) essentially exactly.
+- `bench_grid verify`: ALL TESTS PASSED on both platforms, both before
+  and after this change (correctness untouched, only dispatch moved).
+
+### Root causes fixed along the way (in case this pattern recurs elsewhere)
+
+These were all real, individually-validated fixes — necessary, and each
+moved dispatch closer to reality, but none alone closed the gap; the
+crossover-table methodology change is what actually closed it.
+
+1. **Leaf-extraction cost overpredicted ~2x on both platforms.** The old
    isolated microbenchmark (`tools/bench_leaf_fma.c`, retired) generated
-   synthetic `a[j]` values uniformly in `[0.5, 0.99]`, forcing 100% of
-   measured players through the expensive forward-divide branch. Real
-   production data (stack sizes 100-10000, realistic quadrature sweep) is
-   **~99.9% the cheap "zero" branch** (`aj` underflows below 1e-15 → plain
-   FMA accumulate, no division, no dependency chain — `src/icm.c` ~line
-   2068). Fixed by extending `tools/probe_leaf_extract.c` (which embeds
-   real `engine_hybrid_core` execution, fresh `HybridCtx` per rep — cold
-   allocation, matching one real `icm_equity()` call) with a B-sweep
-   phase, cross-validated within 2% against its existing multi-(n,k)
-   sweep. A separate attempt at a dedicated recalibration tool
-   (`tools/calibrate_leaf_realistic.c`) turned out to have its own bug —
-   it reused one `HybridCtx`/buffer set across all reps, making everything
-   unrealistically cache-hot — and was abandoned in favor of extending the
-   already-correct `probe_leaf_extract.c` instead. **This fix alone only
-   moved the crossover from k~260-320 to k~220-255 — real but partial.**
-2. **Dispatch-formula/execution-path constant mismatch (`src/icm.c`).**
-   `select_engine_ex` and `select_best_B`'s tree-cost prediction used
-   `FMA_NS` (0.0677ns on M3 Pro) for the wrap-correction term, but the
-   ACTUALLY-EXECUTED code (`correlate_fft_cached_pair_wrap`) and
-   `src/fft_cost_model.h` both correctly use `WRAP_FMA_NS` (0.5160ns) for
-   the same physical quantity — a 7.6x discrepancy between what dispatch
-   predicts and what really runs. Fixed (6 occurrences, `FMA_NS`→
-   `WRAP_FMA_NS`) as a correctness fix independent of its effect on the
-   crossover. **This moved the crossover the WRONG way (to k~240-285)** —
-   informative, not a regression: it revealed that `tools/probe_tree_levels.c`'s
-   earlier "tree roughly accurate near crossover" finding had been computed
-   against its own copy of the same buggy formula, an invalid comparison.
-3. **The real dominant bug: linear-engine cost model, untouched all prior
-   sessions.** `src/cost_model.h`'s `linear_roofline_cost()` assumed
-   `4*n*k` FMAs per quadrature point using `FMA_NS` — measured from an
-   unrelated scalar schoolbook microbenchmark (`polymul_modk`), not the
-   batched linear engine's real BQ=8 interleaved inner loop
-   (`src/linear_batched_impl.inc`). Direct measurement via the exported
-   API (`icm_run_linear_batched`) showed a consistent **~1.73-1.80x
-   underprediction across every (n,k) tested** — a flat multiplicative
-   bias, meaning the model's FORM was basically right but the constant was
-   wrong. Root cause: the real inner loop does **~5*n*k** FMAs/QP, not
-   4*n*k (forward pass: `BQ*(2k-1)`/player; fused backward pass:
-   `BQ*(3k-1)`/player) — a genuine FMA-count bug, not just a wrong
-   constant. Fixed by introducing `BATCHED_FMA_NS`, fit directly against
-   real `icm_run_linear_batched()` measurements using the corrected `5*n*k`
-   form (CV 1.27% across 10 test points — the corrected form fits real
-   data far better than the old one ever did). **This is what actually
-   closed the gap.**
+   synthetic `a[j]` values forcing 100% of measured players through the
+   expensive forward-divide branch; real production data is ~99.9% the
+   cheap "zero" branch (`aj` underflows, plain FMA accumulate, no
+   division). Fixed via `tools/probe_leaf_extract.c`'s B-sweep phase
+   (real embedded execution, fresh `HybridCtx` per rep).
+2. **Dispatch-formula/execution-path constant mismatch.**
+   `select_engine_ex`/`select_best_B` used `FMA_NS` for the wrap-
+   correction term where the actually-executed code used `WRAP_FMA_NS`
+   (7.6x discrepancy on M3 Pro) — fixed as a correctness issue
+   independent of dispatch effects.
+3. **Linear-engine cost model undercounted FMA operations.**
+   `cost_model.h`'s `linear_roofline_cost()` assumed `4*n*k` FMAs/QP;
+   the real BQ=8 batched inner loop (`src/linear_batched_impl.inc`) does
+   `~5*n*k`. Fixed with a new `BATCHED_FMA_NS` constant, fit directly
+   against real `icm_run_linear_batched()` measurements.
+4. **A genuine, universal correctness bug** (not a dispatch/calibration
+   issue): `correlate_fft()`/`correlate_fft_pair()` (the non-cached
+   correlate variants, used only at the tree's root) had **no
+   wrap-correction logic at all**, unlike their "cached" siblings.
+   Silently zeroed output positions whenever the root's FFT size was
+   smaller than the full convolution length. Found via a Zen4
+   `bench_grid verify` failure (`xchk FAIL`, up to 65% diff), confirmed
+   universal by reproducing the identical wrong answer on M3 Pro via a
+   forced code path. Fixed (commit `dce6b74`) — first attempt copied the
+   wrong indexing scheme from the cached variant and made things worse,
+   caught by testing the isolated primitive against a schoolbook
+   reference before re-testing the full tree.
+5. **AOCL-FFTW wasn't actually being used on the fresh Zen4 box.** Built
+   with only `--enable-avx`, but the committed wisdom file contains
+   AVX/AVX2/AVX-512 codelets — 100% wisdom-lookup miss, silently falling
+   back to slow `FFTW_ESTIMATE` for every single FFT plan. Fixed by
+   rebuilding AOCL-FFTW (`github.com/amd/amd-fftw`) with the full
+   `--enable-sse2 --enable-avx --enable-avx2 --enable-avx512
+   --enable-amd-opt` flag set. Also note: `fft_cache_create_sizes()`
+   calls `wisdom_save()` unconditionally on every run, which can silently
+   clobber a good wisdom file with an incomplete one if run against a
+   broken FFTW build — re-copy `devices/<DEVICE>/fftw_wisdom.dat` to the
+   repo root before any run if in doubt.
 
-### Commits (chronological, all on `results-gpu-section`)
-- `bc9af1e` — leaf-extraction fix (root cause 1)
-- `bddf6b2` — wrap-correction constant fix (root cause 2)
-- `c481336` — linear-engine cost model fix (root cause 3, closes the gate)
-- `40e54e8` — onboarding script wiring (schoolbook/leaf/linear steps added
-  to `tools/calibrate_full.sh`) + `OPTIMIZATION_GUIDE.md`/`README.md`/
-  `RESULTS.md` corrections
+### Explicitly deferred (by user instruction)
 
-### What's explicitly NOT done yet
+- **`select_best_B()`** (block-size choice within the hybrid engine) is
+  untouched. If dispatch still looks off in a way traceable to a bad B
+  choice, address it as its own scoped follow-up — do not fold it into
+  the crossover-table fix.
+- **Subset-query dispatch** (`n_targets > 0`) still uses the old
+  analytical formula. Never measured/calibrated directly this session.
 
-- **Zen4 verification: DONE partially, real progress, gap not fully closed
-  as of 2026-07-22 (box `84.32.71.47`, see `reference_zen4_new_password.md`).**
-  Set up cleanly via a real `git clone`/`git pull` from GitHub this time
-  (not the old ad-hoc `git init` pattern — that box, `185.8.107.239`, is
-  gone/superseded). While verifying, found and fixed the real correctness
-  bug documented above (`correlate_fft`/`correlate_fft_pair` missing wrap
-  correction) — confirmed on this exact hardware, `bench_grid verify`
-  now passes cleanly. Then applied the SAME fix methodology as M3 Pro:
-  - `BATCHED_FMA_NS`: replaced the flagged placeholder (0.0973) with a
-    real measurement (0.0543), fit directly against
-    `icm_run_linear_batched()` on Zen4, restricted to the
-    crossover-relevant, non-checkpointed k range (150-250; k=50 is
-    overhead-dominated, k>=300 crosses the L2 checkpoint threshold).
-    `tools/bench_linear_batched_fma.c`'s own isolated-inner-loop
-    regression gave 0.0923 — notably different from the direct
-    end-to-end measurement (0.0543) actually used, same
-    isolated-vs-embedded pattern as everywhere else this session.
-  - `leaf_fma_ns_per_player[]`: replaced with `probe_leaf_extract.c`'s
-    B-sweep measurement. Old table over-predicted (geo_mean=0.743) —
-    **same direction as M3 Pro**, contradicting the OLD (now-superseded)
-    `DISPATCH_GAP_ANALYSIS.md` claim that Zen4 underpredicted. That
-    claim was from an earlier, different calibration state — trust this
-    session's fresh measurement instead.
-  - `block_build_ns_per_player[]`: checked, already well-calibrated
-    (within ~1% of a fresh measurement) — not a contributor, left as-is.
+### Not yet done
 
-  **Net result**: real dispatch crossover moved from k~95-100 (before
-  any fixes, worse than the k~160-200 pre-session estimate) through
-  k~180-200 (after the linear-engine fix alone) to **k~155-180** (after
-  the leaf fix too — this moved the WRONG way, same as the wrap-
-  correction fix did on M3 Pro, revealing hybrid is still modeled too
-  cheap somewhere else). Ground truth (`bench_grid crossover`'s own
-  empirical L→H transition, unaffected by any of these constants) is
-  k~240-260, confirmed unchanged throughout. **Gap not fully closed** —
-  next suspect is the tree/schoolbook FFT-path formulas on Zen4
-  specifically (not yet re-validated with real per-level probes the way
-  M3 Pro's were). Do not declare Zen4 dispatch trustworthy until this is
-  closed — same acceptance criterion as M3 Pro: the real
-  `icm_select_engine()` decision must match `bench_grid crossover`'s
-  empirical transition, not just "moved in the right direction."
-- **RESULTS.md's performance tables predate these fixes** — flagged with
-  a stale-data warning (not regenerated — needs a fresh `./bench_grid`
-  run) by this session's docs-audit pass.
-- **G1A/G1B** (regenerate all result data invalidated by the
-  broken-cost-model window) and any remaining paper Table 1/2 rework are
-  now unblocked (dispatch is trustworthy on M3 Pro) but not yet done.
-- **F: GPU kernel microbenchmark (B200)** — independent of all CPU work
-  above, still queued, needs explicit user go-ahead to spin up a paid
-  instance. GPU cost model uses a completely different mechanism (kernel
-  lookup tables + SM-occupancy penalties, no `FMA_NS`/`WRAP_FMA_NS`) —
-  checked this session, the FMA-count/wrong-constant bug class found on
-  the CPU side does NOT ripple into `src/gpu/gpu_plan.cu`.
-- **11 DeepSeek workers from this exact investigation are gone/replaced**
-  — the deck folder for this sprint was `41994c`
-  ("hybrid-cost-model-validation"). Check `deck ps`/`deck folder ls` if
-  continuing related work; several nodes errored mid-task but left
-  useful partial transcripts before erroring (this is a real, repeatable
-  failure mode — see "What Didn't Work" below).
+- **Regenerate result data** (performance grids, contour sweeps) on both
+  platforms now that dispatch is trustworthy — per `CLAUDE.md`'s
+  M3 Pro/Zen4 validation steps. The numbers in `RESULTS.md` predate all
+  of this session's fixes.
+- **Paper sync**: Table 1/2 shared-k-column rework in
+  `~/Documents/ICM_paper`, using post-fix numbers.
+- **GPU kernel microbenchmark (B200)** — independent of all CPU work
+  above, needs explicit user go-ahead to spin up a paid instance. GPU
+  cost model uses a completely different mechanism (kernel lookup
+  tables + SM-occupancy penalties) — checked this session, the bug
+  classes found on the CPU side do not ripple into `src/gpu/gpu_plan.cu`.
+- **Decide with the user whether to merge PR #7.**
 
 ## What Worked
 
 - **Always re-running the actual `icm_select_engine()` dispatch decision
-  after every fix**, never trusting an aggregate ratio improving or
-  `bench_grid crossover`'s own empirical winner as a proxy. This is what
-  caught that the wrap-correction fix (root cause 2) moved the crossover
-  the WRONG way, forcing the investigation to look elsewhere (linear
-  engine) instead of declaring victory on a plausible-sounding but
-  incomplete fix.
+  after every fix** — never an aggregate ratio, never `bench_grid
+  crossover`'s own (as it turned out, noisy single-shot) empirical
+  winner alone. This caught multiple fixes that moved dispatch the wrong
+  way, each time revealing there was more to find rather than declaring
+  victory early.
+- **Stepping back from "fix the next constant" to "is the whole approach
+  right"** when four parallel, well-scoped analyses all came back
+  inconclusive. Researching how mature HPC libraries (FFTW, ATLAS,
+  LAPACK) solve this exact class of problem — direct empirical
+  measurement of the real crossover, not summed analytical terms — is
+  what actually closed the investigation, not another round of
+  constant-hunting.
 - **Testing hypotheses directly instead of accepting a plausible-sounding
-  explanation.** The QoS-pinning (P/E-core scheduling) hypothesis for M3
-  Pro's leaf anomaly was directly tested (pin vs no-pin, vary rep
-  count/duration) and REFUTED — pinned and unpinned measurements were
-  statistically identical. The real cause (unrealistic synthetic branch
-  distribution in the isolated benchmark) was found only by directly
-  instrumenting the actual branch taken under realistic data, not by
-  further isolated-benchmark tweaking.
-- **Reviewing every DeepSeek worker's diff/output line-by-line before
-  merging, even after "success."** Caught a real, dangerous bug this
-  session: an onboarding-script worker's injected placeholder arrays
-  (`schoolbook_mul_ns[]`/`schoolbook_corr_ns[]`) were bare
-  `static const double x[N];` declarations — legal C, silently
-  zero-initialized, which would make schoolbook multiply look FREE if
-  the real measurement step ever silently failed (its own writer prints
-  a warning and exits 0 on parse failure, which `set -e` would NOT catch)
-  — `bench_grid verify` only checks equity correctness, not dispatch
-  quality, so this would not have been caught by CI. Fixed with an
-  explicit `999.0` fail-safe sentinel matching the pattern already used
-  elsewhere in the same script.
-- **Checking for ripple effects before declaring a bug class closed.**
-  After finding the `FMA_NS`/`WRAP_FMA_NS` mismatch and the FMA-count bug,
-  explicitly grepped for other uses of the same constants and checked
-  whether the GPU cost model shared the same mechanism (it doesn't) before
-  moving on, rather than assuming the fix was fully contained.
-- **Delegating aggressively to DeepSeek via the `deck` CLI /
-  `supervisor-dag` skill**, keeping the supervisor's own reasoning for
-  judgment calls (which fix to trust, what to commit, the final dispatch
-  gate check) rather than re-deriving worker findings by hand.
+  explanation.** Refuted the QoS-pinning hypothesis for M3 Pro's leaf
+  anomaly by direct A/B test. Refuted "isolated benchmark under-amortizes
+  fixed overhead" as the M3-Pro-vs-my-own-crossover-tool discrepancy by
+  directly testing Q=32 vs Q=256 — then found the REAL explanation
+  (hardcoded B=8 vs `select_best_B()`) by checking one more concrete
+  difference instead of stopping at the first plausible theory.
+- **Reviewing every DeepSeek worker's diff/output before merging, even on
+  "success."** Caught a dangerous zero-initialized placeholder-array bug
+  in an onboarding-script worker's diff this session (would have made
+  schoolbook multiply look free if a calibration step ever silently
+  failed) — `bench_grid verify` would not have caught it.
+- **Verifying claimed "precedent" facts before asserting them.** When
+  naming LAPACK's `ILAENV` as the analog to the crossover-table design,
+  verified via research rather than asserting from memory — and it
+  turned out to be the more precise fit over an initially-plausible
+  MAGMA comparison.
 
 ## What Didn't Work / Failure modes to expect again
 
 - **DeepSeek workers erroring mid-task while still producing useful
-  partial output.** Two nodes this session (`T2_PROPOSE_TREE_FIX`,
-  `L1b_RECONCILE_LEAF`) hit an `error` status with an empty compact
-  result (`deck result` showed nothing useful), but `deck log` on the
-  full transcript revealed real, load-bearing findings the worker had
-  already derived before erroring (the `FMA_NS`/`WRAP_FMA_NS` mismatch
-  came from exactly this pattern). **Lesson: when a worker errors, always
-  check the full log before writing off its run as wasted — the failure
-  is often in the final "wrap up and report" step, not the investigation
-  itself.**
+  partial output.** Several nodes this session hit an `error` status
+  with an empty compact result, but the full log transcript revealed
+  real, load-bearing findings already derived before erroring (the
+  `FMA_NS`/`WRAP_FMA_NS` mismatch came from exactly this pattern).
+  Always check the full log before writing off an errored run.
 - **A separate recalibration tool duplicating an existing one's job can
-  introduce its OWN bug instead of just being redundant.**
-  `tools/calibrate_leaf_realistic.c` was written to recalibrate the leaf
-  table, but reused one `HybridCtx`/buffer set across all reps —
-  unrealistically cache-hot, ~4x too optimistic. The existing
-  `tools/probe_leaf_extract.c` (fresh `HybridCtx` per rep) was already
-  correct; extending it was the right move, not trusting the new tool's
-  plausible-looking, internally-consistent-but-wrong numbers.
+  introduce its own bug instead of just being redundant.**
+  `tools/calibrate_leaf_realistic.c` reused one `HybridCtx` across all
+  reps (unrealistically cache-hot); the existing `probe_leaf_extract.c`
+  (fresh context per rep) was already correct. Extending existing,
+  validated tools beat writing new ones under time pressure.
 - **A "roughly accurate" finding from one tool can be invalidated by a
-  bug discovered later in a DIFFERENT tool that happens to share the
-  same buggy formula.** `probe_tree_levels.c`'s finding that the tree
-  FFT-cached formula was "roughly accurate near the crossover" was itself
-  computed against the same `FMA_NS`-instead-of-`WRAP_FMA_NS` bug later
-  found in `src/icm.c` — the comparison was invalid from the start, not
-  actually informative until the shared bug was found and fixed.
+  bug in a different tool sharing the same buggy formula.**
+  `probe_tree_levels.c`'s "tree roughly accurate near crossover" finding
+  was computed against its own stale copy of the schoolbook formula (pre-
+  dating commit `8012244`) AND the same `FMA_NS`/`WRAP_FMA_NS` bug found
+  in `src/icm.c` — invalid from the start until both were fixed.
+- **Hand-rolling test harnesses against the exported C API is
+  error-prone under time pressure.** Hit two real bugs writing ad-hoc
+  direct-comparison test programs this session: wrong `EngineKind` enum
+  values passed to `icm_ctx_destroy` (segfault), and a hardcoded `B=8`
+  instead of calling `icm_select_best_B()` (silently wrong comparison,
+  not a crash — much more dangerous). When comparing against an existing
+  tool's ground truth, match its methodology exactly rather than
+  approximating it.
 
 ## Guiding principles reinforced this session
 
-- **Delegate implementation/verification work to DeepSeek; the supervisor
-  spends its own reasoning on judgment calls and final verification**,
-  not on doing the delegable work itself.
+- **When several individually-targeted fixes/analyses all come back
+  small or inconclusive, question the overall approach, not just the
+  next constant.** Don't joint-fit the existing formula's constants
+  together (explicitly rejected by the user, and rightly — that's an
+  empirical workaround, not a principled fix) — but do look at whether
+  the *architecture* of the approach (summed analytical terms) is itself
+  the mismatch, informed by how established prior art solves the same
+  class of problem.
 - **Always re-run the actual production entry point
   (`icm_select_engine()`) as the acceptance test** — never an aggregate
-  ratio, never `bench_grid crossover`'s own empirical winner alone.
+  ratio, never a single-shot "empirical" measurement without checking
+  its own noise floor.
 - **Review every worker diff before merging, even on "success."**
-- **Check for ripple effects of a bug class (other call sites, other
-  subsystems like the GPU cost model) before considering it closed.**
 - **Never terminate a compute instance without explicit go-ahead. No
   `Co-Authored-By` trailers on any commit, ever.**
 - **Conservative with GPU/remote-compute credits** — write/design code
@@ -264,22 +249,14 @@ durable law) — the durable summary is this file.
 
 ## Next Steps
 
-1. **Finish closing the Zen4 dispatch gap** (needs real Zen4 hardware —
-   box at `84.32.71.47` as of 2026-07-22, credentials in
-   `reference_zen4_new_password.md`, ask before touching/re-provisioning
-   it). Linear-engine and leaf fixes both applied and real-measured;
-   real dispatch is at k~155-180 vs ground truth k~240-260. Next suspect:
-   the tree/schoolbook FFT-path formulas on Zen4 — build a per-level
-   real-vs-predicted probe (mirror `tools/probe_tree_levels.c`'s M3 Pro
-   methodology) instead of guessing. Do not declare Zen4 done until
-   `icm_select_engine()`'s real decision matches `bench_grid crossover`'s
-   empirical transition.
-2. **Regenerate result data** (G1A/G1B) invalidated by the broken-cost-model
-   window, now that M3 Pro dispatch is trustworthy — full performance
-   grids, contour sweeps, per `CLAUDE.md`'s M3 Pro validation steps.
-   Zen4's grids should wait until its dispatch gap is closed too.
-3. **Paper sync**: Table 1/2 shared-k-column rework in
+1. **Regenerate result data** (performance grids, contour sweeps) on
+   both M3 Pro and Zen4 now that dispatch is trustworthy on both.
+2. **Paper sync**: Table 1/2 shared-k-column rework in
    `~/Documents/ICM_paper`, using post-fix numbers.
-4. **GPU kernel microbenchmark (B200)** — independent of all the above,
-   needs explicit user go-ahead to spin up a paid instance.
+3. **If `select_best_B()` still looks wrong** in the regenerated data,
+   address it as its own scoped follow-up (same crossover-table
+   methodology could apply, calibrated separately — but confirm it's
+   actually broken first, don't assume).
+4. **GPU kernel microbenchmark (B200)** — needs explicit user go-ahead
+   to spin up a paid instance.
 5. **Decide with the user whether to merge PR #7.**
