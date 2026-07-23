@@ -33,11 +33,11 @@ static double predict_level_ns(TreeCtx *tc, int ell) {
           while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
           idx=lo; }
         double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                         + (double)bwm*(bwm+1)/2.0*FMA_NS;
+                         + (double)bwm*(bwm+1)/2.0*WRAP_FMA_NS;
         double corr;
         if (tc->fft_cache_ok[ell]) {
             corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                 + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
+                 + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*WRAP_FMA_NS;
         } else {
             int cfn = tc->corr_fft_n[ell];
             int cwm = tc->corr_wrap_m[ell];
@@ -46,13 +46,22 @@ static double predict_level_ns(TreeCtx *tc, int ell) {
              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
              cidx=lo;}
             corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                 + (double)cwm*(cwm+1)*FMA_NS;
+                 + (double)cwm*(cwm+1)*WRAP_FMA_NS;
         }
         return nr * (build_fft + corr);
     } else {
-        int d_eff = tc->below_sat[ell] ? cps/2 : cps-1;
-        double s = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
-        double c = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
+        /* Schoolbook cost via direct per-size lookup table -- exact copy of
+         * select_engine_ex's current formula (src/icm.c ~line 2317-2327).
+         * This branch was stale until this fix: it previously used the OLD
+         * (d_eff+1)^2*FMA_NS formula from before commit 8012244 replaced it
+         * with per-size lookup tables, making every schoolbook-bucket
+         * comparison from this tool invalid since that commit. */
+        int idx;
+        { int lo=0,hi=N_CALIBRATED_SIZES-1;
+          while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
+          idx=lo; }
+        double s = schoolbook_mul_ns[idx];
+        double c = (double)cps * tc->g_needed[ell-1] * schoolbook_corr_ns[idx];
         return nr * (s + c);
     }
 }
@@ -187,7 +196,7 @@ static double tree_propagate_g_timed(TreeCtx *tc, int k, const double *payout,
                 } else if (use_fft) {
                     correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
                                        gL, gR, out_needed, tc->fft,
-                                       tc->corr_fft_n[ell]);
+                                       tc->corr_fft_n[ell], tc->corr_wrap_m[ell]);
                 } else {
                     correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                     correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
@@ -273,6 +282,7 @@ static void bucket_free(Bucket *b) {
 /* ── Driver ── */
 
 #define MAX_REPS 80
+#define MAX_L 20
 
 static void probe_one(int n, int k, int B,
                        Bucket *sb, Bucket *fft_c, Bucket *fft_u,
@@ -304,7 +314,7 @@ static void probe_one(int n, int k, int B,
     if (!hc) { fprintf(stderr, "hybrid_ctx_create failed n=%d k=%d B=%d\n", n, k, B); goto cleanup; }
     TreeCtx *tc = hc->tc;
     int L = tc->L;
-    const int MAX_L = 20;
+    if (L > MAX_L) { fprintf(stderr, "tree depth %d exceeds MAX_L=%d\n", L, MAX_L); goto cleanup; }
 
     /* Per-level accumulation arrays for median computation */
     double build_samples[MAX_L][MAX_REPS];
