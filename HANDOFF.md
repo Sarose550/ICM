@@ -177,20 +177,123 @@ platforms, confirming no regression to the crossover-table fix.
   selection. Never measured/calibrated directly this session — revisit
   if subset dispatch is shown to need the same treatment.
 
-### Not yet done
+### Done since the above was written
 
-- **Regenerate result data** (performance grids, contour sweeps) on both
-  platforms now that BOTH dispatch decisions (linear-vs-hybrid AND B
-  selection) are trustworthy — per `CLAUDE.md`'s M3 Pro/Zen4 validation
-  steps. The numbers in `RESULTS.md` predate all of this session's fixes.
-- **Paper sync**: Table 1/2 shared-k-column rework in
-  `~/Documents/ICM_paper`, using post-fix numbers.
-- **GPU kernel microbenchmark (B200)** — independent of all CPU work
-  above, needs explicit user go-ahead to spin up a paid instance. GPU
-  cost model uses a completely different mechanism (kernel lookup
-  tables + SM-occupancy penalties) — checked this session, the bug
-  classes found on the CPU side do not ripple into `src/gpu/gpu_plan.cu`.
-- **Decide with the user whether to merge PR #7.**
+- **Result data regenerated on both platforms** (commits `e9bde27` Zen4,
+  `8daba99` M3 Pro) after fixing two bugs found along the way: FFTW
+  wisdom silently degrading (`wisdom_save()`'s unconditional overwrite —
+  re-copy `devices/<DEVICE>/fftw_wisdom.dat` before trusting any run,
+  verify with a direct `FFTW_WISDOM_ONLY` hit-rate test, not just file
+  size) and a `make results-refresh` bug where `all`/`parallel` both
+  build the same `$(OUT)` binary, so listing both as prerequisites let
+  the OpenMP-enabled binary silently serve the "serial" run. Fixed by
+  rebuilding explicitly inside the recipe body immediately before each
+  binary's use.
+- **Docs-closeout wave** (2026-07-22/23): a process audit caught that
+  none of this session's boards had wired the two new calibration tools
+  (`tools/calibrate_crossover.c`, `tools/calibrate_best_b.c`) into
+  `tools/calibrate_full.sh`, and that `CLAUDE.md`/`OPTIMIZATION_GUIDE.md`/
+  `README.md`/`RESULTS.md` still described the old summed-analytical
+  dispatch mechanism or carried stale "predates this session's fixes"
+  warnings. Fixed all four. **Caught and fixed a real bug in the
+  DeepSeek-authored `calibrate_full.sh` update**: its new build commands
+  for `calibrate_crossover.c`/`calibrate_best_b.c` omitted `src/icm.c` as
+  a source file (these two tools `#include "icm.h"` only, unlike
+  `sample_plans.c`'s single-TU `#include "icm.c"` convention) — silent
+  link failure, would have broken a fresh device port at exactly the new
+  steps. Verified the fix by compiling and running both tools standalone
+  against the real M3 Pro config; results matched the already-committed
+  calibration tables exactly. Also caught and fixed a stale "B=16 on M3
+  Pro" claim in the DeepSeek-authored `OPTIMIZATION_GUIDE.md` diff (real
+  data says B=32 dominant on both platforms now).
+- **Paper sync**: still open, see Next Steps.
+- **Decide with the user whether to merge PR #7**: still open.
+
+### New finding: Zen4 parallel scaling collapses at n≥16384 (unexplained, under investigation)
+
+While reviewing the regenerated Zen4 results, the raw parallel-mode
+benchmark data (`results/bench_grid_zen4_parallel.txt`, not a docs
+transcription error — verified directly against the file) shows parallel
+speedup falling off a cliff right at the n=8192→16384 boundary: n=8192,
+k=n is 12.0x; n=16384, k=n is 3.3x; n=65536, k=n is 3.3x. Below n=16384,
+speedup is a healthy 10-14x as expected for 16 physical cores.
+
+**RESOLVED (root cause confirmed on real hardware, box `185.8.107.239`,
+2026-07-23):** it is a genuine memory-bandwidth/cache-capacity wall, NOT
+a thread-affinity/NUMA/CCD-migration issue.
+
+Initial hypothesis (refuted): `src/icm.c:2513`'s sole `#pragma omp
+parallel for` has no explicit thread-affinity pinning, and the 7950X is
+2 CCDs × 8 cores (confirmed via `lscpu -e`: CORE 0-7 = L3 domain 0, CORE
+8-15 = L3 domain 1; logical CPUs 16-31 are SMT siblings of 0-15) — cross-
+CCD Infinity Fabric traffic seemed a plausible culprit. Tested directly:
+`OMP_PROC_BIND=close`, `OMP_PROC_BIND=spread`, and explicit `taskset
+-c 0-15` + `GOMP_CPU_AFFINITY=0-15` pinning to all 16 distinct physical
+cores — **none recovered speedup**; all landed at the same ~167-170ms
+plateau as the unpinned baseline (150-153ms) at n=16384,k=16384, some
+even slightly worse. Also tested raising glibc's `MALLOC_MMAP_THRESHOLD_`
+in case large per-thread FFT buffer allocations were hitting mmap/munmap
+lock contention — no improvement either.
+
+**Actual cause, confirmed via `perf stat`:** comparing n=8192 (healthy,
+~12x parallel speedup) vs n=16384 (collapsed, ~3.5x) under
+`OMP_NUM_THREADS=16`:
+- n=8192: IPC=1.53, cache-miss rate 4.4% of references
+- n=16384: IPC=0.57 (2.7x worse), cache-miss rate 10.5% (2.4x worse) —
+  cycles grew 6.3x while instructions only grew 2.35x, i.e. almost all
+  the extra time is memory stalls, not more work.
+
+This is consistent with the aggregate working set across 16 concurrently-
+running hybrid-engine FFT trees crossing the combined 64MB L3 capacity
+(2 CCDs × 32MB) somewhere between n=8192 and n=16384, forcing heavy DRAM
+traffic that 16 threads then contend over — a real cache-capacity/
+bandwidth ceiling, not a scheduling or placement bug, and not something
+`OMP_PROC_BIND` can fix since the problem is total live data volume, not
+locality of a fixed volume.
+
+**Not attempted this session** (would need its own scoped pass): reducing
+the hybrid engine's per-thread memory footprint at large n (e.g. tighter
+buffer reuse across tree levels) to push the wall higher, or simply
+documenting this as a known, real scaling limit in the paper/RESULTS.md
+rather than treating it as a bug to fix. Recommend the latter unless a
+memory-footprint reduction is independently worthwhile.
+
+### New finding: GPU B-selection has the same systematic bias CPU had, confirmed on real B200 hardware
+
+Spun up a B200 instance (vast.ai, ~$6 budget, cheapest reliable offer,
+CUDA 12.8 devel image — the first image tried, `pytorch/pytorch:2.5.1-
+cuda12.4-cudnn9-devel`, predates Blackwell/sm_100 support and was
+destroyed within a minute of creation before real cost accrued). Built
+and ran the existing `tools/validate_planner_gpu.cu` (already in the
+repo, never previously run this session) — it forces every candidate B
+in `{16,24,32,48,64,96,...,896}` at each of 12 (n,k) points for
+n∈{65536,131072,262144,524288}, k∈{n/4,n/2,n}, and compares against the
+planner's automatic choice.
+
+**Result: 12/12 mismatches (100%).** `gpu_select_best_B_est()`
+(`src/gpu/gpu_plan.cu`) picks B=128 every time; real measured optimum is
+always B=64, consistently 2-4% faster (e.g. n=524288,k=n: auto 219.06ms
+vs best 214.75ms). Same failure mode, same direction, as the CPU
+`select_best_B()` bug fixed earlier this session (overestimating the
+benefit of a larger block size) — strong evidence the same
+"summed-analytical-constants fragile in aggregate" architectural problem
+applies to the GPU cost model too, exactly as flagged when `gpu_plan.cu`
+was read (not modified) earlier in the session.
+
+Also ran `tools/gpu_sample_plans.cu` (250 real measured (n,k,B) plans,
+`results_b200_validation/gpu_sample_plans_b200.csv`) — usable as seed
+data for a future empirical B-selection table, same methodology as
+`tools/calibrate_best_b.c` on CPU. `results_b200_validation/
+planner_validation.csv` has the raw 12-row mismatch table. Instance
+destroyed immediately after downloading both files — total B200 wall
+time was well under the budget.
+
+**Not yet fixed** — this needs the same scope of work as the CPU
+crossover-table/B-selection-table rewrite (a real empirical-table
+mechanism, not a quick clamp), which took most of a session on CPU. Needs
+its own dedicated pass, likely another short paid B200 session to build
+out a proper `(n,k,B)` calibration grid analogous to
+`tools/calibrate_best_b.c`.
 
 ## What Worked
 
@@ -277,14 +380,36 @@ platforms, confirming no regression to the crossover-table fix.
 
 ## Next Steps
 
-1. **Regenerate result data** (performance grids, contour sweeps) on
-   both M3 Pro and Zen4 — both dispatch decisions (linear-vs-hybrid and
-   B selection) are now trustworthy on both platforms.
-2. **Paper sync**: Table 1/2 shared-k-column rework in
-   `~/Documents/ICM_paper`, using post-fix numbers.
-3. **Subset-query dispatch** (`n_targets > 0`) still uses the old
+1. **Zen4 parallel-scaling cliff at n≥16384 — root cause confirmed**
+   (memory-bandwidth/cache-capacity wall, see finding above). Decide
+   whether to attempt a memory-footprint reduction in the hybrid engine
+   or just document it honestly as a known scaling limit — this is a
+   real design tradeoff decision, not a bug fix.
+2. **Build a real empirical B-selection table for the GPU cost model**,
+   same methodology as `tools/calibrate_best_b.c` on CPU — confirmed
+   100% mismatch (B=128 auto vs B=64 real optimum, 2-4% slower) on real
+   B200 hardware. Seed data already collected:
+   `results_b200_validation/{gpu_sample_plans_b200.csv,
+   planner_validation.csv}`. Needs its own dedicated pass/session.
+3. **Paper sync**: Table 1/2 shared-k-column rework in
+   `~/Documents/ICM_paper`, using post-fix numbers; recompute the real
+   dispatch-accuracy figure (replacing a stale "95.5%" claim); strip 21
+   LaTeX em-dashes; rewrite cost-model/dispatch sections to describe the
+   empirical-table mechanism; recompile PDF, copy into
+   `paper/icm_paper.pdf` in this repo.
+4. **Codebase-wide pass to remove stray/AI-tell comments**, get the repo
+   into "neatly packaged, professional" shape matching a clean head.
+5. **Subset-query dispatch** (`n_targets > 0`) still uses the old
    analytical formula for both decisions — check if it's actually a
    problem before assuming it needs the same table-based treatment.
-4. **GPU kernel microbenchmark (B200)** — needs explicit user go-ahead
-   to spin up a paid instance.
-5. **Decide with the user whether to merge PR #7.**
+6. **Decide with the user whether to merge PR #7.**
+
+## Process note for future DAG boards
+
+When a new calibration tool is created, its onboarding-script wiring
+(`tools/calibrate_full.sh`) and any doc references to the mechanism it
+replaces MUST be a node in the SAME wave, not a follow-up caught later by
+audit. This session needed a dedicated `SPRINT_DOCS_CLOSEOUT_DAG.md` wave
+after the fact to catch exactly this gap for
+`tools/calibrate_crossover.c`/`tools/calibrate_best_b.c` — avoidable next
+time by including it upfront.

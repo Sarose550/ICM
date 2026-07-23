@@ -16,7 +16,7 @@ no FFT. Baseline: n=1024 k=n took 689ms.
 Three engines with dispatch:
 
 ```c
-int B = select_engine(n, k);  // cost-based: compares linear vs hybrid
+int B = select_engine(n, k);  // empirical-table-based for full equity; analytical for subsets
 if (B > 0)
     use hybrid(B);        // block build + FFT tree + bidirectional divide
 else
@@ -218,7 +218,7 @@ exceeds savings at smaller n). Template in `src/linear_batched_impl.inc`.
 ### 7. Hybrid Block-Divide Engine (8-12%)
 Replace the tree's bottom log₂(B) levels with: sequential block build (tight loop,
 no tree overhead) + bidirectional divide (stable on the complete block product).
-B is selected by cost model (`select_best_B`): typically B=16 on M3 Pro, B=32 on Zen 4.
+B is selected by an empirically-calibrated 2D nearest-neighbor lookup (`empirical_best_B(n,k)` in `src/fft_cost_model.h`, calibrated by `tools/calibrate_best_b.c`): typically B=32 on both M3 Pro and Zen 4. For subset queries, B selection still uses the analytical cost model (that path was never measured/calibrated this session).
 Players sorted by stack size for branch-prediction-friendly divide direction.
 
 ### 8. Truncated Propagation (2-5%)
@@ -423,22 +423,44 @@ make DEVICE=zen4
 ./bench_grid verify     # ALL TESTS PASSED required - do not proceed without this
 ```
 
-**Step 5: Verify dispatch decisions.**
+**Step 5: Calibrate the empirical dispatch tables.**
+
+The linear-vs-hybrid crossover and the within-hybrid B selection no longer use
+summed analytical cost-model constants for the go/no-go decision on full-equity
+queries. Instead, they use small empirically-measured lookup tables (LAPACK
+ILAENV NX precedent: direct measurement, not closed-form modeling; see
+`src/fft_cost_model.h` header comments for the rationale). Two calibration
+tools produce these tables:
+
+```bash
+# Calibrate linear-vs-hybrid crossover (full equity only — not subset queries)
+./tools/calibrate_crossover   # writes N_CROSSOVER_POINTS, crossover_n[], crossover_k[]
+                                # into devices/<DEVICE>/fft_config.h
+
+# Calibrate within-hybrid block-size selection (full equity only)
+./tools/calibrate_best_b      # writes N_BSELECT_POINTS, bselect_n[], bselect_k[], bselect_B[]
+                                # into devices/<DEVICE>/fft_config.h
+```
+
+Subset queries (`n_targets > 0`) still use the analytical cost-model comparison in
+`select_engine_ex()` and `select_best_B()` — the empirical tables were calibrated
+only for the full-equity case and subset behavior was never measured directly.
+Revisit if subset dispatch is shown to need the same fix.
+
+**Step 6: Verify dispatch decisions.**
 
 ```bash
 ./bench_grid crossover    # sweep k=40-150 at n=512-8192
 ```
 
-This runs both linear and hybrid at each (n, k) and shows which wins. The
-`select_engine()` cost model should match the empirical crossover. If it doesn't,
-check that `BATCHED_FMA_NS`, the per-size lookup tables (`schoolbook_mul_ns[]`,
-`schoolbook_corr_ns[]`, `block_build_ns_per_player[]`, `leaf_fma_ns_per_player[]`),
-and the FFT ratios (`PAIRED_CACHED_CORR_RATIO`, `INDEP_PAIR_RATIO`) are correct —
-the dispatch is fully derived from these constants and the calibration table.
+This runs both linear and hybrid at each (n, k) and compares which wins against
+the empirical crossover table. If mismatches occur, re-run the calibration tools
+above on the target machine. The old analytical cost-model constants
+(`BATCHED_FMA_NS`, `PAIRED_CACHED_CORR_RATIO`, etc.) do NOT affect the
+full-equity dispatch decision anymore — they only matter for subset queries and
+for the intra-engine per-level FFT-vs-schoolbook decisions within the tree.
 
-No manual `K_CROSS` tuning is needed - dispatch is cost-based.
-
-**Step 6: Run the full benchmark grid.**
+**Step 7: Run the full benchmark grid.**
 
 ```bash
 ./bench_grid              # full grid, single-threaded
@@ -453,8 +475,10 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 
 | Feature | How it adapts |
 |---|---|
-| `select_engine(n,k)` | Compares linear roofline cost (5*n*k*BATCHED_FMA_NS) vs hybrid cost (using `calib_times_ns[]` + schoolbook lookup tables). Zen 4's faster schoolbook shifts crossover to higher k |
-| `select_best_B(n,k)` | Derives optimal block size from calibration data + per-size block/leaf lookup tables. Typically B=32 on Zen 4 (vs B=16 on M3 Pro) because wider schoolbook regime |
+| `select_engine(n,k)` (full equity) | Uses empirical crossover table `empirical_crossover_k(n)` — log-linear interpolation between calibrated (n, k_cross) points (`tools/calibrate_crossover.c`). Zen 4's table has higher k_cross values, shifting the crossover upward |
+| `select_engine(n,k)` (subset) | Still uses analytical cost-model comparison (`hybrid_total` vs `linear_per_qp` from `src/cost_model.h`) — the empirical table was only calibrated for full-equity dispatch |
+| `select_best_B(n,k)` (full equity) | Uses `empirical_best_B(n,k)` 2D nearest-neighbor lookup over a calibrated (n,k,B) grid (`tools/calibrate_best_b.c`). No interpolation — B is discrete in {8,16,24,32,48,64}. Typically B=32 on both Zen 4 and M3 Pro |
+| `select_best_B(n,k)` (subset) | Still uses analytical cost-model per-candidate tree cost summing — subset B selection was never measured/calibrated |
 | `ckpt_interval_batched` | Sized to fit working set in `L2_CACHE_SIZE`. Activates much earlier on Zen 4 (1MB vs 32MB) |
 | BQ=8 batched linear | Same interleaved `a_batch[j*BQ+qi]` layout. AVX-512 processes 8 doubles natively per instruction |
 | Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` and `schoolbook_mul_ns[]` lookup tables to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |

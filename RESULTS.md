@@ -9,17 +9,7 @@ Q=256 quadrature points.
 > and `FP64_DIV_NS` are directly measured via isolated microbenchmarks
 > (`tools/bench_wrap_fma.c`, `tools/bench_div_chain.c`) rather than recovered
 > from aggregate regression — see [Calibration methodology](#calibration-methodology) below.
-> Engine dispatch: `select_engine()` cost-based, B auto-selected (typically B=16).
-
-> **⚠️ NOTE (post-cost-model-fix, July 2026): The performance table below was
-> generated before this session's cost-model fixes (leaf-extraction 2×
-> overprediction fix + batched-linear FMA undercount fix). These fixes shifted
-> `icm_select_engine()`'s M3 Pro dispatch crossover from k≈260–320 (old, buggy)
-> to k≈100–120 (k=120 still linear, k=160 hybrid across n∈{512,1024,2048,4096,8192}
-> in `bench_grid crossover`). Cells near the crossover boundary (roughly
-> k=100 through k=200) may dispatch a different engine post-fix. The table
-> should be regenerated with a fresh `./bench_grid` run for authoritative
-> post-fix numbers.**
+> Engine dispatch: `select_engine()` cost-based, B auto-selected (typically B=32).
 
 ### Performance (ms, uniform stacks, median of 5) - M3 Pro
 
@@ -27,95 +17,94 @@ Single-threaded vs 12-thread parallel, per (n, k) cell:
 
 | n | k | serial (ms) | parallel (ms) | speedup |
 |---|---|---|---|---|
-| 64 | k=10 | 0.0980 | 0.0510 | 1.9x |
-| 64 | k=50 | 0.341 | 0.0970 | 3.5x |
-| 64 | k=100 | 0.440 | 0.115 | 3.8x |
-| 64 | k=n/4 | 0.125 | 0.0550 | 2.3x |
-| 64 | k=n/2 | 0.219 | 0.0730 | 3.0x |
-| 64 | k=n | 0.439 | 0.113 | 3.9x |
-| 128 | k=10 | 0.189 | 0.0740 | 2.6x |
-| 128 | k=50 | 0.704 | 0.169 | 4.2x |
-| 128 | k=100 | 1.31 | 0.275 | 4.8x |
-| 128 | k=n/4 | 0.476 | 0.138 | 3.4x |
-| 128 | k=n/2 | 0.883 | 0.202 | 4.4x |
-| 128 | k=n | 1.65 | 0.348 | 4.7x |
-| 256 | k=10 | 0.410 | 0.120 | 3.4x |
-| 256 | k=50 | 1.41 | 0.319 | 4.4x |
-| 256 | k=100 | 3.27 | 0.619 | 5.3x |
-| 256 | k=n/4 | 1.78 | 0.357 | 5.0x |
-| 256 | k=n/2 | 4.14 | 0.777 | 5.3x |
-| 256 | k=n | 4.94 | 0.689 | 7.2x |
-| 512 | k=10 | 0.865 | 0.189 | 4.6x |
-| 512 | k=50 | 3.54 | 0.674 | 5.3x |
-| 512 | k=100 | 6.55 | 1.19 | 5.5x |
-| 512 | k=n/4 | 8.23 | 1.49 | 5.5x |
-| 512 | k=n/2 | 11.0 | 1.49 | 7.4x |
-| 512 | k=n | 21.6 | 2.90 | 7.4x |
-| 1024 | k=10 | 1.71 | 0.329 | 5.2x |
-| 1024 | k=50 | 7.07 | 1.28 | 5.5x |
-| 1024 | k=100 | 13.1 | 2.26 | 5.8x |
-| 1024 | k=n/4 | 23.3 | 3.09 | 7.5x |
-| 1024 | k=n/2 | 45.9 | 6.07 | 7.6x |
-| 1024 | k=n | 46.0 | 6.03 | 7.6x |
-| 2048 | k=10 | 4.07 | 0.703 | 5.8x |
-| 2048 | k=50 | 14.2 | 2.48 | 5.7x |
-| 2048 | k=100 | 26.2 | 4.46 | 5.9x |
-| 2048 | k=n/4 | 94.6 | 14.1 | 6.7x |
-| 2048 | k=n/2 | 97.1 | 13.1 | 7.4x |
-| 2048 | k=n | 103 | 13.5 | 7.6x |
-| 4096 | k=10 | 8.13 | 1.38 | 5.9x |
-| 4096 | k=50 | 28.2 | 4.85 | 5.8x |
-| 4096 | k=100 | 52.4 | 8.84 | 5.9x |
-| 4096 | k=n/4 | 201 | 27.4 | 7.3x |
-| 4096 | k=n/2 | 217 | 29.2 | 7.4x |
-| 4096 | k=n | 238 | 31.5 | 7.6x |
-| 8192 | k=10 | 16.2 | 2.71 | 6.0x |
-| 8192 | k=50 | 56.5 | 9.73 | 5.8x |
-| 8192 | k=100 | 105 | 17.6 | 6.0x |
-| 8192 | k=n/4 | 447 | 60.2 | 7.4x |
-| 8192 | k=n/2 | 516 | 68.4 | 7.5x |
-| 8192 | k=n | 549 | 73.3 | 7.5x |
-| 16384 | k=10 | 32.3 | 5.29 | 6.1x |
-| 16384 | k=50 | 113 | 19.5 | 5.8x |
-| 16384 | k=100 | 209 | 35.3 | 5.9x |
-| 16384 | k=n/4 | 1070 | 142 | 7.5x |
-| 16384 | k=n/2 | 1180 | 158 | 7.5x |
-| 16384 | k=n | 1260 | 168 | 7.5x |
-| 32768 | k=10 | 65.1 | 10.7 | 6.1x |
-| 32768 | k=50 | 226 | 38.2 | 5.9x |
-| 32768 | k=100 | 418 | 70.1 | 6.0x |
-| 32768 | k=n/4 | 2450 | 331 | 7.4x |
-| 32768 | k=n/2 | 2700 | 360 | 7.5x |
-| 32768 | k=n | 2890 | 388 | 7.4x |
+| 64 | k=10 | 0.0950 | 0.0450 | 2.1x |
+| 64 | k=50 | 0.340 | 0.0870 | 3.9x |
+| 64 | k=100 | 0.437 | 0.116 | 3.8x |
+| 64 | k=n/4 | 0.126 | 0.0620 | 2.0x |
+| 64 | k=n/2 | 0.215 | 0.0690 | 3.1x |
+| 64 | k=n | 0.437 | 0.109 | 4.0x |
+| 128 | k=10 | 0.191 | 0.0560 | 3.4x |
+| 128 | k=50 | 0.703 | 0.170 | 4.1x |
+| 128 | k=100 | 1.31 | 0.292 | 4.5x |
+| 128 | k=n/4 | 0.477 | 0.117 | 4.1x |
+| 128 | k=n/2 | 0.889 | 0.195 | 4.6x |
+| 128 | k=n | 1.40 | 0.224 | 6.3x |
+| 256 | k=10 | 0.409 | 0.121 | 3.4x |
+| 256 | k=50 | 1.42 | 0.293 | 4.8x |
+| 256 | k=100 | 3.29 | 0.534 | 6.2x |
+| 256 | k=n/4 | 1.76 | 0.350 | 5.0x |
+| 256 | k=n/2 | 3.22 | 0.500 | 6.4x |
+| 256 | k=n | 3.65 | 0.542 | 6.7x |
+| 512 | k=10 | 0.846 | 0.182 | 4.6x |
+| 512 | k=50 | 3.54 | 0.639 | 5.5x |
+| 512 | k=100 | 6.57 | 1.08 | 6.1x |
+| 512 | k=n/4 | 6.94 | 0.979 | 7.1x |
+| 512 | k=n/2 | 8.32 | 1.12 | 7.4x |
+| 512 | k=n | 9.27 | 1.30 | 7.1x |
+| 1024 | k=10 | 1.72 | 0.329 | 5.2x |
+| 1024 | k=50 | 7.08 | 1.25 | 5.7x |
+| 1024 | k=100 | 13.1 | 2.06 | 6.4x |
+| 1024 | k=n/4 | 17.7 | 2.62 | 6.8x |
+| 1024 | k=n/2 | 20.8 | 2.83 | 7.3x |
+| 1024 | k=n | 23.2 | 3.06 | 7.6x |
+| 2048 | k=10 | 4.10 | 0.734 | 5.6x |
+| 2048 | k=50 | 14.2 | 2.41 | 5.9x |
+| 2048 | k=100 | 26.2 | 4.18 | 6.3x |
+| 2048 | k=n/4 | 48.5 | 6.58 | 7.4x |
+| 2048 | k=n/2 | 51.5 | 6.72 | 7.7x |
+| 2048 | k=n | 55.8 | 7.31 | 7.6x |
+| 4096 | k=10 | 8.17 | 1.39 | 5.9x |
+| 4096 | k=50 | 28.2 | 4.78 | 5.9x |
+| 4096 | k=100 | 52.4 | 8.27 | 6.3x |
+| 4096 | k=n/4 | 108 | 14.6 | 7.4x |
+| 4096 | k=n/2 | 122 | 16.7 | 7.3x |
+| 4096 | k=n | 135 | 18.0 | 7.5x |
+| 8192 | k=10 | 16.3 | 2.70 | 6.0x |
+| 8192 | k=50 | 56.4 | 9.42 | 6.0x |
+| 8192 | k=100 | 105 | 17.2 | 6.1x |
+| 8192 | k=n/4 | 255 | 35.9 | 7.1x |
+| 8192 | k=n/2 | 298 | 41.3 | 7.2x |
+| 8192 | k=n | 319 | 44.8 | 7.1x |
+| 16384 | k=10 | 32.4 | 5.33 | 6.1x |
+| 16384 | k=50 | 113 | 18.7 | 6.0x |
+| 16384 | k=100 | 208 | 34.7 | 6.0x |
+| 16384 | k=n/4 | 632 | 86.7 | 7.3x |
+| 16384 | k=n/2 | 700 | 99.5 | 7.0x |
+| 16384 | k=n | 749 | 104 | 7.2x |
+| 32768 | k=10 | 64.7 | 10.7 | 6.0x |
+| 32768 | k=50 | 225 | 37.5 | 6.0x |
+| 32768 | k=100 | 417 | 67.2 | 6.2x |
+| 32768 | k=n/4 | 1470 | 242 | 6.1x |
+| 32768 | k=n/2 | 1640 | 235 | 7.0x |
+| 32768 | k=n | 1750 | 258 | 6.8x |
 | 65536 | k=10 | 129 | 21.2 | 6.1x |
-| 65536 | k=50 | 450 | 78.8 | 5.7x |
-| 65536 | k=100 | 836 | 139 | 6.0x |
-| 65536 | k=n/4 | 5600 | 752 | 7.4x |
-| 65536 | k=n/2 | 6240 | 852 | 7.3x |
-| 65536 | k=n | 7180 | 993 | 7.2x |
+| 65536 | k=50 | 451 | 76.8 | 5.9x |
+| 65536 | k=100 | 835 | 138 | 6.1x |
+| 65536 | k=n/4 | 3440 | 511 | 6.7x |
+| 65536 | k=n/2 | 3820 | 576 | 6.6x |
+| 65536 | k=n | 4100 | 644 | 6.4x |
 
 ### Parallel speedup - M3 Pro
 
-At the 1-second boundary (from contour sweep, Q=256; earlier sweep, not re-run this session):
+At the 1-second boundary (from regenerated contour sweep, Q=256):
 
 | k | Serial n | Parallel n | Speedup |
 |---|----------|------------|---------|
-| 2 | 1,025,391 | 5,468,751 | 5.3x |
-| 100 | 76,256 | 421,890 | 5.5x |
-| 1000 | 22,437 | 162,687 | 7.3x |
-| 10000 | 13,750 | 94,375 | 6.9x |
-| 13000 | 13,000 | 98,312 | 7.6x |
+| 2 | 1,025,391 | 5,273,438 | 5.1x |
+| 100 | 78,209 | 453,134 | 5.8x |
+| 1000 | 36,218 | 237,906 | 6.6x |
+| 10000 | 20,312 | 131,875 | 6.5x |
+| 13000 | 18,687 | 107,453 | 5.8x |
 
 Speedup varies by k due to engine dispatch: linear-only k values see ~5-6x (simple SIMD scaling),
 while hybrid-engine k values reach ~7-8x (FFT tree parallelism). M3 Pro's 6P+6E topology
 limits peak parallel speedup to ~8x vs Zen 4's ~14x on 16 homogeneous P-cores.
 
-### 1-second threshold: n ≈ 13,000 (k=n, single-threaded), n ≈ 98,000 (k=n, 12-thread)
+### 1-second threshold: n ≈ 18,700 (k=n, single-threaded), n ≈ 100,000 (k=n, 12-thread)
 
-> Contour data from an earlier sweep — may shift slightly with the corrected
-> calibration. Grid numbers above are authoritative.
+Serial: regenerated from `./bench_grid contour` sweep, Q=256 (July 2026). Parallel: extrapolated from bench_grid data (n=65,536, k=n at 644 ms).
 
-### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=16). Linear→hybrid crossover at k≈100–120 (post-fix; see note above).
+### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈122–124 (empirical crossover table in `devices/m3_pro/fft_config.h`).
 
 ---
 
@@ -134,91 +123,90 @@ Single-threaded vs 16-thread parallel, per (n, k) cell:
 
 | n | k | serial (ms) | parallel (ms) | speedup |
 |---|---|---|---|---|
-| 64 | k=10 | 0.0945 | 0.0132 | 7.2x |
-| 64 | k=50 | 0.202 | 0.0223 | 9.1x |
-| 64 | k=100 | 0.190 | 0.0273 | 7.0x |
-| 64 | k=n/4 | 0.105 | 0.0149 | 7.0x |
-| 64 | k=n/2 | 0.143 | 0.0183 | 7.8x |
-| 64 | k=n | 0.190 | 0.0237 | 8.0x |
-| 128 | k=10 | 0.181 | 0.0197 | 9.2x |
-| 128 | k=50 | 0.358 | 0.0359 | 10.0x |
-| 128 | k=100 | 0.617 | 0.0617 | 10.0x |
-| 128 | k=n/4 | 0.271 | 0.0286 | 9.5x |
-| 128 | k=n/2 | 0.407 | 0.0448 | 9.1x |
-| 128 | k=n | 0.795 | 0.0808 | 9.8x |
-| 256 | k=10 | 0.369 | 0.0358 | 10.3x |
-| 256 | k=50 | 0.726 | 0.0792 | 9.2x |
-| 256 | k=100 | 1.69 | 0.143 | 11.8x |
-| 256 | k=n/4 | 0.845 | 0.0916 | 9.2x |
-| 256 | k=n/2 | 2.05 | 0.183 | 11.2x |
-| 256 | k=n | 4.42 | 0.341 | 13.0x |
-| 512 | k=10 | 0.719 | 0.0651 | 11.0x |
-| 512 | k=50 | 1.97 | 0.175 | 11.3x |
-| 512 | k=100 | 3.69 | 0.289 | 12.8x |
-| 512 | k=n/4 | 4.76 | 0.386 | 12.3x |
-| 512 | k=n/2 | 9.47 | 0.740 | 12.8x |
-| 512 | k=n | 10.6 | 0.807 | 13.1x |
-| 1024 | k=10 | 1.33 | 0.131 | 10.2x |
-| 1024 | k=50 | 3.53 | 0.346 | 10.2x |
-| 1024 | k=100 | 7.07 | 0.578 | 12.2x |
-| 1024 | k=n/4 | 20.8 | 1.56 | 13.3x |
-| 1024 | k=n/2 | 24.2 | 1.80 | 13.4x |
-| 1024 | k=n | 25.9 | 1.90 | 13.6x |
-| 2048 | k=10 | 3.92 | 0.298 | 13.2x |
-| 2048 | k=50 | 7.10 | 0.706 | 10.1x |
-| 2048 | k=100 | 13.4 | 1.18 | 11.4x |
-| 2048 | k=n/4 | 52.1 | 3.81 | 13.7x |
-| 2048 | k=n/2 | 56.7 | 4.18 | 13.6x |
-| 2048 | k=n | 60.4 | 4.42 | 13.7x |
-| 4096 | k=10 | 8.00 | 0.607 | 13.2x |
-| 4096 | k=50 | 16.8 | 1.48 | 11.4x |
-| 4096 | k=100 | 28.6 | 2.34 | 12.2x |
-| 4096 | k=n/4 | 121 | 8.85 | 13.7x |
-| 4096 | k=n/2 | 133 | 9.81 | 13.6x |
-| 4096 | k=n | 150 | 10.9 | 13.8x |
-| 8192 | k=10 | 16.2 | 1.24 | 13.1x |
-| 8192 | k=50 | 28.8 | 2.90 | 9.9x |
-| 8192 | k=100 | 49.6 | 5.11 | 9.7x |
-| 8192 | k=n/4 | 285 | 20.4 | 14.0x |
-| 8192 | k=n/2 | 341 | 24.9 | 13.7x |
-| 8192 | k=n | 353 | 25.4 | 13.9x |
-| 16384 | k=10 | 26.2 | 3.14 | 8.3x |
-| 16384 | k=50 | 56.7 | 5.82 | 9.7x |
-| 16384 | k=100 | 111 | 9.85 | 11.3x |
-| 16384 | k=n/4 | 730 | 64.0 | 11.4x |
-| 16384 | k=n/2 | 771 | 60.2 | 12.8x |
-| 16384 | k=n | 843 | 78.1 | 10.8x |
-| 32768 | k=10 | 52.2 | 5.51 | 9.5x |
-| 32768 | k=50 | 126 | 11.7 | 10.8x |
-| 32768 | k=100 | 236 | 19.3 | 12.2x |
-| 32768 | k=n/4 | 1640 | 155 | 10.6x |
-| 32768 | k=n/2 | 1840 | 179 | 10.3x |
-| 32768 | k=n | 1970 | 208 | 9.5x |
-| 65536 | k=10 | 116 | 19.6 | 5.9x |
-| 65536 | k=50 | 237 | 29.2 | 8.1x |
-| 65536 | k=100 | 475 | 52.3 | 9.1x |
-| 65536 | k=n/4 | 3890 | 408 | 9.5x |
-| 65536 | k=n/2 | 4360 | 450 | 9.7x |
-| 65536 | k=n | 4610 | 551 | 8.4x |
+| 64 | k=10 | 0.0926 | 0.0123 | 7.5x |
+| 64 | k=50 | 0.188 | 0.0206 | 9.1x |
+| 64 | k=100 | 0.224 | 0.0239 | 9.4x |
+| 64 | k=n/4 | 0.112 | 0.0144 | 7.8x |
+| 64 | k=n/2 | 0.146 | 0.0171 | 8.5x |
+| 64 | k=n | 0.231 | 0.0245 | 9.4x |
+| 128 | k=10 | 0.196 | 0.0210 | 9.3x |
+| 128 | k=50 | 0.324 | 0.0378 | 8.6x |
+| 128 | k=100 | 0.566 | 0.0620 | 9.1x |
+| 128 | k=n/4 | 0.300 | 0.0291 | 10.3x |
+| 128 | k=n/2 | 0.394 | 0.0439 | 9.0x |
+| 128 | k=n | 0.775 | 0.0777 | 10.0x |
+| 256 | k=10 | 0.389 | 0.0368 | 10.6x |
+| 256 | k=50 | 0.666 | 0.0752 | 8.9x |
+| 256 | k=100 | 1.60 | 0.147 | 10.9x |
+| 256 | k=n/4 | 0.836 | 0.0953 | 8.8x |
+| 256 | k=n/2 | 2.01 | 0.222 | 9.1x |
+| 256 | k=n | 3.32 | 0.257 | 12.9x |
+| 512 | k=10 | 0.765 | 0.0684 | 11.2x |
+| 512 | k=50 | 1.77 | 0.179 | 9.9x |
+| 512 | k=100 | 3.61 | 0.292 | 12.4x |
+| 512 | k=n/4 | 4.52 | 0.389 | 11.6x |
+| 512 | k=n/2 | 7.33 | 0.537 | 13.6x |
+| 512 | k=n | 7.67 | 0.577 | 13.3x |
+| 1024 | k=10 | 1.44 | 0.130 | 11.1x |
+| 1024 | k=50 | 4.04 | 0.354 | 11.4x |
+| 1024 | k=100 | 7.90 | 0.567 | 13.9x |
+| 1024 | k=n/4 | 15.7 | 1.13 | 13.9x |
+| 1024 | k=n/2 | 16.7 | 1.20 | 13.9x |
+| 1024 | k=n | 17.6 | 1.31 | 13.4x |
+| 2048 | k=10 | 3.21 | 0.311 | 10.3x |
+| 2048 | k=50 | 6.87 | 0.717 | 9.6x |
+| 2048 | k=100 | 13.7 | 1.17 | 11.7x |
+| 2048 | k=n/4 | 36.2 | 2.54 | 14.3x |
+| 2048 | k=n/2 | 38.6 | 2.77 | 13.9x |
+| 2048 | k=n | 40.9 | 2.95 | 13.9x |
+| 4096 | k=10 | 6.58 | 0.616 | 10.7x |
+| 4096 | k=50 | 14.1 | 1.40 | 10.1x |
+| 4096 | k=100 | 29.3 | 2.41 | 12.2x |
+| 4096 | k=n/4 | 83.4 | 5.82 | 14.3x |
+| 4096 | k=n/2 | 92.5 | 6.46 | 14.3x |
+| 4096 | k=n | 93.6 | 6.83 | 13.7x |
+| 8192 | k=10 | 13.1 | 1.23 | 10.7x |
+| 8192 | k=50 | 28.2 | 2.86 | 9.9x |
+| 8192 | k=100 | 53.4 | 4.99 | 10.7x |
+| 8192 | k=n/4 | 188 | 13.9 | 13.5x |
+| 8192 | k=n/2 | 203 | 15.5 | 13.1x |
+| 8192 | k=n | 213 | 17.7 | 12.0x |
+| 16384 | k=10 | 26.4 | 2.53 | 10.4x |
+| 16384 | k=50 | 66.3 | 5.69 | 11.7x |
+| 16384 | k=100 | 106 | 9.36 | 11.3x |
+| 16384 | k=n/4 | 433 | 82.7 | 5.2x |
+| 16384 | k=n/2 | 479 | 113 | 4.2x |
+| 16384 | k=n | 508 | 153 | 3.3x |
+| 32768 | k=10 | 52.3 | 5.70 | 9.2x |
+| 32768 | k=50 | 127 | 11.9 | 10.7x |
+| 32768 | k=100 | 228 | 20.9 | 10.9x |
+| 32768 | k=n/4 | 980 | 262 | 3.7x |
+| 32768 | k=n/2 | 1080 | 307 | 3.5x |
+| 32768 | k=n | 1230 | 380 | 3.2x |
+| 65536 | k=10 | 115 | 19.3 | 6.0x |
+| 65536 | k=50 | 225 | 29.1 | 7.7x |
+| 65536 | k=100 | 414 | 45.7 | 9.1x |
+| 65536 | k=n/4 | 2580 | 650 | 4.0x |
+| 65536 | k=n/2 | 2970 | 782 | 3.8x |
+| 65536 | k=n | 3330 | 999 | 3.3x |
 
 ### Parallel speedup - Zen 4
 
-At the 1-second boundary (from contour sweep, Q=256; earlier sweep, not re-run this session):
+At the 1-second boundary (from regenerated contour sweep, Q=256):
 
 | k | Serial n | Parallel n | Speedup |
 |---|----------|------------|---------|
-| 2 | 415,040 | 1,611,329 | 3.9x |
-| 100 | 136,790 | 1,062,546 | 7.8x |
-| 1000 | 27,031 | 181,343 | 6.7x |
-| 10000 | 18,750 | 127,187 | 6.8x |
-| 13000 | 16,250 | 122,687 | 7.5x |
+| 2 | 427,247 | 1,611,329 | 3.8x |
+| 100 | 128,980 | 1,062,546 | 8.2x |
+| 1000 | 48,468 | 137,812 | 2.8x |
+| 10000 | 31,562 | 94,375 | 3.0x |
+| 13000 | 30,062 | 92,625 | 3.1x |
 
-### 1-second threshold: n ≈ 17,216 (k=n, single-threaded)
+### 1-second threshold: n ≈ 27,000 (k=n, single-threaded), n ≈ 65,000 (k=n, 16-thread)
 
-> Contour data from an earlier sweep — may shift slightly with the corrected
-> calibration. Grid numbers above are authoritative.
+Serial: interpolated from bench_grid (n=16,384 at 508 ms, n=32,768 at 1,230 ms). Parallel: bench_grid n=65,536, k=n at 999 ms; regenerated contour and grid (July 2026).
 
-### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈275.
+### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=24/32). Linear→hybrid crossover at k≈231–242 (empirical crossover table in `devices/zen4/fft_config.h`).
 
 ### AOCL-FFTW: sole backend, no dual dispatch
 
@@ -262,9 +250,9 @@ to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 - AOCL-FFTW (znver4-tuned, tag 5.3) — sole FFT backend, 20–25% faster than plain FFTW
 - BQ=8 batched linear with interleaved layout (native AVX-512 width)
 - L2-aware checkpointing with 1MB per-core L2
-- B=32 (vs M3 Pro B=16) — cost model adapts to Zen 4's wider schoolbook-FFT crossover.
-  Validated empirically: B=32 is optimal in 98.9% of tested cells up to n=16384
-  (single mismatch at n=8192,k=350 is noise-level, 1.1%) — see `results/b_optimal_report_zen4.md`
+- B=24/32 — cost model adapts to Zen 4's wider schoolbook-FFT crossover.
+  Empirical B-selection table in `devices/zen4/fft_config.h`: B=32 in 21/34 grid points,
+  B=24 in the remaining 13 (see `results/b_optimal_report_zen4.md`).
 
 ## FFT Phase Split (Zen 4 7950X)
 
@@ -312,7 +300,8 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 > to 10.2% and pushes `FFT_OVERHEAD_NS`/`FMA_NS` to compensate — a collinearity
 > limitation in the current `sample_plans` training data, not a correctness
 > issue. `./bench_grid verify` passes ALL TESTS and `./bench_grid crossover`
-> shows a clean, monotonic linear→hybrid transition at k≈100–120 (post-fix; k=120 linear, k=160 hybrid across n tested).
+> shows a clean, monotonic linear→hybrid transition at k≈122–124 (empirical
+> crossover table in `devices/m3_pro/fft_config.h`).
 
 ### Zen 4 (AMD Ryzen 9 7950X, AVX-512, AOCL-FFTW)
 

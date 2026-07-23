@@ -46,11 +46,20 @@
 #      INDEP_PAIR_RATIO, FFT_OVERHEAD_NS=0.0).  ZERO free parameters remain
 #      — scipy optimization is skipped; the script assembles the fully-pinned
 #      config directly.
-#  12. Rebuilds the library with the new device config
-#  13. Verifies correctness (bench_grid verify) and crossover dispatch
+#  12. Builds and runs tools/calibrate_crossover.c — binary-searches the
+#      real linear-vs-hybrid crossover k(n) via direct timing (median of 7
+#      reps, Q=256).  Writes N_CROSSOVER_POINTS/crossover_n[]/crossover_k[]
+#      into fft_config.h.
+#  13. Builds and runs tools/calibrate_best_b.c — times every candidate
+#      hybrid block size B at a grid of (n,k) points.  Writes
+#      N_BSELECT_POINTS/bselect_n[]/bselect_k[]/bselect_B[] into
+#      fft_config.h.
+#  14. Rebuilds the library with the new device config
+#  15. Verifies correctness (bench_grid verify) and crossover dispatch
 #
-# This can take 15–45+ minutes, dominated by step 1 (FFTW calibration)
-# and step 8 (probe_leaf_extract full sweep + B-sweep).
+# This can take 15–45+ minutes, dominated by step 1 (FFTW calibration),
+# step 8 (probe_leaf_extract full sweep + B-sweep), and steps 12–13
+# (crossover/best-B timing sweeps).
 set -euo pipefail
 
 # ── Find repo root (this script lives in tools/) ──
@@ -120,7 +129,7 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════════
 # Step 1: Build and run calibrate
 # ═══════════════════════════════════════════════════════════════════════
-echo "── Step 1/13: FFTW calibration (tools/calibrate.c) ──"
+echo "── Step 1/15: FFTW calibration (tools/calibrate.c) ──"
 echo "  This may take 10–30 minutes..."
 CALIB_BIN="$REPO_ROOT/calibrate"
 gcc -O3 -march=native $HOMEBREW_INC -o "$CALIB_BIN" tools/calibrate.c $HOMEBREW_LIB -lfftw3 -lm
@@ -142,7 +151,7 @@ fi
 # Step 2: Copy generated files to devices/<DEVICE>/
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 2/13: Copy calibration files to devices/$DEVICE/ ──"
+echo "── Step 2/15: Copy calibration files to devices/$DEVICE/ ──"
 mkdir -p "$DEVICE_DIR"
 
 for f in fft_config.h fftw_wisdom.dat; do
@@ -171,7 +180,7 @@ done
 # they MUST be overwritten by the measurement steps before the final build.
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 2.5/13: Inject placeholder arrays into fft_config.h ──"
+echo "── Step 2.5/15: Inject placeholder arrays into fft_config.h ──"
 
 cat > /tmp/_inject_placeholders.py << 'PYEOF'
 import sys, re
@@ -271,11 +280,69 @@ PYEOF
 python3 /tmp/_inject_placeholders.py "$CONFIG_H"
 echo "  ✓ Placeholder injection complete"
 
+# ── Also inject crossover/bselect placeholders (new this session) ──
+cat > /tmp/_inject_crossover_bselect_placeholders.py << 'PYEOF'
+import sys, re
+
+config_path = sys.argv[1]
+
+with open(config_path, 'r') as f:
+    text = f.read()
+
+# Check idempotency — don't double-inject
+if 'CROSSOVER_BSELECT_PLACEHOLDER_INJECTED' in text:
+    print("  Crossover/bselect placeholders already injected — skipping.")
+    sys.exit(0)
+
+anchor = '/* ── Cost model functions ── */'
+idx = text.find(anchor)
+if idx < 0:
+    print("ERROR: could not find Cost model functions anchor in fft_config.h", file=sys.stderr)
+    sys.exit(1)
+
+placeholder_block = '''
+/* ── Empirical linear-vs-hybrid crossover table ──────────────────────
+ * Measured by tools/calibrate_crossover.c — binary search on real
+ * timing (median of 7 reps, Q=256).  See src/fft_cost_model.h's
+ * empirical_crossover_k() for how this is consulted (log-linear
+ * interpolation between bracketing n).  PLACEHOLDER. */
+#ifndef N_CROSSOVER_POINTS
+#define N_CROSSOVER_POINTS 6
+static const int crossover_n[N_CROSSOVER_POINTS] = {512, 1024, 2048, 4096, 8192, 16384};
+static const int crossover_k[N_CROSSOVER_POINTS] = {999, 999, 999, 999, 999, 999};
+#endif
+
+/* ── Empirical hybrid block-size (B) table ───────────────────────────
+ * Measured by tools/calibrate_best_b.c — direct timing (median of 7
+ * reps, Q=256) of the real hybrid engine at every candidate B, per
+ * (n,k) grid point.  See src/fft_cost_model.h's empirical_best_B()
+ * for how this is consulted (2D nearest-neighbor).  PLACEHOLDER. */
+#ifndef N_BSELECT_POINTS
+#define N_BSELECT_POINTS 34
+static const int bselect_n[N_BSELECT_POINTS] = {[0 ... 33] = 999};
+static const int bselect_k[N_BSELECT_POINTS] = {[0 ... 33] = 999};
+static const int bselect_B[N_BSELECT_POINTS] = {[0 ... 33] = 999};
+#endif
+
+/* CROSSOVER_BSELECT_PLACEHOLDER_INJECTED — sentinel to detect double-injection */
+'''
+
+text = text[:idx] + placeholder_block + text[idx:]
+
+with open(config_path, 'w') as f:
+    f.write(text)
+
+print(f"  ✓ Injected crossover/bselect placeholders into {config_path}")
+PYEOF
+
+python3 /tmp/_inject_crossover_bselect_placeholders.py "$CONFIG_H"
+echo "  ✓ Crossover/bselect placeholder injection complete"
+
 # ═══════════════════════════════════════════════════════════════════════
 # Step 3: Build and run sample_plans
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 3/13: Build and run sample_plans.c ──"
+echo "── Step 3/15: Build and run sample_plans.c ──"
 SP_BIN="$REPO_ROOT/sample_plans"
 gcc -O3 -march=native \
     -Isrc \
@@ -296,7 +363,7 @@ echo "  ✓ sample_plans complete → $CSV_FILE"
 # Step 4: Build and run bench_wrap_fma (direct WRAP_FMA_NS measurement)
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 4/13: Direct wrap-correction microbenchmark (tools/bench_wrap_fma.c) ──"
+echo "── Step 4/15: Direct wrap-correction microbenchmark (tools/bench_wrap_fma.c) ──"
 WRAP_BENCH_BIN="$REPO_ROOT/bench_wrap_fma"
 WRAP_CSV="$REPO_ROOT/wrap_fma_${DEVICE}.csv"
 gcc -O3 -march=native -o "$WRAP_BENCH_BIN" tools/bench_wrap_fma.c -lm
@@ -336,7 +403,7 @@ echo "  Extracted WRAP_FMA_NS = $WRAP_FMA_NS (least-squares slope, SMALL_2048, w
 # Step 5: Build and run bench_div_chain (direct FP64_DIV_NS measurement)
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 5/13: Direct division-chain microbenchmark (tools/bench_div_chain.c) ──"
+echo "── Step 5/15: Direct division-chain microbenchmark (tools/bench_div_chain.c) ──"
 DIV_BENCH_BIN="$REPO_ROOT/bench_div_chain"
 DIV_CSV="$REPO_ROOT/div_chain_${DEVICE}.csv"
 gcc -O3 -march=native -o "$DIV_BENCH_BIN" tools/bench_div_chain.c
@@ -354,7 +421,7 @@ fi
 # Step 6: Build bench_grid, run profile → FMA_NS, PAIRED_CACHED_CORR_RATIO, INDEP_PAIR_RATIO
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 6/13: Profile FFT phases + schoolbook cost (./bench_grid profile) ──"
+echo "── Step 6/15: Profile FFT phases + schoolbook cost (./bench_grid profile) ──"
 BENCH_GRID_BIN="$REPO_ROOT/bench_grid"
 gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
     -Isrc \
@@ -433,7 +500,7 @@ echo "  INDEP_PAIR_RATIO = $INDEP_PAIR_RATIO  (avg over fft_n ≥ 4096)"
 # Step 7: Build and run bench_block_build → per-B lookup table
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 7/13: Direct block-build microbenchmark (tools/bench_block_build.c) ──"
+echo "── Step 7/15: Direct block-build microbenchmark (tools/bench_block_build.c) ──"
 BLOCK_BENCH_BIN="$REPO_ROOT/bench_block_build"
 gcc -O3 -march=native -o "$BLOCK_BENCH_BIN" tools/bench_block_build.c -lm
 echo "  Running bench_block_build..."
@@ -513,7 +580,7 @@ echo "  ✓ Block-build lookup table written to $CONFIG_H"
 # production.  See HANDOFF.md and DISPATCH_GAP_ANALYSIS.md.
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 8/13: Leaf-extraction via probe_leaf_extract.c B-sweep phase ──"
+echo "── Step 8/15: Leaf-extraction via probe_leaf_extract.c B-sweep phase ──"
 echo "  (Replaces bench_leaf_fma.c — methodology bug: measured wrong code branch)"
 LEAF_PROBE_BIN="$REPO_ROOT/probe_leaf_extract"
 gcc -O3 -march=native \
@@ -623,7 +690,7 @@ echo "  ✓ Leaf-extraction lookup table written to $CONFIG_H"
 # latency/dependency-chain-bound, not FMA-throughput-bound.
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 9/13: Schoolbook per-size microbenchmark (tools/bench_schoolbook_tree.c) ──"
+echo "── Step 9/15: Schoolbook per-size microbenchmark (tools/bench_schoolbook_tree.c) ──"
 SCHOOLBOOK_BENCH_BIN="$REPO_ROOT/bench_schoolbook_tree"
 gcc -O3 -march=native \
     -Isrc \
@@ -809,7 +876,7 @@ echo "  ✓ Schoolbook lookup tables written to $CONFIG_H"
 # needs to be committed first (see HANDOFF.md).
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 10/13: Batched-linear-engine constant (tools/bench_linear_batched_fma.c) ──"
+echo "── Step 10/15: Batched-linear-engine constant (tools/bench_linear_batched_fma.c) ──"
 LINEAR_BENCH_BIN="$REPO_ROOT/bench_linear_batched_fma"
 
 if [ ! -f "$REPO_ROOT/tools/bench_linear_batched_fma.c" ]; then
@@ -879,7 +946,7 @@ fi
 # Step 11: Run fit_cost_model.py with ALL scalar pins (ZERO free params)
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 11/13: Assemble fully-pinned config (tools/fit_cost_model.py --write) ──"
+echo "── Step 11/15: Assemble fully-pinned config (tools/fit_cost_model.py --write) ──"
 FIT_CMD="python3 tools/fit_cost_model.py \"$CSV_FILE\" \"$CONFIG_H\" --write"
 FIT_CMD="$FIT_CMD --wrap-ns \"$WRAP_FMA_NS\""
 if [ -n "$FP64_DIV_NS" ]; then
@@ -894,19 +961,267 @@ eval "$FIT_CMD"
 echo "  ✓ Fully-pinned config written to $CONFIG_H (0 free parameters)"
 
 # ═══════════════════════════════════════════════════════════════════════
-# Step 12: Rebuild
+# Step 12: Build and run calibrate_crossover → crossover_n[]/crossover_k[]
+#
+# These tools time the ACTUAL hybrid/linear engines, so they depend on
+# all other calibrated constants (FMA_NS, WRAP_FMA_NS, block_build_ns_per_player[],
+# leaf_fma_ns_per_player[], etc.) already being correct in fft_config.h.
+# That's why they run AFTER fit_cost_model.py (step 11), not before.
+#
+# calibrate_crossover binary-searches the real crossover k(n) via direct
+# timing (median of 7 reps, Q=256), across the fixed n grid
+# {512,1024,2048,4096,8192,16384}.  Outputs CSV lines "n,k_cross" after
+# a comment header.  Writes N_CROSSOVER_POINTS/crossover_n[]/crossover_k[]
+# into fft_config.h.
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 12/13: Rebuild library (make clean && make DEVICE=$DEVICE) ──"
+echo "── Step 12/15: Empirical crossover measurement (tools/calibrate_crossover.c) ──"
+echo "  This binary-searches the real linear-vs-hybrid crossover k(n)"
+echo "  via direct timing (median of 7 reps, Q=256).  Takes several minutes."
+CROSSOVER_BIN="$REPO_ROOT/calibrate_crossover"
+gcc -O3 -march=native \
+    -Isrc \
+    -I"$DEVICE_DIR" \
+    $HOMEBREW_INC \
+    -o "$CROSSOVER_BIN" \
+    tools/calibrate_crossover.c src/icm.c \
+    $HOMEBREW_LIB \
+    -lfftw3 -lm \
+    $ACCEL_FLAGS $VEC_FLAGS
+echo "  ✓ Built calibrate_crossover"
+
+echo "  Running calibrate_crossover..."
+CROSSOVER_OUT="$("$CROSSOVER_BIN" 2>&1)"
+CROSSOVER_STDERR=$(echo "$CROSSOVER_OUT" | grep -E '^(n=|  )' || true)
+echo "$CROSSOVER_OUT" > "$REPO_ROOT/crossover_${DEVICE}.log"
+echo "  ✓ calibrate_crossover complete → $REPO_ROOT/crossover_${DEVICE}.log"
+if [ -n "$CROSSOVER_STDERR" ]; then
+    echo "$CROSSOVER_STDERR" | while read line; do echo "    $line"; done
+fi
+
+# Parse CSV output and write crossover_n[]/crossover_k[] into fft_config.h.
+# The tool outputs lines like:
+#   # Direct empirical crossover measurement ...
+#   # n,k_cross
+#   512,123
+#   1024,124
+#   ...
+cat > /tmp/_write_crossover_table.py << 'PYEOF'
+import sys, re
+
+lines = sys.stdin.read().splitlines()
+
+# Parse CSV: skip comment/header lines, read "n,k_cross"
+crossover = {}  # n -> k_cross
+for line in lines:
+    line = line.strip()
+    if not line or line.startswith('#'):
+        continue
+    parts = line.split(',')
+    if len(parts) == 2:
+        try:
+            n = int(parts[0])
+            k = int(parts[1])
+            crossover[n] = k
+        except ValueError:
+            continue
+
+if len(crossover) != 6:
+    print(f'WARNING: expected 6 crossover points, got {len(crossover)}: {crossover}', file=sys.stderr)
+    sys.exit(0)
+
+config_path = sys.argv[1]
+
+with open(config_path, 'r') as f:
+    text = f.read()
+
+# ── Replace crossover_n[] ──
+n_pattern = r'(static const int crossover_n\[N_CROSSOVER_POINTS\]\s*=\s*\{)'
+n_match = re.search(n_pattern, text)
+if not n_match:
+    print('WARNING: crossover_n array not found in header — placeholder missing?', file=sys.stderr)
+    sys.exit(0)
+
+# Build the array in fixed n-grid order
+n_order = [512, 1024, 2048, 4096, 8192, 16384]
+n_line_vals = ', '.join(str(v) for v in n_order)
+new_n_array = f'static const int crossover_n[N_CROSSOVER_POINTS] = {{{n_line_vals}}};'
+
+start = n_match.end()
+end = text.index('};', start) + 2
+text = text[:n_match.start()] + new_n_array + text[end:]
+
+# ── Replace crossover_k[] ──
+k_pattern = r'(static const int crossover_k\[N_CROSSOVER_POINTS\]\s*=\s*\{)'
+k_match = re.search(k_pattern, text)
+if not k_match:
+    print('WARNING: crossover_k array not found in header — placeholder missing?', file=sys.stderr)
+    sys.exit(0)
+
+k_values = [crossover.get(n, 999) for n in n_order]
+k_line_vals = ', '.join(str(v) for v in k_values)
+new_k_array = f'static const int crossover_k[N_CROSSOVER_POINTS] = {{{k_line_vals}}};'
+
+start = k_match.end()
+end = text.index('};', start) + 2
+text = text[:k_match.start()] + new_k_array + text[end:]
+
+with open(config_path, 'w') as f:
+    f.write(text)
+
+print(f'  Wrote crossover_n[]/crossover_k[] to {config_path}')
+for i, n in enumerate(n_order):
+    print(f'    n={n:<5d}  k_cross={k_values[i]}')
+PYEOF
+echo "$CROSSOVER_OUT" | python3 /tmp/_write_crossover_table.py "$CONFIG_H"
+echo "  ✓ Crossover table written to $CONFIG_H"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 13: Build and run calibrate_best_b → bselect_n[]/bselect_k[]/bselect_B[]
+#
+# Times every candidate hybrid block size B in {8,16,24,32,48,64} at a
+# grid of (n,k) points (n in {512,1024,2048,4096,8192,16384},
+# k in {150,250,400,800,1500,2000,4000}), outputs CSV lines "n,k,best_B".
+# Writes N_BSELECT_POINTS/bselect_n[]/bselect_k[]/bselect_B[] into
+# fft_config.h.  Takes several minutes (6 B values × ~34 grid points,
+# 7-rep median timing each).
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "── Step 13/15: Empirical best-B measurement (tools/calibrate_best_b.c) ──"
+echo "  Times every candidate B at each (n,k) grid point"
+echo "  (median of 7 reps, Q=256).  Takes several minutes."
+BESTB_BIN="$REPO_ROOT/calibrate_best_b"
+gcc -O3 -march=native \
+    -Isrc \
+    -I"$DEVICE_DIR" \
+    $HOMEBREW_INC \
+    -o "$BESTB_BIN" \
+    tools/calibrate_best_b.c src/icm.c \
+    $HOMEBREW_LIB \
+    -lfftw3 -lm \
+    $ACCEL_FLAGS $VEC_FLAGS
+echo "  ✓ Built calibrate_best_b"
+
+echo "  Running calibrate_best_b..."
+BESTB_OUT="$("$BESTB_BIN" 2>&1)"
+BESTB_STDERR=$(echo "$BESTB_OUT" | grep -E '^n=' || true)
+echo "$BESTB_OUT" > "$REPO_ROOT/best_b_${DEVICE}.log"
+echo "  ✓ calibrate_best_b complete → $REPO_ROOT/best_b_${DEVICE}.log"
+if [ -n "$BESTB_STDERR" ]; then
+    echo "$BESTB_STDERR" | while read line; do echo "    $line"; done
+fi
+
+# Parse CSV output and write bselect_n[]/bselect_k[]/bselect_B[] into fft_config.h.
+# The tool outputs lines like:
+#   # Direct empirical best-B measurement ...
+#   # n,k,best_B
+#   512,150,32
+#   512,250,32
+#   ...
+cat > /tmp/_write_bselect_table.py << 'PYEOF'
+import sys, re
+
+lines = sys.stdin.read().splitlines()
+
+# Parse CSV: skip comment/header lines, read "n,k,best_B"
+points = []  # list of (n, k, best_B)
+for line in lines:
+    line = line.strip()
+    if not line or line.startswith('#'):
+        continue
+    parts = line.split(',')
+    if len(parts) == 3:
+        try:
+            n = int(parts[0])
+            k = int(parts[1])
+            b = int(parts[2])
+            points.append((n, k, b))
+        except ValueError:
+            continue
+
+if len(points) != 34:
+    print(f'WARNING: expected 34 bselect points, got {len(points)}', file=sys.stderr)
+    sys.exit(0)
+
+config_path = sys.argv[1]
+
+with open(config_path, 'r') as f:
+    text = f.read()
+
+# ── Replace bselect_n[] ──
+n_pattern = r'(static const int bselect_n\[N_BSELECT_POINTS\]\s*=\s*\{)'
+n_match = re.search(n_pattern, text)
+if not n_match:
+    print('WARNING: bselect_n array not found in header — placeholder missing?', file=sys.stderr)
+    sys.exit(0)
+
+n_vals = [p[0] for p in points]
+n_line_vals = ', '.join(str(v) for v in n_vals)
+new_n_array = f'static const int bselect_n[N_BSELECT_POINTS] = {{{n_line_vals}}};'
+
+start = n_match.end()
+end = text.index('};', start) + 2
+text = text[:n_match.start()] + new_n_array + text[end:]
+
+# ── Replace bselect_k[] ──
+k_pattern = r'(static const int bselect_k\[N_BSELECT_POINTS\]\s*=\s*\{)'
+k_match = re.search(k_pattern, text)
+if not k_match:
+    print('WARNING: bselect_k array not found in header — placeholder missing?', file=sys.stderr)
+    sys.exit(0)
+
+k_vals = [p[1] for p in points]
+k_lines = ['static const int bselect_k[N_BSELECT_POINTS] = {']
+k_line_vals = ', '.join(str(v) for v in k_vals)
+k_lines.append(f'    {k_line_vals}')
+k_lines.append('};')
+new_k_array = '\n'.join(k_lines)
+
+start = k_match.end()
+end = text.index('};', start) + 2
+text = text[:k_match.start()] + new_k_array + text[end:]
+
+# ── Replace bselect_B[] ──
+b_pattern = r'(static const int bselect_B\[N_BSELECT_POINTS\]\s*=\s*\{)'
+b_match = re.search(b_pattern, text)
+if not b_match:
+    print('WARNING: bselect_B array not found in header — placeholder missing?', file=sys.stderr)
+    sys.exit(0)
+
+b_vals = [p[2] for p in points]
+b_lines = ['static const int bselect_B[N_BSELECT_POINTS] = {']
+b_line_vals = ', '.join(str(v) for v in b_vals)
+b_lines.append(f'    {b_line_vals}')
+b_lines.append('};')
+new_b_array = '\n'.join(b_lines)
+
+start = b_match.end()
+end = text.index('};', start) + 2
+text = text[:b_match.start()] + new_b_array + text[end:]
+
+with open(config_path, 'w') as f:
+    f.write(text)
+
+print(f'  Wrote bselect_n[]/bselect_k[]/bselect_B[] to {config_path}')
+print(f'  {len(points)} grid points written')
+PYEOF
+echo "$BESTB_OUT" | python3 /tmp/_write_bselect_table.py "$CONFIG_H"
+echo "  ✓ Best-B lookup table written to $CONFIG_H"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 14: Rebuild
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "── Step 14/15: Rebuild library (make clean && make DEVICE=$DEVICE) ──"
 make clean
 make "DEVICE=$DEVICE"
 echo "  ✓ Rebuild complete"
 
 # ═══════════════════════════════════════════════════════════════════════
-# Step 13: Verify
+# Step 15: Verify
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "── Step 13/13: Verify correctness and crossover dispatch ──"
+echo "── Step 15/15: Verify correctness and crossover dispatch ──"
 
 echo ""
 echo "--- bench_grid verify ---"
@@ -940,6 +1255,8 @@ echo "  Block log:     $REPO_ROOT/block_build_${DEVICE}.log"
 echo "  Leaf log:      $REPO_ROOT/leaf_probe_${DEVICE}.log"
 echo "  Schoolbook log:$REPO_ROOT/schoolbook_tree_${DEVICE}.log"
 echo "  Linear log:    $REPO_ROOT/linear_batched_${DEVICE}.log"
+echo "  Crossover log: $REPO_ROOT/crossover_${DEVICE}.log"
+echo "  Best-B log:    $REPO_ROOT/best_b_${DEVICE}.log"
 echo ""
 echo "  All scalar constants pinned — zero free parameters in cost model:"
 echo "    WRAP_FMA_NS               = $WRAP_FMA_NS"
@@ -959,6 +1276,8 @@ echo "    block_build_ns_per_player[6]  (step 7)"
 echo "    leaf_fma_ns_per_player[6]     (step 8, probe_leaf_extract B-sweep)"
 echo "    schoolbook_mul_ns[]           (step 9, bench_schoolbook_tree)"
 echo "    schoolbook_corr_ns[]          (step 9, bench_schoolbook_tree)"
+echo "    crossover_n[]/crossover_k[]   (step 12, calibrate_crossover binary search)"
+echo "    bselect_n[]/bselect_k[]/bselect_B[] (step 13, calibrate_best_b sweep)"
 echo ""
 echo "Next steps (manual):"
 echo "  ./bench_grid profile   # re-run profiling for manual inspection"

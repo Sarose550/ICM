@@ -3,7 +3,7 @@
 
 # ICM -- Independent Chip Model Equity Computation
 
-High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~17,216 players / payouts in 1 second*. A CUDA backend extends this to over 1.5 million players in about a second on an NVIDIA B200. Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
+High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~25,000 players / payouts in 1 second*. A CUDA backend extends this to over 1.5 million players in about a second on an NVIDIA B200. Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
 
 > 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf) - full derivation, proofs, and performance evaluation.
 >
@@ -139,22 +139,16 @@ is in the paper; raw sweep data is in `results/accuracy_convergence.csv`.
 
 **CPU, single-threaded (ms, Q=256, uniform stacks, median of 5):**
 
-> **⚠️ Note:** The M3 Pro columns in this table predate the July 2026 cost-model
-> fixes that shifted the linear→hybrid dispatch crossover from k≈260–320 to
-> k≈100–120. Cells near the crossover boundary (k=100 through k=200) may
-> dispatch a different engine post-fix. See [RESULTS.md](RESULTS.md) for details
-> and a full note on regeneration.
-
 | n | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n | | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n |
 |---|------|------|-------|-------|-------|-----|-|------|------|-------|-------|-------|-----|
 | | **M3 Pro** |||||| | **Zen 4 7950X** (AOCL-FFTW) |||||
-| 1024  | 1.71 | 7.07 | 13.1 | 23.3 | 45.9 | 46.0 | | 1.33 | 3.53 | 7.07 | 20.8 | 24.2 | 25.9 |
-| 2048  | 4.07 | 14.2 | 26.2 | 94.6 | 97.1 | 103  | | 3.92 | 7.10 | 13.4 | 52.1 | 56.7 | 60.4 |
-| 4096  | 8.13 | 28.2 | 52.4 | 201  | 217  | 238  | | 8.00 | 16.8 | 28.6 | 121  | 133  | 150  |
-| 8192  | 16.2 | 56.5 | 105  | 447  | 516  | 549  | | 16.2 | 28.8 | 49.6 | 285  | 341  | 353  |
-| 16384 | 32.3 | 113  | 209  | 1070 | 1180 | 1260 | | 26.2 | 56.7 | 111  | 730  | 771  | 843  |
-| 32768 | 65.1 | 226  | 418  | 2450 | 2700 | 2890 | | 52.2 | 126  | 236  | 1640 | 1840 | 1970 |
-| 65536 | 129  | 450  | 836  | 5600 | 6240 | 7180 | | 116  | 237  | 475  | 3890 | 4360 | 4610 |
+| 1024  | 1.72 | 7.08 | 13.1 | 17.7 | 20.8 | 23.2 | | 1.44 | 4.04 | 7.90 | 15.7 | 16.7 | 17.6 |
+| 2048  | 4.10 | 14.2 | 26.2 | 48.5 | 51.5 | 55.8 | | 3.21 | 6.87 | 13.7 | 36.2 | 38.6 | 40.9 |
+| 4096  | 8.17 | 28.2 | 52.4 | 108  | 122  | 135  | | 6.58 | 14.1 | 29.3 | 83.4 | 92.5 | 93.6 |
+| 8192  | 16.3 | 56.4 | 105  | 255  | 298  | 319  | | 13.1 | 28.2 | 53.4 | 188  | 203  | 213  |
+| 16384 | 32.4 | 113  | 208  | 632  | 700  | 749  | | 26.4 | 66.3 | 106  | 433  | 479  | 508  |
+| 32768 | 64.7 | 225  | 417  | 1470 | 1640 | 1750 | | 52.3 | 127  | 228  | 980  | 1080 | 1230 |
+| 65536 | 129  | 451  | 835  | 3440 | 3820 | 4100 | | 115  | 225  | 414  | 2580 | 2970 | 3330 |
 
 **GPU, NVIDIA B200 (ms, Q=256):**
 
