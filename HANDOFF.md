@@ -20,6 +20,44 @@ code, an accurate paper, a friction-free device-porting story, and
 nothing stale, hand-waved, or silently broken. This has been true across
 multiple sessions.
 
+## START HERE if you are a fresh supervisor session (2026-07-23)
+
+There is an **active DAG board**: `SPRINT_CALIBRATION_AND_READINESS_DAG.md`
+in the repo root. Read it first — it is the authoritative live plan, not
+this file. Check `.claude/.dag-active-lock.json`: if present, a wave is
+mid-flight from a prior session; verify it's not stale (crash-recovery
+steps are in the `supervisor-dag` skill) before proceeding.
+
+**What the board covers, in one paragraph:** both CPU (`select_best_B()`)
+and GPU (`gpu_select_best_B_est()`) dispatch now use empirical B-selection
+lookup tables (fixed this session — see "GPU B-selection" section below),
+but both tables were built from a naive rectangular grid. The board widens
+the calibration methodology (7-smooth-biased skeleton `n` values reusing
+the codebase's own smooth-number tables, three `k`-anchor categories
+including a "tiny 2-16" and "almost-7-smooth minus 1" set, off-grid
+validation driving adaptive refinement rather than blind densification,
+reduced-rep timing) and applies it to all three platforms (M3 Pro, Zen4,
+B200) — while ALSO carrying forward every standing item from this file's
+"Next Steps" (paper sync, codebase cleanup, subset-dispatch check, the
+Zen4 memory-wall documentation decision, and the still-unresolved PR #7
+merge decision). Nothing standing was dropped when the board was written;
+it's additive, not a restart. Full rationale for the calibration-widening
+decisions is in the board's own "Context" section — don't re-derive it,
+read it there.
+
+**Key constraint carried into the board:** calibration POINTS are chosen
+adaptively (offline, ahead of time); nothing is adaptive or probed live at
+runtime — dispatch stays O(1) nearest-neighbor lookup, unchanged.
+
+**Standing account/credential notes**: Zen4 box `185.8.107.239` (see
+`reference_zen4_new_password.md` memory) was still up and reachable as of
+2026-07-23 — never terminate it without explicit user go-ahead (destroying
+is fine to avoid — it's the *terminate* that's forbidden). B200 work uses
+vast.ai; user has explicitly greenlit renting instances for this specific
+calibration work, budget-conscious (~$6-9 per session), always destroy the
+B200 instance immediately after each session (already-established
+practice, not new).
+
 ## Status as of 2026-07-22 — the CPU dispatch-crossover investigation is CLOSED on both platforms
 
 The multi-session investigation into why `icm_select_engine()`'s real
@@ -405,6 +443,11 @@ post-fix `validate_planner_gpu` output).
   and ask before starting.
 
 ## Next Steps
+
+> Every item below is now tracked as a node on the active
+> `SPRINT_CALIBRATION_AND_READINESS_DAG.md` board (see "START HERE" at the
+> top of this file). This list is kept for historical continuity; the
+> board is the operational source of truth for current status/progress.
 
 1. **Zen4 parallel-scaling cliff at n≥16384 — root cause confirmed**
    (memory-bandwidth/cache-capacity wall, see finding above). Decide
