@@ -181,15 +181,21 @@ static const double block_build_ns_per_player[6] = {
 };
 #endif
 
+/* Recalibrated 2026-07-22 (box 84.32.71.47) from tools/probe_leaf_extract.c's
+ * B-sweep phase (n=8192, k=320, fresh HybridCtx per rep), same fix as M3 Pro
+ * this session: the old bench_leaf_fma.c-derived table over-predicted real
+ * cost (geo_mean(meas/pred)=0.743) because it only ever exercised the
+ * expensive forward-divide branch, while real production data is ~99.9%
+ * the cheap "zero" branch. See HANDOFF.md. */
 #ifndef LEAF_FMA_NS_PER_PLAYER_DEFINED
 #define LEAF_FMA_NS_PER_PLAYER_DEFINED
 static const double leaf_fma_ns_per_player[6] = {
-    2.1824,  /* B=8  */
-    4.8827,  /* B=16 */
-    8.7597,  /* B=24 */
-    12.2998,  /* B=32 */
-    22.2091,  /* B=48 */
-    31.0635  /* B=64 */
+    2.5755,  /* B=8  */
+    3.6195,  /* B=16 */
+    5.1148,  /* B=24 */
+    7.4787,  /* B=32 */
+    12.1097, /* B=48 */
+    17.9759  /* B=64 */
 };
 #endif
 
