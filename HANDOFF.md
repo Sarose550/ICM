@@ -22,11 +22,29 @@ multiple sessions.
 
 ## START HERE if you are a fresh supervisor session (2026-07-23)
 
-There is an **active DAG board**: `SPRINT_CALIBRATION_AND_READINESS_DAG.md`
-in the repo root. Read it first — it is the authoritative live plan, not
-this file. Check `.claude/.dag-active-lock.json`: if present, a wave is
-mid-flight from a prior session; verify it's not stale (crash-recovery
-steps are in the `supervisor-dag` skill) before proceeding.
+The `SPRINT_CALIBRATION_AND_READINESS_DAG.md` board that drove this
+session's work is now CLOSED and deleted (ephemeral, per the
+`supervisor-dag` skill — do not go looking for it). Everything it
+produced is summarized below and in the "Adaptive B-selection
+calibration" section. Check `.claude/.dag-active-lock.json` doesn't
+exist (it shouldn't — released at close) before starting any new work.
+
+### This session's outcome, in one paragraph
+
+Widened the CPU/GPU B-selection calibration from a naive rectangular
+grid to an adaptively-refined one (7-smooth skeleton + per-band
+convergence-based refinement loop), landed the new
+`tools/calibrate_block_size.py` orchestrator, fixed two real bugs found
+while running it on real hardware (a SIGFPE crash for small-`k` points,
+and a quadratic-cost cliff at large `n` with `k=n`), and regenerated
+both M3 Pro's and Zen4's B-selection tables with it. Also closed out
+every standing readiness item carried over from the prior session:
+Zen4 memory-wall documented, paper synced, codebase comments cleaned
+up, subset-dispatch path investigated (found genuinely broken, not
+fixed — new scoped follow-up below), B200's large-n B-selection
+irregularity explained (real VRAM/batch-count effect, table already
+correct). B200's own adaptive calibration run (B4) was intentionally
+skipped — see below. PR #7 merge decision is still open, unchanged.
 
 **What the board covers, in one paragraph:** both CPU (`select_best_B()`)
 and GPU (`gpu_select_best_B_est()`) dispatch now use empirical B-selection
@@ -387,6 +405,95 @@ correctness regression. Instance destroyed immediately after downloading
 results. Raw data: `results_b200_validation2/` (calibration CSV/log,
 post-fix `validate_planner_gpu` output).
 
+## Adaptive B-selection calibration methodology (2026-07-23 session)
+
+The flat 34/32-point rectangular grids behind `select_best_B()` and
+`gpu_select_best_B_est()` (see above) were themselves built cheaply and
+never adaptively refined. This session replaced the grid-generation
+step with an adaptive skeleton + per-band convergence loop, applied to
+all three platforms.
+
+### Methodology
+
+- **Skeleton**: `tools/gen_calib_skeleton.py` picks `n`-anchors
+  log-spaced then snapped to the nearest 7-smooth number (reusing the
+  exact smooth-number logic already in `src/icm.c` /
+  `src/gpu/gpu_plan.cu`, so skeleton points always match real
+  calibrated FFT sizes). For each `n`, the `k`-anchor set spans three
+  categories: `{2..16}` (tiny, exhaustive), `{s-1 : s` 7-smooth,
+  `16<s-1<=256}` (forces a small nonzero wrap-correction), and relative
+  fractions `{n/12,...,n/2,n}` — deliberately including `k=n` itself
+  (the min-cash/bubble state, where `k` is the number of payout places
+  *remaining at call time*, not the original field size, so it can be
+  most or all of a much-smaller `n` late in a tournament).
+- **Orchestrator**: `tools/calibrate_block_size.py` (one command per
+  device) runs the base skeleton sweep, injects it into
+  `fft_config.h`/`gpu_fft_config.h`, then a per-band adaptive
+  refinement loop: draw a random point in the band, probe it via the
+  single-point `validate_best_b`/`validate_planner_gpu` oracle, and if
+  the table's current choice is more than 2% off the real optimum,
+  measure that point properly and inject it into the table
+  *immediately* (so later probes benefit right away). Each band stops
+  independently on 25 consecutive clean probes, or a 150-probe safety
+  cap (a signal the region needs attention, not silently absorbed).
+  Calibration POINTS are chosen adaptively offline; runtime dispatch is
+  still pure O(1) nearest-neighbor lookup, unchanged.
+- **Primitives upgraded**: `tools/calibrate_best_b.c`/`validate_best_b.c`
+  and their GPU counterparts now take a point-list CSV instead of a
+  hardcoded grid, support a single-point-probe mode (the oracle above),
+  a `--narrow-around` flag for single-point refinement, resumability,
+  and a 1-rep-rank + confirm-if-close-top-2 timing strategy (replacing
+  median-of-N-on-every-candidate).
+
+### Two real bugs found running this on real hardware
+
+1. **SIGFPE crash on small `k`.** The B-candidate validity filter in
+   both CPU and GPU tools excluded `B > k`. For `k < 8` (smaller than
+   every candidate), that leaves zero valid candidates; the CPU tool
+   then read out-of-bounds into `B_candidates[-1]` and crashed with a
+   floating-point exception on Zen4 (twice) — undefined behavior that
+   happened not to crash on M3 Pro, purely by stack-layout luck.
+   Production's `select_best_B()`/`gpu_select_best_B_est()` don't treat
+   `B>k` as invalid (they fall back to a sane default), so all four
+   tools were fixed to match: only exclude `B>n`.
+2. **Quadratic wrap-correction cost cliff near the FFT calibration
+   ceiling.** The CPU skeleton's original `--hi` default (131072)
+   matched the FFT calibration table's own cap — but a `k=n` query
+   needs a root-level FFT size of `~2n-1`, so points with `n` near that
+   cap needed FFT sizes far outside the calibrated range. The
+   wrap-correction cost model is quadratic in that shortfall, so those
+   points took 20+ minutes each instead of seconds. Fixed by capping
+   the CPU skeleton's `--hi` at 65536, so `k=n` never needs an FFT size
+   beyond what's calibrated.
+
+### Results
+
+- **M3 Pro**: base skeleton 1117 points → 1950 adaptive probes → 1349
+  points added → final table 2466 points.
+- **Zen4**: same skeleton → 1950 probes → 827 points added → final
+  table 1944 points. Run executed on a redeployed box (`84.32.71.35`)
+  after the original instance ran out of provider credits mid-run;
+  AOCL-FFTW wisdom was ported directly from the committed
+  `devices/zen4/fftw_wisdom.dat`, never regenerated (~3.5-hour asset
+  from a much earlier session, preserved).
+- **All 13 bands hit their 150-probe safety cap without reaching the
+  25-clean-streak target, on BOTH platforms independently.** This is a
+  real finding, not noise: the 2%-gap/25-streak stopping criteria was
+  tuned tighter than actual measurement noise allows on this hardware,
+  so no band ever produced an "official" convergence signal — but the
+  adaptive loop still measurably improved both tables (827-1349 real
+  refinement points added beyond the base skeleton). If revisited,
+  either widen the gap threshold or lower the clean-streak target to
+  match real noise floors.
+- Both platforms: wisdom files verified byte-identical before/after
+  (no silent regeneration), `bench_grid verify` ALL TESTS PASSED.
+- **B200 (B4) intentionally skipped** — user decision, mid-session:
+  B200 already has a validated 12/12-match table from the earlier flat
+  32-point sweep (see B1's finding above), and given how long the
+  adaptive treatment took on CPU (multiple hours per platform), the
+  cost of the same run on a paid-by-the-hour B200 instance wasn't
+  justified when the existing table already works correctly.
+
 ## What Worked
 
 - **Always re-running the actual `icm_select_engine()` dispatch decision
@@ -472,32 +579,49 @@ post-fix `validate_planner_gpu` output).
 
 ## Next Steps
 
-> Every item below is now tracked as a node on the active
-> `SPRINT_CALIBRATION_AND_READINESS_DAG.md` board (see "START HERE" at the
-> top of this file). This list is kept for historical continuity; the
-> board is the operational source of truth for current status/progress.
-
-1. **Zen4 parallel-scaling cliff at n≥16384 — root cause confirmed**
-   (memory-bandwidth/cache-capacity wall, see finding above). Decide
-   whether to attempt a memory-footprint reduction in the hybrid engine
-   or just document it honestly as a known scaling limit — this is a
-   real design tradeoff decision, not a bug fix.
+1. ~~Zen4 parallel-scaling cliff at n≥16384~~ **DONE** — documented as a
+   known, real scaling limit in `RESULTS.md`'s Zen4 section (root cause:
+   memory-bandwidth/cache-capacity wall, confirmed via `perf stat`); no
+   fix attempted, per the default recommendation (unclear payoff vs.
+   effort).
 2. ~~Build a real empirical B-selection table for the GPU cost model~~
    **DONE** — `gpu_empirical_best_B()` + `tools/calibrate_gpu_best_b.cu`,
-   verified 12/12 match (up from 0/12) via `validate_planner_gpu`, see
-   finding above.
-3. **Paper sync**: Table 1/2 shared-k-column rework in
-   `~/Documents/ICM_paper`, using post-fix numbers; recompute the real
-   dispatch-accuracy figure (replacing a stale "95.5%" claim); strip 21
-   LaTeX em-dashes; rewrite cost-model/dispatch sections to describe the
-   empirical-table mechanism; recompile PDF, copy into
-   `paper/icm_paper.pdf` in this repo.
-4. **Codebase-wide pass to remove stray/AI-tell comments**, get the repo
-   into "neatly packaged, professional" shape matching a clean head.
-5. **Subset-query dispatch** (`n_targets > 0`) still uses the old
-   analytical formula for both decisions — check if it's actually a
-   problem before assuming it needs the same table-based treatment.
-6. **Decide with the user whether to merge PR #7.**
+   verified 12/12 match via `validate_planner_gpu`.
+3. ~~Paper sync~~ **DONE** — Table 1/2 reworked with post-fix numbers,
+   dispatch-accuracy figure recomputed, em-dashes stripped, cost-model
+   sections rewritten for the empirical-table mechanism, ATLAS citation
+   corrected, PDF recompiled and copied into `paper/icm_paper.pdf`.
+4. ~~Codebase-wide pass to remove stray/AI-tell comments~~ **DONE** —
+   repo-wide pass over `src/**`/`tools/**`, verified with a clean
+   rebuild + `bench_grid quick` before and after.
+5. **NEW, scoped this session — subset-query dispatch is measurably
+   wrong.** `icm_select_engine_ex()`'s analytical formula for
+   `n_targets > 0` picks the wrong engine by a wide margin: confirmed
+   37.1% and 45.1% slower than the correct choice at two representative
+   points (`n=4096,k=200,n_targets=1024` and
+   `n=8192,k=200,n_targets=2048`), same failure mode as the (already
+   fixed) full-equity crossover/B-selection bugs. Root cause: the
+   formula models linear subset cost as scaling with `target_frac`, but
+   the linear engine's forward pass and g-propagation are always
+   full-cost regardless of `n_targets` — only the final inner-product is
+   skipped, so real linear subset cost is ~95%+ of full cost, not the
+   ~62.5% the formula assumes at `target_frac=0.25`. **Not fixed** — the
+   real fix needs its own calibration (`(n, target_frac) → crossover_k`,
+   same empirical-table methodology as the full-equity fix already
+   shipped) and should be its own scoped board/session, not bolted onto
+   this one. Secondary, lower-priority finding: `select_best_B()`'s B
+   choice may also be ~10% suboptimal for subset queries.
+6. **Widened B-selection calibration (this session)** — see "Adaptive
+   B-selection calibration methodology" above for the full writeup.
+   Landed on M3 Pro and Zen4; B200's adaptive run intentionally skipped
+   (user decision — existing flat-grid B200 table already validated,
+   not worth the paid-instance cost). If ever revisited: consider
+   widening the 2% gap threshold or lowering the 25-clean-streak target,
+   since every band on both CPU platforms hit the 150-probe safety cap
+   without an "official" convergence signal despite real, measurable
+   table improvement.
+7. **Decide with the user whether to merge PR #7.** Still open, still
+   never auto-decided.
 
 ## Process note for future DAG boards
 
