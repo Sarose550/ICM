@@ -13,7 +13,8 @@
 #include <time.h>
 #include <fftw3.h>
 #include "icm.h"
-#include "fft_config.h"  /* device-specific calibrated FFT times */
+#include "fft_config.h"       /* device-specific calibrated FFT times */
+#include "fft_cost_model.h"   /* shared FFT cost-model decision logic */
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -716,12 +717,17 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     }
 }
 
+static inline void correlate_wrap_input_correction(double *out, int len_out,
+                                             const double *P, int len_P,
+                                             const double *g, int len_g,
+                                             int fft_n);
+
 /* Correlate via FFT (from scratch — FFTs both g and P):
  * out[m] = sum_j P[j] * g[m+j] */
 static inline __attribute__((always_inline)) void correlate_fft(const double *g, int len_g,
                           const double *P, int len_P,
                           double *out, int len_out,
-                          FFTCache *fc, int fft_n) {
+                          FFTCache *fc, int fft_n, int wrap_m) {
     FFTPlan *plan = fft_cache_get(fc, fft_n);
     fft_n = plan->fft_n;
     int cn = fft_n / 2 + 1;
@@ -752,6 +758,28 @@ static inline __attribute__((always_inline)) void correlate_fft(const double *g,
         int idx = m + offset;
         out[m] = (idx < fft_n) ? plan->rbuf[idx] * inv : 0;
     }
+
+    /* Cyclic wrap correction: this function uses P-reversed convolution
+     * (out[m] == conv_true[m+offset]) rather than conjugate-FFT
+     * correlation (no offset), so the correction must index by output
+     * position m, not the raw cyclic buffer slot. */
+    if (wrap_m > 0) {
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += P[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) out[m_low] -= high;
+            out[m_high] = high;
+        }
+    }
 }
 
 /* Correlate g with TWO polynomials, sharing the forward FFT of g.
@@ -760,7 +788,7 @@ static inline __attribute__((always_inline)) void correlate_fft(const double *g,
 static inline __attribute__((always_inline)) void correlate_fft_pair(const double *g, int len_g,
                                 const double *PL, const double *PR, int len_P,
                                 double *outL, double *outR, int len_out,
-                                FFTCache *fc, int fft_n) {
+                                FFTCache *fc, int fft_n, int wrap_m) {
     FFTPlan *plan = fft_cache_get(fc, fft_n);
     fft_n = plan->fft_n;
     int cn = fft_n / 2 + 1;
@@ -787,6 +815,23 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     int offset = len_P - 1;
     for (int m = 0; m < len_out; m++)
         outL[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
+    if (wrap_m > 0) {
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += PR[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) outL[m_low] -= high;
+            outL[m_high] = high;
+        }
+    }
 
     /* Second correlate: g × PL → outR (reuse g_hat) */
     for (int j = 0; j < len_P; j++) fc->rbuf2[j] = PL[len_P - 1 - j];
@@ -799,6 +844,23 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     fft_exec_inv(plan);
     for (int m = 0; m < len_out; m++)
         outR[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
+    if (wrap_m > 0) {
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += PL[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) outR[m_low] -= high;
+            outR[m_high] = high;
+        }
+    }
 }
 
 /* Correlate via FFT with CACHED FFT(P) — saves one forward FFT.
@@ -1125,8 +1187,6 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
              * Compare TOTAL cost (build + correlate) for both paths, since
              * choosing schoolbook for build also means schoolbook for correlate.
              * Below-sat polys have actual degree cps/2 (upper half is zero). */
-            int d_eff = is_below ? cps / 2 : cps - 1;
-            long long school_cost_flops = (long long)(d_eff + 1) * (d_eff + 1);
             int build_conv_len = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
             int bfn, bwm;
             best_fft_config(build_conv_len, &bfn, &bwm, 0);  /* polymul: no input-wrap */
@@ -1144,11 +1204,21 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
              * validated to give correct B and FFT crossover decisions.
              * The correlate cost is implicitly handled: when schoolbook wins the
              * build comparison, correlate also uses schoolbook, and the cost model
-             * in select_best_B accounts for both via the tree cost sum. */
-            double school_build = school_cost_flops * FMA_NS;
+             * in select_best_B accounts for both via the tree cost sum.
+             * Schoolbook build cost via direct per-size lookup (not FMA_NS formula). */
+            int idx;
+            { int lo=0,hi=N_CALIBRATED_SIZES-1;
+              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
+              idx=lo; }
+            double school_build = schoolbook_mul_ns[idx];
             int p_eff = is_below ? cps/2 + 1 : cps;
             int out_needed = tc->g_needed[ell-1];
-            tc->use_fft[ell] = (fft_build + fft_overhead + build_correction < school_build);
+            /* school_build < 0 is the "unmeasured size" sentinel (cps beyond
+             * bench_schoolbook_tree.c's cutoff) — schoolbook is never chosen
+             * there (FFT always wins at that size), so force FFT rather than
+             * let a negative sentinel win a naive numeric comparison. */
+            tc->use_fft[ell] = (school_build < 0.0) ||
+                                (fft_build + fft_overhead + build_correction < school_build);
 
             if (tc->use_fft[ell]) {
                 tc->build_fft_n[ell] = bfn;
@@ -1468,7 +1538,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                     } else if (use_fft) {
                         correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
                                            gL, gR, out_needed, tc->fft,
-                                           tc->corr_fft_n[ell]);
+                                           tc->corr_fft_n[ell], tc->corr_wrap_m[ell]);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
@@ -1515,7 +1585,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                     } else if (use_fft) {
                         correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
                                            gL, gR, out_needed, tc->fft,
-                                           tc->corr_fft_n[ell]);
+                                           tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
@@ -1531,7 +1601,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                                                   tc->fft, fft_R, cached_fft_n, cwm);
                     } else if (use_fft) {
                         correlate_fft(gp, g_eff, PR, p_eff, gL, out_needed,
-                                      tc->fft, tc->corr_fft_n[ell]);
+                                      tc->fft, tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                     }
@@ -1546,7 +1616,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                                                   tc->fft, fft_L, cached_fft_n, cwm);
                     } else if (use_fft) {
                         correlate_fft(gp, g_eff, PL, p_eff, gR, out_needed,
-                                      tc->fft, tc->corr_fft_n[ell]);
+                                      tc->fft, tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
                     }
@@ -2152,74 +2222,51 @@ static int select_best_B(int n, int k);
  * to be defined above (from fft_config.h). */
 #include "cost_model.h"
 
-/* Engine dispatch: compare estimated linear vs hybrid cost for given (n, k).
+/* Map candidate block size B to lookup-table index 0-5.
+ * Candidate set is {8, 16, 24, 32, 48, 64} — fixed, 6 entries.
+ * Linear scan is fine; only called from select_engine_ex/select_best_B
+ * (O(1) per call, 6 candidates max). */
+static int B_to_table_index(int B) {
+    switch (B) {
+        case 8:  return 0;
+        case 16: return 1;
+        case 24: return 2;
+        case 32: return 3;
+        case 48: return 4;
+        case 64: return 5;
+        default: return 0; /* fallback: shouldn't happen with valid candidates */
+    }
+}
+
+/* Engine dispatch: linear vs hybrid, for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.
  * n_targets: number of target players for subset queries (0 or n = all players).
- * When n_targets < n, the backward/leaf-extract phases scale with n_targets/n. */
+ *
+ * Uses the empirically-measured crossover table (src/fft_cost_model.h's
+ * empirical_crossover_k(), calibrated by tools/calibrate_crossover.c)
+ * rather than a summed analytical cost comparison. Closed-form cost models
+ * miss microarchitectural effects even when every constant is individually
+ * correct (a known result in the autotuning literature: FFTW MEASURE/PATIENT
+ * vs its ESTIMATE heuristic, ATLAS's AEOS). See LAPACK ILAENV NX for the
+ * structural precedent.
+ *
+ * The table was calibrated on full-equity queries only. It is reused here
+ * for subset queries too (n_targets < n) as an interim measure: the linear
+ * engine's forward pass and g-propagation are always full-cost regardless
+ * of n_targets, so real linear subset cost tracks full-equity cost far more
+ * closely than a target_frac-scaled model would suggest -- a dedicated
+ * (n, target_frac) -> crossover_k calibration would sharpen this further
+ * but is out of scope here. */
 static int select_engine_ex(int n, int k, int n_targets) {
+    (void)n_targets;
     if (n < 16 || k < 4) return 0;
-
-    /* target_frac: fraction of players needing equity extraction.
-     * Forward pass is always full-n; backward scales with target_frac. */
-    double target_frac = (n_targets > 0 && n_targets < n)
-                         ? (double)n_targets / (double)n : 1.0;
-
-    /* Linear cost: forward pass (full) + backward pass (scaled by target_frac).
-     * The roofline gives the combined fwd+bwd cost; approximate as 50/50 split. */
-    double linear_full = linear_roofline_cost(n, k, LINEAR_BQ);
-    double linear_per_qp = linear_full * (0.5 + 0.5 * target_frac);
 
     int B = select_best_B(n, k);
     { const char *fb = getenv("ICM_FORCE_B");
       if (fb && fb[0]) { int v = atoi(fb); if (v > 0 && v <= n && v <= k) B = v; } }
-    int nblocks = (n + B - 1) / B;
-    /* block_build: per-player FMA work + per-player memory streaming. */
-    double block_build = (double)n * ((double)(B+1) / 2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
-    TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
-    double tree = 0;
-    for (int ell = 1; ell < tc->L - 1; ell++) {
-        int cps = tc->psz[ell-1], nr = tc->n_real[ell];
-        if (tc->use_fft[ell]) {
-            int bfn = tc->build_fft_n[ell];
-            int bwm = tc->build_wrap_m[ell];
-            int idx = 0;
-            { int lo=0,hi=N_CALIBRATED_SIZES-1;
-              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-              idx=lo; }
-            double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                             + (double)bwm*(bwm+1)/2.0*FMA_NS;
-            double corr;
-            if (tc->fft_cache_ok[ell]) {
-                corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                     + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
-            } else {
-                int cfn = tc->corr_fft_n[ell];
-                int cwm = tc->corr_wrap_m[ell];
-                int cidx=0;
-                {int lo=0,hi=N_CALIBRATED_SIZES-1;
-                 while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
-                 cidx=lo;}
-                corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                     + (double)cwm*(cwm+1)*FMA_NS;
-            }
-            tree += nr * (build_fft + corr);
-        } else {
-            int d_eff = tc->below_sat[ell] ? cps/2 : cps-1;
-            double s = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
-            double c = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
-            tree += nr * (s + c);
-        }
-    }
-    tree_ctx_destroy(tc);
 
-    /* leaf_extract: ECM max(division throughput, FMA chain) + per-block overhead.
-     * For subset queries, only target players need extraction. */
-    double le_div = FP64_DIV_NS, le_fma = 2.0 * B * LEAF_FMA_NS;
-    double leaf_extract = (double)n * (le_div > le_fma ? le_div : le_fma)
-                        + (double)n / B * LEAF_BLOCK_NS;
-    double hybrid_total = block_build + tree + leaf_extract * target_frac;
-
-    return (hybrid_total < linear_per_qp) ? B : 0;
+    double k_cross = empirical_crossover_k(n);
+    return ((double)k < k_cross) ? 0 : B;
 }
 
 /* Convenience wrapper for full-equity queries (all players). */
@@ -2512,66 +2559,27 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
  * planning decisions (schoolbook vs FFT, joint vs independent, FFT sizes).
  * O(log n) per candidate, negligible vs engine work. */
 static int select_best_B(int n, int k) {
+    /* Empirically-measured 2D nearest-neighbor lookup
+     * (tools/calibrate_best_b.c). See src/fft_cost_model.h's
+     * empirical_best_B() — B is a discrete choice, not a continuous
+     * threshold, so nearest-neighbor, not interpolation.
+     *
+     * The calibration grid starts at n=512, k=150; for values outside
+     * that practical range the nearest-neighbor lookup can still return
+     * a B that doesn't fit this specific (n,k) (e.g. B=32 for n=20) --
+     * fall back to the largest valid candidate at or below n and k in
+     * that case, never invalid. */
     int candidates[] = {8, 16, 24, 32, 48, 64};
     int n_cand = 6;
-    double best_cost = 1e18;
-    int best_B = 16;
+    int emp_B = empirical_best_B(n, k);
+    int largest_valid = -1;
     for (int ci = 0; ci < n_cand; ci++) {
         int B = candidates[ci];
         if (B > k || B > n) continue;
-        int n_leaves = (n + B - 1) / B;
-        TreeCtx *tc = tree_ctx_create_ex2(n_leaves, B, k, B);
-        int L = tc->L;
-        /* block_build: per-player FMA work + per-player memory streaming.
-         * leaf_extract: ECM max(division throughput, FMA chain) + per-block overhead. */
-        double block_build = (double)n * ((double)(B+1) / 2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
-        double leaf_div = FP64_DIV_NS;
-        double leaf_fma = 2.0 * B * LEAF_FMA_NS;
-        double leaf = (double)n * (leaf_div > leaf_fma ? leaf_div : leaf_fma)
-                    + (double)n / B * LEAF_BLOCK_NS;
-        double tree = 0;
-        for (int ell = 1; ell < L - 1; ell++) {
-            int cps = tc->psz[ell-1];
-            int nr = tc->n_real[ell];
-            if (tc->use_fft[ell]) {
-                int bfn = tc->build_fft_n[ell];
-                int bwm = tc->build_wrap_m[ell];
-                int idx = 0;
-                { int lo=0,hi=N_CALIBRATED_SIZES-1;
-                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-                  idx=lo; }
-                double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                                 + (double)bwm*(bwm+1)/2.0*FMA_NS;
-                double corr;
-                if (tc->fft_cache_ok[ell]) {
-                    corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                         + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
-                } else {
-                    int cfn = tc->corr_fft_n[ell];
-                    int cwm = tc->corr_wrap_m[ell];
-                    int cidx=0;
-                    {int lo=0,hi=N_CALIBRATED_SIZES-1;
-                     while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
-                     cidx=lo;}
-                    corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                         + (double)cwm*(cwm+1)*FMA_NS;
-                }
-                tree += nr * (build_fft + corr);
-            } else {
-                int is_below = tc->below_sat[ell];
-                int d_eff = is_below ? cps/2 : cps-1;
-                double school_mul, school_corr;
-                    school_mul = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
-                /* Correlate uses scalar (inner loop is memory-bound at FMA_NS) */
-                school_corr = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
-                tree += nr * (school_mul + school_corr);
-            }
-        }
-        tree_ctx_destroy(tc);
-        double total = block_build + leaf + tree;
-        if (total < best_cost) { best_cost = total; best_B = B; }
+        if (B == emp_B) return B;
+        if (B > largest_valid) largest_valid = B;
     }
-    return best_B;
+    return (largest_valid > 0) ? largest_valid : 8;
 }
 
 /* ==============================================================

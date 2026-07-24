@@ -300,12 +300,14 @@ void build_tree_geometry(int n_leaves, int leaf_degree, int k_pad,
                          std::vector<int> &n_real, int &N, int &L);
 double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &smooth);
 int gpu_select_best_B_est(int n, int k_pad, const std::vector<int> &smooth);
+int gpu_empirical_best_B(int n, int k);
 int gpu_select_engine_est(int n, int k_pad, int B, const std::vector<int> &smooth);
 bool build_plan_metadata(GpuPlan *plan);
 bool device_sort_players(GpuPlan *plan);
 bool allocate_plan_device_memory(GpuPlan *plan);
 bool choose_uncached_levels(GpuPlan *plan);
 bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist = 0);
+size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb);
 
 #if ICM_HAVE_VKFFT
 /* VkFFT plan creation and dispatch helpers (gpu_plan.cu / gpu_exec.cu) */

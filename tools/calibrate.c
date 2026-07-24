@@ -116,9 +116,21 @@ static double measure_bw(size_t bytes) {
     if (reps < 10) reps = 10;
     if (reps > 100000) reps = 100000;
 
+    /* The inner loop body doesn't depend on r, so a[i]=b[i]*s+c[i] computes
+     * the identical value on every repetition. Without a barrier, -O3 can
+     * (and on Zen4/GCC, does) prove the repeated stores are redundant and
+     * collapse the whole outer loop to ~1 real pass while `reps` full
+     * passes are still charged in total_bytes below -- inflating the
+     * reported bandwidth by ~reps x. The asm volatile forces the compiler
+     * to treat memory as externally observed after each pass, so it can't
+     * eliminate the "redundant" work. (Confirmed post hoc: dividing the
+     * pre-fix Zen4 numbers by their respective reps gives 112/34/32 GB/s
+     * for L2/L3/DRAM -- physically plausible -- matching this exactly.) */
     double t0 = now_ns();
-    for (int r = 0; r < reps; r++)
+    for (int r = 0; r < reps; r++) {
         for (size_t i = 0; i < n; i++) a[i] = b[i] * s + c[i];
+        __asm__ __volatile__("" : : "r"(a) : "memory");
+    }
     double elapsed_ns = now_ns() - t0;
 
     volatile double sink = a[n/2];

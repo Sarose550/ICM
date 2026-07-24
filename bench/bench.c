@@ -422,8 +422,17 @@ int main(int argc, char **argv) {
         int Q = 256;
         int sweep_ns[] = {512, 1024, 2048, 4096, 8192};
         int n_sweep = 5;
-        int sweep_ks[] = {40, 50, 60, 70, 75, 80, 85, 90, 95, 100, 110, 120, 130, 140, 150};
-        int n_ks = 15;
+        /* Coarse coverage across full range + fine bracket around L→H
+         * transition.  Probe on Zen4 (2025-07-22) showed transition at
+         * k≈275 for all n∈{512,1024,2048,4096,8192}.  This single shared
+         * k-list brackets the transition tightly for all n rows:
+         *   - Coarse below: 40, 80, 120, 160, 200
+         *   - Fine bracket:  240…340 (every 10-20)
+         *   - Coarse above: 400, 500, 750, 1000, 1500, 2000
+         */
+        int sweep_ks[] = {40, 80, 120, 160, 200, 240, 260, 270, 280, 290,
+                          300, 310, 320, 340, 400, 500, 750, 1000, 1500, 2000};
+        int n_ks = 20;
 
         printf("=== LINEAR vs HYBRID CROSSOVER SWEEP (ms, Q=%d) ===\n\n", Q);
         printf("%-6s", "n\\k");

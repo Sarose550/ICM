@@ -730,7 +730,43 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
 
 /* ── B selection / engine dispatch ─────────────────────────────── */
 
+/* 2D nearest-neighbor lookup over the calibrated (n,k,B) grid
+ * in devices/<DEVICE>/gpu_fft_config.h (gbselect_n[]/gbselect_k[]/
+ * gbselect_B[], produced by tools/calibrate_gpu_best_b.c).
+ * B is a discrete choice among kBCandidates, so nearest-neighbor
+ * (not interpolation) is the right lookup. */
+int gpu_empirical_best_B(int n, int k) {
+    double log_n = log((double)n);
+    int best_n = gbselect_n[0];
+    double best_n_dist = fabs(log_n - log((double)gbselect_n[0]));
+    for (int i = 1; i < GPU_N_BSELECT_POINTS; i++) {
+        double d = fabs(log_n - log((double)gbselect_n[i]));
+        if (d < best_n_dist) { best_n_dist = d; best_n = gbselect_n[i]; }
+    }
+    double log_k = log((double)k);
+    int best_B = 64; /* sane fallback; overwritten below as long as the table is non-empty */
+    double best_k_dist = 1e18;
+    for (int i = 0; i < GPU_N_BSELECT_POINTS; i++) {
+        if (gbselect_n[i] != best_n) continue;
+        double d = fabs(log_k - log((double)gbselect_k[i]));
+        if (d < best_k_dist) { best_k_dist = d; best_B = gbselect_B[i]; }
+    }
+    return best_B;
+}
+
 int gpu_select_best_B_est(int n, int k_pad, const std::vector<int> &smooth) {
+    int emp_B = gpu_empirical_best_B(n, k_pad);
+    int largest_valid = -1;
+    for (int i = 0; i < MAX_B_CANDIDATES; ++i) {
+        int B = kBCandidates[i];
+        if (B > n || B > k_pad) continue;
+        if (B == emp_B) return B;
+        if (B > largest_valid) largest_valid = B;
+    }
+    if (largest_valid > 0) return largest_valid;
+
+    /* No candidate fits n/k_pad at all (shouldn't happen in practice) —
+     * fall back to the analytical estimate. */
     CandidateCost best{};
     best.B = 16;
     for (int i = 0; i < MAX_B_CANDIDATES; ++i) {
@@ -1166,6 +1202,47 @@ bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_d
     return true;
 }
 
+/* ── cuFFT workspace estimation ────────────────────────────────── */
+
+/* Create trial cuFFT plans at candidate qb, query their work_size
+ * (zero VRAM committed: auto-allocation is disabled), take the max
+ * across all FFT levels, then destroy all trial plans.
+ * Returns SIZE_MAX if any trial plan creation fails (infeasible qb). */
+size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb) {
+    size_t max_ws = 0;
+    for (int ell = 1; ell < plan->L; ++ell) {
+        auto &lp = plan->levels[ell];
+        if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
+        int fft_n = lp.fft_n;
+        int child_batch = plan->nn[ell - 1];
+        int parent_batch = plan->nn[ell];
+
+        cufftHandle plans[4] = {0, 0, 0, 0};
+        int n_created = 0;
+        if (!create_cufft_plan(&plans[0], fft_n, qb * child_batch, true))   goto infeasible;
+        n_created = 1;
+        if (!create_cufft_plan(&plans[1], fft_n, qb * parent_batch, false)) goto infeasible;
+        n_created = 2;
+        if (!create_cufft_plan(&plans[2], fft_n, qb * parent_batch, true))  goto infeasible;
+        n_created = 3;
+        if (!create_cufft_plan(&plans[3], fft_n, qb * 2 * parent_batch, false)) goto infeasible;
+        n_created = 4;
+
+        for (int i = 0; i < 4; ++i) {
+            size_t ws = 0;
+            cufftGetSize(plans[i], &ws);
+            if (ws > max_ws) max_ws = ws;
+        }
+        for (int i = 0; i < 4; ++i) cufftDestroy(plans[i]);
+        continue;
+
+    infeasible:
+        for (int i = 0; i < n_created; ++i) cufftDestroy(plans[i]);
+        return SIZE_MAX;
+    }
+    return max_ws;
+}
+
 #if ICM_HAVE_VKFFT
 /* ── VkFFT plan helpers ───────────────────────────────────────── */
 
@@ -1576,7 +1653,37 @@ retry_arena:
             if (plan->corr_fft[ell].plan_inv) { cufftGetSize(plan->corr_fft[ell].plan_inv, &ws); max_ws = std::max(max_ws, ws); }
         }
         if (max_ws > 0) {
-            if (!alloc_device(plan, &plan->shared_cufft_workspace, max_ws, plan->stream_compute)) return false;
+            if (!alloc_device(plan, &plan->shared_cufft_workspace, max_ws, plan->stream_compute)) {
+                if (plan->q_batch > 1 && arena_retries < 4) {
+                    for (int e = 1; e < plan->L; ++e) {
+                        auto &bf = plan->build_fft[e];
+                        auto &cf = plan->corr_fft[e];
+#if ICM_HAVE_VKFFT
+                        if (bf.vkfft_fwd_initialized) { destroy_vkfft_app(&bf.vkfft_app_fwd); bf.vkfft_fwd_initialized = 0; }
+                        if (bf.vkfft_inv_initialized) { destroy_vkfft_app(&bf.vkfft_app_inv); bf.vkfft_inv_initialized = 0; }
+                        if (cf.vkfft_fwd_initialized) { destroy_vkfft_app(&cf.vkfft_app_fwd); cf.vkfft_fwd_initialized = 0; }
+                        if (cf.vkfft_inv_initialized) { destroy_vkfft_app(&cf.vkfft_app_inv); cf.vkfft_inv_initialized = 0; }
+#endif
+                        if (bf.plan_fwd) { cufftDestroy(bf.plan_fwd); bf.plan_fwd = 0; }
+                        if (bf.plan_inv) { cufftDestroy(bf.plan_inv); bf.plan_inv = 0; }
+                        if (cf.plan_fwd) { cufftDestroy(cf.plan_fwd); cf.plan_fwd = 0; }
+                        if (cf.plan_inv) { cufftDestroy(cf.plan_inv); cf.plan_inv = 0; }
+                    }
+                    cudaFree(plan->arena_base); plan->arena_base = nullptr;
+                    plan->arena_total_bytes = 0;
+                    plan->peak_vram_bytes = 0;
+                    plan->current_vram_bytes = 0;
+                    cudaStreamDestroy(plan->stream_compute); plan->stream_compute = nullptr;
+                    cudaStreamDestroy(plan->stream_aux);     plan->stream_aux = nullptr;
+                    cudaEventDestroy(plan->evt_a_ready[0]);  plan->evt_a_ready[0] = nullptr;
+                    cudaEventDestroy(plan->evt_a_ready[1]);  plan->evt_a_ready[1] = nullptr;
+                    if (plan->evt_prop_done) { cudaEventDestroy(plan->evt_prop_done); plan->evt_prop_done = nullptr; }
+                    plan->q_batch = std::max(1, plan->q_batch / 2);
+                    arena_retries++;
+                    goto retry_arena;
+                }
+                return false;
+            }
             plan->shared_cufft_workspace_bytes = max_ws;
             for (int ell = 1; ell < plan->L; ++ell) {
                 auto &lp = plan->levels[ell];

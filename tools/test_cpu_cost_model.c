@@ -350,8 +350,7 @@ static void test_wrap_formula_consistency(void) {
                   "nblocks=%d B=%d ell=%d bwm=%d expected=%d (bfn=%d conv=%d)",
                   nblocks, B, ell, bwm, expected_bwm, bfn, conv_build);
 
-            /* Verify the build wrap cost formula: bwm*(bwm+1)/2
-             * (NOT (bwm+1)^2 which was the old bug) */
+            /* Verify the build wrap cost formula: bwm*(bwm+1)/2 */
             double correct_build_wrap = (double)bwm * (bwm + 1) / 2.0 * FMA_NS;
             double wrong_build_wrap = (double)(bwm + 1) * (bwm + 1) * FMA_NS;
             if (bwm > 0) {

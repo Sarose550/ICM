@@ -43,11 +43,11 @@ static inline double blended_bw(double bytes) {
  * Cost estimate for the batched linear engine (per quadrature point).
  *
  * The batched linear engine is compute-bound for all realistic (n,k):
- * it performs ~4*n*k fused multiply-add operations per quadrature point
- * (forward: ~1*n*k, backward: ~3*n*k).  The arithmetic intensity of the
- * inner loop (~0.5 FMA/byte) exceeds the machine balance point on modern
- * hardware (e.g. ~0.06 FMA/byte at ~350 GB/s, ~4 TFLOPS), so
- * memory bandwidth is not the bottleneck.
+ * it performs ~5*n*k fused multiply-add operations per quadrature point
+ * (forward pass: BQ*(2k-1) FMAs/player; fused backward pass:
+ * BQ*(3k-1) FMAs/player -- ~5k total per player, not 4k). The arithmetic
+ * intensity of the inner loop exceeds the machine balance point on modern
+ * hardware, so memory bandwidth is not the bottleneck.
  *
  * When checkpointing is required (working set > L2), there is an additional
  * outer I/O cost for checkpoint writes/reads and a_batch reloads.
@@ -56,12 +56,16 @@ static inline double blended_bw(double bytes) {
  *
  * Returns estimated nanoseconds per quadrature point.
  *
- * Requires: FMA_NS, L2_CACHE_SIZE, L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS
- * (from fft_config.h).
+ * Requires: BATCHED_FMA_NS, L2_CACHE_SIZE, L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS
+ * (from fft_config.h). BATCHED_FMA_NS is fit directly against real
+ * icm_run_linear_batched() measurements -- NOT the same as FMA_NS (which
+ * comes from an unrelated scalar schoolbook microbenchmark and does not
+ * represent this engine's real interleaved BQ=8 inner loop; reusing it
+ * underpredicted real cost by ~1.73-1.80x). See fft_config.h.
  */
 static inline double linear_roofline_cost(int n, int k, int batch_width) {
-    /* Core compute: ~4*n*k FMAs per Q-point (empirically verified within 6%). */
-    double compute_ns = 4.0 * n * k * FMA_NS;
+    /* Core compute: ~5*n*k FMAs per Q-point, directly calibrated. */
+    double compute_ns = 5.0 * n * k * BATCHED_FMA_NS;
 
     int C = (int)((size_t)L2_CACHE_SIZE / ((size_t)k * batch_width * sizeof(double)));
     if (C < 1) C = 1;

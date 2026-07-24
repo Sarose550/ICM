@@ -1558,4 +1558,26 @@ static const double gpu_calib_cufftdx_r2c_corr_ns[GPU_N_CALIBRATED_SIZES] = {
 #define GPU_VRAM_BYTES (191503007744ULL)
 #define GPU_SM_COUNT 148
 
+/* ── Empirical hybrid-engine block-size (B) lookup ────────────────────
+ * Measured by tools/calibrate_gpu_best_b.cu (median of 3 reps, Q=256).
+ * See src/gpu/gpu_plan.cu's gpu_empirical_best_B() for how this is
+ * consulted (2D nearest-neighbor lookup — B is discrete, no
+ * interpolation). */
+#define GPU_N_BSELECT_POINTS 32
+static const int gbselect_n[GPU_N_BSELECT_POINTS] = {
+    4096,4096,4096,4096,16384,16384,16384,16384,65536,65536,65536,65536,
+    131072,131072,131072,131072,262144,262144,262144,262144,524288,524288,524288,524288,
+    1048576,1048576,1048576,1048576,1572864,1572864,1572864,1572864,
+};
+static const int gbselect_k[GPU_N_BSELECT_POINTS] = {
+    512,1024,2048,4096,2048,4096,8192,16384,8192,16384,32768,65536,
+    16384,32768,65536,131072,32768,65536,131072,262144,65536,131072,262144,524288,
+    131072,262144,524288,1048576,196608,393216,786432,1572864,
+};
+static const int gbselect_B[GPU_N_BSELECT_POINTS] = {
+    64,64,64,64,64,64,64,64,64,64,64,64,
+    64,64,64,64,64,64,64,64,64,64,64,64,
+    32,32,32,32,96,192,112,112,
+};
+
 #endif

@@ -176,9 +176,27 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         }
         int qb = qb_override ? qb_override : best_qb;
         if (plan->opts.enable_graphs) qb = 1;
+
+        /* Proactive cuFFT workspace check: query real workspace size at
+         * candidate qb before committing any VRAM.  Halve qb until the
+         * total (arena estimate + cuFFT workspace) fits within budget.
+         * qb=1 is accepted unconditionally — the reactive retry in
+         * allocate_plan_device_memory() remains as a fallback. */
+        size_t cufft_ws = 0;
+        if (!qb_override && !plan->opts.enable_graphs) {
+            while (true) {
+                cufft_ws = estimate_cufft_workspace_bytes(plan, qb);
+                bool fits = (cufft_ws != SIZE_MAX) &&
+                            (per_q_bytes * (size_t)qb + cufft_ws <= budget);
+                if (fits || qb == 1) break;
+                qb = std::max(1, qb / 2);
+            }
+            if (cufft_ws == SIZE_MAX) cufft_ws = 0;
+        }
+
         if (getenv("ICM_GPU_DEBUG_PLAN"))
-            fprintf(stderr, "  q_batch=%d (budget=%.0f MB, per_q=%.0f MB, graphs=%d)\n",
-                    qb, budget/1e6, per_q_bytes/1e6, plan->opts.enable_graphs);
+            fprintf(stderr, "  q_batch=%d (budget=%.0f MB, per_q=%.0f MB, cufft_ws=%.1f MB, graphs=%d)\n",
+                    qb, budget/1e6, per_q_bytes/1e6, cufft_ws/1e6, plan->opts.enable_graphs);
         plan->q_batch = qb;
     }
 
