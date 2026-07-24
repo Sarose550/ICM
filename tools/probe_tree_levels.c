@@ -536,7 +536,7 @@ int main(void) {
     dump_plan(8192, 400, 8);
     dump_plan(16384, 400, 8);
 
-    /* Also try B=32 for comparison (known to hit uncached on Zen4) */
+    /* Also try B=32 for comparison */
     fprintf(stderr, "=== Plan diagnostics (B=32) ===\n");
     dump_plan(4096, 400, 32);
     dump_plan(16384, 400, 32);

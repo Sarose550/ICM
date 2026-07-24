@@ -515,10 +515,10 @@ def main():
             print(f"  INDEP_PAIR_RATIO          = (not provided — will not be written)")
 
         # Optionally report against sample_plans for diagnostics
-        # (uses the old scalar block/leaf model — approximate only)
+        # (uses scalar block/leaf model — approximate only)
         if plans:
             print(f"\n(Reporting against sample_plans for diagnostic purposes —")
-            print(f" block/leaf constants are now per-B lookup tables; the old")
+            print(f" block/leaf constants are now per-B lookup tables; the")
             print(f" scalar model used here is only approximate.)")
             report(params, plans, calib, pins=pins)
 

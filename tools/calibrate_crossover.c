@@ -58,8 +58,7 @@ static double time_linear(int n, int k, const double *S, const double *payout,
 }
 
 /* Median real per-QP time for the hybrid engine at (n,k), fresh context
- * each rep (matches a real single icm_equity() call's cold allocation --
- * same discipline as this session's leaf/linear fixes). */
+ * each rep. */
 static double time_hybrid(int n, int k, const double *S, const double *payout,
                            double *equity) {
     double samples[N_REPS];

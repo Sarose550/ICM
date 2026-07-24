@@ -31,19 +31,13 @@
  * closed-form cost model, consulted at runtime as a cheap threshold
  * comparison. No live racing of both candidates in production.
  *
- * Rationale: every individual constant feeding the summed analytical
- * cost formula (calib_times_ns[], WRAP_FMA_NS, the ratio constants,
- * leaf/block/linear per-element costs) has been directly validated
- * against real embedded execution, yet the AGGREGATE go/no-go decision
- * still didn't match the true measured crossover on real hardware (this
- * was chased at length on both M3 Pro and Zen4). This matches a known
- * result in the autotuning literature (FFTW's PATIENT/MEASURE modes vs
- * its own ESTIMATE heuristic; ATLAS's AEOS install-time search): closed-
- * form cost models miss microarchitectural effects that are hard to
- * represent as summed terms, even when every constant is individually
- * correct. The fix is to stop summing terms for the FINAL decision and
- * measure the real crossover directly instead (tools/calibrate_crossover.c),
- * baking the result into a small per-device table.
+ * Closed-form cost models miss microarchitectural effects that are hard
+ * to represent as summed terms, even when every constant is individually
+ * correct (a known result in the autotuning literature: FFTW's
+ * PATIENT/MEASURE vs its ESTIMATE heuristic, ATLAS's AEOS install-time
+ * search). The fix is to measure the real crossover directly
+ * (tools/calibrate_crossover.c), baking the result into a small per-
+ * device table.
  *
  * Requires (from the including translation unit's fft_config.h):
  *   N_CROSSOVER_POINTS
@@ -53,8 +47,7 @@
  * Scope: this covers FULL-equity dispatch only (n_targets == 0). Subset
  * queries (n_targets > 0) still use the analytical formula in
  * select_engine_ex(), since the empirical table was calibrated only for
- * the full-equity case and subset behavior was never measured directly --
- * revisit if subset dispatch is shown to need the same fix. */
+ * the full-equity case. */
 static double empirical_crossover_k(int n) {
     int lo = 0, hi = N_CROSSOVER_POINTS - 1;
     if (n <= crossover_n[0]) return (double)crossover_k[0];
@@ -76,13 +69,8 @@ static double empirical_crossover_k(int n) {
 /* ── Empirical hybrid-engine block-size (B) lookup ────────────────────
  *
  * select_best_B() (src/icm.c) chooses which block size B in
- * {8,16,24,32,48,64} the hybrid engine uses, via the same summed-
- * analytical-constants approach as the (now-fixed) linear-vs-hybrid
- * crossover. Direct validation (tools/validate_best_b.c) confirmed the
- * SAME class of error: measurably wrong by 7-11% on M3 Pro (systematic
- * bias toward B=64 when B=32 real-wins) and 2-9% on Zen4 (bias toward
- * B=48 when B=24 real-wins) -- same root cause, same direction
- * (overestimating the benefit of larger B), as the crossover decision.
+ * {8,16,24,32,48,64} the hybrid engine uses, via 2D nearest-neighbor
+ * lookup over a calibrated (n,k,B) grid (see tools/calibrate_best_b.c).
  *
  * Unlike the crossover table (a continuous threshold, log-linearly
  * interpolated), B is a discrete/categorical choice -- there is no

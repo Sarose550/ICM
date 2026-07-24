@@ -730,17 +730,11 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
 
 /* ── B selection / engine dispatch ─────────────────────────────── */
 
-/* Empirical 2D nearest-neighbor lookup over the calibrated (n,k,B) grid
+/* 2D nearest-neighbor lookup over the calibrated (n,k,B) grid
  * in devices/<DEVICE>/gpu_fft_config.h (gbselect_n[]/gbselect_k[]/
- * gbselect_B[], produced by tools/calibrate_gpu_best_b.c). Same rationale
- * and structure as src/fft_cost_model.h's empirical_best_B() on CPU: B is
- * a discrete choice among kBCandidates, so nearest-neighbor (not
- * interpolation) is the right lookup. Confirmed via
- * tools/validate_planner_gpu.cu that the old summed-analytical estimate
- * below (estimate_candidate_cost) is measurably wrong (12/12 mismatches
- * at n>=65536, systematically picking B=128 over the real-optimal B=64,
- * 2-4% slower) — same failure mode as the CPU select_best_B() bug fixed
- * earlier this session. */
+ * gbselect_B[], produced by tools/calibrate_gpu_best_b.c).
+ * B is a discrete choice among kBCandidates, so nearest-neighbor
+ * (not interpolation) is the right lookup. */
 int gpu_empirical_best_B(int n, int k) {
     double log_n = log((double)n);
     int best_n = gbselect_n[0];

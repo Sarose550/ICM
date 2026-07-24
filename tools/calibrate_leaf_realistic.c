@@ -197,7 +197,7 @@ int main(void) {
     int B_vals[] = {8, 16, 24, 32, 48, 64};
     printf("# Realistic-data leaf calibration (n=%d, Q=%d, %d reps median)\n",
            N_CAL, Q_PROBE, N_REPS);
-    printf("# Fixes bench_leaf_fma.c's forward-path-only synthetic data bug\n");
+    printf("# Uses real hybrid engine with backward pass, not synthetic forward-only data\n");
     printf("# B,ns_per_player\n");
 
     printf("\nLEAF_FMA_NS_PER_PLAYER_TABLE\n");

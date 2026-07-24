@@ -717,9 +717,6 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     }
 }
 
-/* Forward declaration: defined below, needed by correlate_fft's wrap
- * correction (added after the initial version lacked it -- see the fix
- * note in correlate_fft). */
 static inline void correlate_wrap_input_correction(double *out, int len_out,
                                              const double *P, int len_P,
                                              const double *g, int len_g,
@@ -762,21 +759,10 @@ static inline __attribute__((always_inline)) void correlate_fft(const double *g,
         out[m] = (idx < fft_n) ? plan->rbuf[idx] * inv : 0;
     }
 
-    /* wrap_m > 0: fft_n was chosen smaller than the full convolution length
-     * (len_g + len_P - 1), so cyclic aliasing must be corrected. This
-     * function computes correlation via a P-reversed cyclic convolution
-     * (out[m] == conv_true[m+offset], offset = len_P-1) -- a different
-     * indexing scheme from correlate_fft_cached_*_wrap (conjugate-FFT
-     * correlation, no offset), so the correction must be expressed in
-     * terms of the OUTPUT index m, not the raw cyclic buffer position.
-     * For i=0..wrap_m, r=fft_n+i is the true (unshifted) position that
-     * aliases into cyclic slot i; its output index is m_high=r-offset,
-     * and slot i's own output index (if any) is m_low=i-offset. Without
-     * this, positions beyond fft_n were silently left at 0 instead of
-     * their true value -- a real bug found via Zen4 dispatch differing
-     * from M3 Pro's at small tree sizes (this path is only used at the
-     * tree root, which never picked a wrap-requiring size on M3 Pro's
-     * calibration data, masking the bug there). */
+    /* Cyclic wrap correction: this function uses P-reversed convolution
+     * (out[m] == conv_true[m+offset]) rather than conjugate-FFT
+     * correlation (no offset), so the correction must index by output
+     * position m, not the raw cyclic buffer slot. */
     if (wrap_m > 0) {
         int conv_len = len_g + len_P - 1;
         for (int i = 0; i <= wrap_m; i++) {
@@ -830,16 +816,6 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     for (int m = 0; m < len_out; m++)
         outL[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
     if (wrap_m > 0) {
-        /* correlate_fft_pair computes correlation via a P-reversed cyclic
-         * convolution: out[m] == conv_true[m+offset] (offset = len_P-1).
-         * This is a DIFFERENT indexing scheme from correlate_fft_cached_*_wrap
-         * (which uses conjugate-FFT correlation directly, no offset) -- the
-         * "high"/"pos" correction cannot be copied verbatim between the two;
-         * it must be expressed in terms of the OUTPUT index m, not the raw
-         * cyclic buffer position. For i=0..wrap_m, r=fft_n+i is the true
-         * (unshifted) position that aliases into cyclic slot i; its output
-         * index is m_high = r-offset, and the position i's own output index
-         * (if any) is m_low = i-offset. */
         int conv_len = len_g + len_P - 1;
         for (int i = 0; i <= wrap_m; i++) {
             int r = fft_n + i;
@@ -2343,22 +2319,16 @@ static int select_engine_ex(int n, int k, int n_targets) {
 
     /* Full-equity queries (n_targets == 0): use the empirically-measured
      * crossover table instead of the summed analytical cost comparison.
-     * Every individual constant feeding hybrid_total/linear_per_qp was
-     * validated against real embedded execution, yet the aggregate
-     * go/no-go decision still didn't match the real measured crossover
-     * on real hardware (chased at length on both M3 Pro and Zen4) --
-     * matches a known result in the autotuning literature (FFTW
-     * MEASURE/PATIENT vs its own ESTIMATE heuristic; ATLAS's AEOS):
-     * closed-form cost models miss microarchitectural effects even when
-     * every constant is individually correct. See
-     * src/fft_cost_model.h's empirical_crossover_k() (LAPACK ILAENV NX
-     * precedent) and tools/calibrate_crossover.c for the calibration.
+     * Closed-form cost models miss microarchitectural effects even when
+     * every constant is individually correct (a known result in the
+     * autotuning literature: FFTW MEASURE/PATIENT vs its ESTIMATE
+     * heuristic, ATLAS's AEOS). See src/fft_cost_model.h's
+     * empirical_crossover_k() (LAPACK ILAENV NX precedent) and
+     * tools/calibrate_crossover.c for the calibration.
      *
      * Subset queries (n_targets > 0) still use the analytical comparison
      * above -- the empirical table was only calibrated for full-equity
-     * dispatch; subset behavior was never measured directly. B selection
-     * (select_best_B, above) is untouched either way -- only the
-     * linear-vs-hybrid boundary changes. */
+     * dispatch. */
     if (n_targets <= 0 || n_targets >= n) {
         double k_cross = empirical_crossover_k(n);
         return ((double)k < k_cross) ? 0 : B;
@@ -2657,15 +2627,10 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
  * planning decisions (schoolbook vs FFT, joint vs independent, FFT sizes).
  * O(log n) per candidate, negligible vs engine work. */
 static int select_best_B(int n, int k) {
-    /* Empirically-measured lookup (tools/calibrate_best_b.c), replacing
-     * the old summed-analytical-constants comparison -- validated
-     * (tools/validate_best_b.c) that the analytical version was
-     * measurably wrong (7-11% slower on M3 Pro, 2-9% on Zen4, same
-     * systematic bias toward oversized B as the linear-vs-hybrid
-     * crossover had before its own fix). See
-     * src/fft_cost_model.h's empirical_best_B() (2D nearest-neighbor,
-     * not interpolation -- B is a discrete choice, not a continuous
-     * threshold).
+    /* Empirically-measured 2D nearest-neighbor lookup
+     * (tools/calibrate_best_b.c). See src/fft_cost_model.h's
+     * empirical_best_B() — B is a discrete choice, not a continuous
+     * threshold, so nearest-neighbor, not interpolation.
      *
      * The calibration grid starts at n=512, k=150; for values outside
      * that practical range the nearest-neighbor lookup can still return
