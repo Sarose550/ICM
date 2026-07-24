@@ -8,7 +8,7 @@ Q=256 quadrature points.
 > FFTW PATIENT calibration on Apple M3 Pro (6P+6E, 12 logical cores). `WRAP_FMA_NS`
 > and `FP64_DIV_NS` are directly measured via isolated microbenchmarks
 > (`tools/bench_wrap_fma.c`, `tools/bench_div_chain.c`) rather than recovered
-> from aggregate regression — see [Calibration methodology](#calibration-methodology) below.
+> from aggregate regression, see [Calibration methodology](#calibration-methodology) below.
 > Engine dispatch: `select_engine()` cost-based, B auto-selected (typically B=32).
 
 ### Performance (ms, uniform stacks, median of 5) - M3 Pro
@@ -112,10 +112,10 @@ Serial: interpolated from bench_grid (n=16,384 at 778 ms, n=32,768 at 1,970 ms).
 
 > AOCL-FFTW (AMD's official znver4-tuned build, tag 5.3) is the sole FFT backend.
 > A direct A/B test confirmed AOCL is cleanly faster than plain system FFTW at every
-> calibrated size — no dual dispatch. All numbers below are from a box running under
+> calibrated size, no dual dispatch. All numbers below are from a box running under
 > the `performance` cpufreq governor (16 physical cores, SMT off for benchmarking,
 > `OMP_NUM_THREADS=16` for parallel). `WRAP_FMA_NS=0.40` is directly measured via
-> `tools/bench_wrap_fma.c` — see [Calibration methodology](#calibration-methodology).
+> `tools/bench_wrap_fma.c`, see [Calibration methodology](#calibration-methodology).
 
 ### Performance (ms, uniform stacks, median of 5) - Zen 4
 
@@ -207,18 +207,18 @@ At the 1-second boundary (from regenerated contour sweep, Q=256):
 Parallel speedup on the 16-physical-core 7950X is a healthy 10–13.5x below
 n=16,384 (e.g. n=8,192, k=n: 10.0x) but falls to ~3.3x at n=16,384 and stays
 there through n=65,536 (k=n). This is a genuine memory-bandwidth/cache-capacity
-wall, not a thread-affinity, NUMA, or CCD-migration bug — confirmed directly
+wall, not a thread-affinity, NUMA, or CCD-migration bug, confirmed directly
 via `perf stat` (n=8,192 healthy: IPC=1.53, 4.4% cache-miss rate; n=16,384
-collapsed: IPC=0.57, 10.5% cache-miss rate — cycles grew 6.3x while
+collapsed: IPC=0.57, 10.5% cache-miss rate, cycles grew 6.3x while
 instructions only grew 2.35x, i.e. the extra time is memory stalls, not more
 work). `OMP_PROC_BIND=close/spread` and explicit `taskset`/`GOMP_CPU_AFFINITY`
 pinning to all 16 physical cores were tested directly and did not recover
-speedup, ruling out cross-CCD (2×8-core, 2×32MB L3) placement as the cause —
+speedup, ruling out cross-CCD (2×8-core, 2×32MB L3) placement as the cause ,
 consistent with the aggregate working set across 16 concurrently-running
 hybrid-engine FFT trees exceeding the combined 64MB L3 capacity somewhere
 between n=8,192 and n=16,384, forcing DRAM traffic that 16 threads then
 contend over. Documented here as a known, real scaling limit rather than
-scoped as a fix — reducing the hybrid engine's per-thread memory footprint at
+scoped as a fix, reducing the hybrid engine's per-thread memory footprint at
 large n would need its own dedicated pass with unclear payoff.
 
 ### 1-second threshold: n ≈ 29,000 (k=n, single-threaded), n ≈ 70,000 (k=n, 16-thread)
@@ -233,7 +233,7 @@ AOCL-FFTW (AMD's official znver4-tuned build) is the only FFT backend for Zen 4.
 A direct A/B test at n=32768,k=n confirmed AOCL is 20–25% faster than plain system
 FFTW at the raw kernel level, reproducible across repeated runs. Per-level FFT-size
 selection uses `best_fft_config()` driven by `calib_times_ns[]` (749 calibrated sizes,
-AOCL PATIENT wisdom). No `calib_lib[]` array exists — the earlier claim of
+AOCL PATIENT wisdom). No `calib_lib[]` array exists, the earlier claim of
 "AOCL-FFTW+MKL dual dispatch, 637 vs 112 sizes" in prior versions of this document
 traced to measurements on a different box that never had AOCL-FFTW installed.
 
@@ -266,10 +266,10 @@ to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 
 ### Zen 4 specific
 
-- AOCL-FFTW (znver4-tuned, tag 5.3) — sole FFT backend, 20–25% faster than plain FFTW
+- AOCL-FFTW (znver4-tuned, tag 5.3), sole FFT backend, 20–25% faster than plain FFTW
 - BQ=8 batched linear with interleaved layout (native AVX-512 width)
 - L2-aware checkpointing with 1MB per-core L2
-- B=24/32 — cost model adapts to Zen 4's wider schoolbook-FFT crossover.
+- B=24/32, cost model adapts to Zen 4's wider schoolbook-FFT crossover.
   Empirical B-selection table in `devices/zen4/fft_config.h`: B=32 in 21/34 grid points,
   B=24 in the remaining 13 (see `results/b_optimal_report_zen4.md`).
 
@@ -298,25 +298,25 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 
 | Constant | Value | Notes |
 |---|---|---|
-| `FMA_NS` | 0.0500 | Scalar FMA cost. Fit lower bound — hit its limit when `WRAP_FMA_NS` and `FP64_DIV_NS` were pinned; see caveat below. |
+| `FMA_NS` | 0.0500 | Scalar FMA cost. Fit lower bound, hit its limit when `WRAP_FMA_NS` and `FP64_DIV_NS` were pinned; see caveat below. |
 | `WRAP_FMA_NS` | 0.4942 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c`. |
 | `FP64_DIV_NS` | 3.4890 | FP64 divide latency. **Directly measured** via `tools/bench_div_chain.c` (dependency-chained, not throughput). |
 | `BLOCK_FMA_NS` | 0.4027 | FMA cost inside block build/divide. 7-param fit (both pins active). |
 | `BLOCK_MEM_NS` | 0.1000 | Memory cost per element in block build/divide. |
 | `PAIRED_CACHED_CORR_RATIO` | 1.9080 | Paired cached correlate cost / full FFT pipeline cost. |
-| `INDEP_PAIR_RATIO` | 1.9080 | Independent pair correlate cost / full FFT pipeline cost. Equal to PAIRED — likely a fitting artifact (solver couldn't separate them). |
+| `INDEP_PAIR_RATIO` | 1.9080 | Independent pair correlate cost / full FFT pipeline cost. Equal to PAIRED, likely a fitting artifact (solver couldn't separate them). |
 | `LEAF_FMA_NS` | 0.0727 | FMA cost at tree-leaf schoolbook multiplies. 7-param fit. |
 | `LEAF_BLOCK_NS` | 48.1032 | Per-block overhead at leaf level. |
-| `FFT_OVERHEAD_NS` | 631.0974 | Per-call FFT overhead. Physically odd value — pushed here to compensate when both pins are active; see caveat. |
+| `FFT_OVERHEAD_NS` | 631.0974 | Per-call FFT overhead. Physically odd value, pushed here to compensate when both pins are active; see caveat. |
 
 > FFT calibration table (`calib_sizes[]`/`calib_times_ns[]`) and FFTW wisdom
 > in `devices/m3_pro/fft_config.h` are from a genuine FFTW PATIENT calibration
 > on this Apple M3 Pro machine (July 2026). `WRAP_FMA_NS` and `FP64_DIV_NS` are
-> direct microbenchmark measurements, not recovered from aggregate regression —
+> direct microbenchmark measurements, not recovered from aggregate regression ,
 > both were unidentifiable from the indirect fit alone (the regression converged
 > to physically implausible values: 0.1ns and 0.5ns respectively, both hitting
 > their fit lower bounds). Pinning both raises the fit's RMS log-relative error
-> to 10.2% and pushes `FFT_OVERHEAD_NS`/`FMA_NS` to compensate — a collinearity
+> to 10.2% and pushes `FFT_OVERHEAD_NS`/`FMA_NS` to compensate, a collinearity
 > limitation in the current `sample_plans` training data, not a correctness
 > issue. `./bench_grid verify` passes ALL TESTS and `./bench_grid crossover`
 > shows a clean, monotonic linear→hybrid transition at k≈122–124 (empirical
@@ -327,8 +327,8 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 | Constant | Value | Notes |
 |---|---|---|
 | `FMA_NS` | 0.0793 | Scalar FMA cost. 8-param fit (only `WRAP_FMA_NS` pinned). |
-| `WRAP_FMA_NS` | 0.40 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c` — extracted as least-squares slope over the decision-relevant range `wrap_m ∈ [64,384]`. |
-| `FP64_DIV_NS` | 12.5287 | FP64 divide latency. From the unpinned 8-param fit — not independently cross-checked against a direct measurement this session. |
+| `WRAP_FMA_NS` | 0.40 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c`, extracted as least-squares slope over the decision-relevant range `wrap_m ∈ [64,384]`. |
+| `FP64_DIV_NS` | 12.5287 | FP64 divide latency. From the unpinned 8-param fit, not independently cross-checked against a direct measurement this session. |
 | `BLOCK_FMA_NS` | 0.6833 | FMA cost inside block build/divide (sequential dependency chain, latency- not throughput-bound). |
 | `BLOCK_MEM_NS` | 0.1 | Memory cost per element in block build/divide. |
 | `PAIRED_CACHED_CORR_RATIO` | 1.8287 | Paired cached correlate cost / full FFT pipeline cost. |
@@ -341,25 +341,25 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 > AOCL-FFTW PATIENT wisdom in `devices/zen4/fft_config.h` are from an AMD
 > Ryzen 9 7950X (same SKU as the benchmark machine). `WRAP_FMA_NS` was
 > directly measured after the indirect fit proved it unidentifiable from
-> aggregate `sample_plans` data (the old fit value 0.8612 was arbitrary —
+> aggregate `sample_plans` data (the old fit value 0.8612 was arbitrary ,
 > wrap-correction cost never exceeds 1.5% of any sampled plan's total time,
 > a "persistency of excitation" failure). Fixing this constant (and unifying
 > the code-level `FMA_NS`/`WRAP_FMA_NS` mismatch in the planner) produced a
 > 2.35× speedup on the previously-regressed n=32768,k=n cell with no
 > regressions across spot-checks. `./bench_grid verify`: ALL TESTS PASSED.
 
-### Zen 4 bandwidth constants — root cause diagnosed and fixed, pending re-verification
+### Zen 4 bandwidth constants, root cause diagnosed and fixed, pending re-verification
 
 `devices/zen4/fft_config.h` contains `L2_BW_GBS=341868.5` and `L3_BW_GBS=3233.3`,
 both physically impossible (hundreds of TB/s for L2). Pre-existing bug
 (confirmed present in the commit before this sprint started). Root cause:
 `tools/calibrate.c`'s `measure_bw()` runs its streaming loop `reps` times,
 but the loop body (`a[i] = b[i]*s + c[i]`) doesn't depend on the repetition
-index — an optimizing compiler can prove the repeated stores are redundant
+index, an optimizing compiler can prove the repeated stores are redundant
 and collapse the whole `reps` loop to a single real pass, while the
 byte-count computation still charges for every nominal repetition,
 inflating the reported bandwidth by ~`reps`x. Dividing each Zen4 value by
-its own `reps` count gives 112 / 34 / 32 GB/s for L2 / L3 / DRAM — all
+its own `reps` count gives 112 / 34 / 32 GB/s for L2 / L3 / DRAM, all
 physically plausible, matching this mechanism exactly. The same source
 doesn't exhibit the bug when compiled for M3 Pro (values were already
 sane), consistent with a GCC/x86 optimization difference.
@@ -370,15 +370,15 @@ memory as externally observed. Verified in isolation not to regress
 M3 Pro's already-correct values (it tightens them: 83–114 GB/s scattered →
 a consistent ~115 GB/s across all three cache levels).
 
-**Not yet re-verified with a fresh calibration run on Zen4 hardware** —
+**Not yet re-verified with a fresh calibration run on Zen4 hardware** ,
 the calibration machine's credential window expired and became
 unreachable before this fix was written. The 112/34/32 GB/s figures above
 are a well-evidenced prediction (exact `reps`-factor match, standard/known
-bug class), not a fresh measurement — `devices/zen4/fft_config.h` itself
+bug class), not a fresh measurement, `devices/zen4/fft_config.h` itself
 still has the old, wrong values until someone reruns `tools/calibrate` on
 that hardware. These constants feed `blended_bandwidth()` in
 `src/cost_model.h`, affecting `select_engine()` dispatch cost for the
-linear engine — not correctness (`./bench_grid verify` is unaffected
+linear engine, not correctness (`./bench_grid verify` is unaffected
 regardless).
 
 ---
@@ -392,23 +392,23 @@ that proved unidentifiable from aggregate timing data alone.
 ### The problem: persistency of excitation
 
 The cost model has 9 free parameters fitted against per-plan measured times
-from `tools/sample_plans.c`. Two of them — `WRAP_FMA_NS` (wrap-correction FMA
-cost) and `FP64_DIV_NS` (dependency-chained FP64 division latency) — each
+from `tools/sample_plans.c`. Two of them, `WRAP_FMA_NS` (wrap-correction FMA
+cost) and `FP64_DIV_NS` (dependency-chained FP64 division latency), each
 contribute at most ~1.5% of any single sampled plan's total predicted time.
 In control-theory / system-identification terms, the training signal doesn't
-vary these parameters' effects enough to be recoverable — a "persistency of
+vary these parameters' effects enough to be recoverable, a "persistency of
 excitation" failure. The regression converges to arbitrary values within a wide
 flat basin, not to physically meaningful ones.
 
 This is the same class of problem FFTW solves by timing plans directly (PATIENT
 mode) rather than fitting a global model, ATLAS/AEOS solves by per-kernel
 empirical timing, and the roofline model solves with dedicated bandwidth/FLOP
-microbenchmarks — all cite direct isolated measurement over indirect aggregate
+microbenchmarks, all cite direct isolated measurement over indirect aggregate
 regression for exactly this reason.
 
 ### The fix: direct isolated microbenchmarks
 
-- **`WRAP_FMA_NS`**: measured via `tools/bench_wrap_fma.c` — a verbatim copy of
+- **`WRAP_FMA_NS`**: measured via `tools/bench_wrap_fma.c`, a verbatim copy of
   the wrap-correction loop body run in isolation, sweeping `wrap_m` over a wide
   range so the correction dominates measured time by construction. The value is
   extracted as a least-squares **slope** of time vs. FMA count over the
@@ -416,10 +416,10 @@ regression for exactly this reason.
   shows a real, physically-explicable cache-hierarchy transition: marginal cost
   rises smoothly from near-FMA-throughput at small working sets to
   memory-latency-bound at large ones. R²=0.9998 on Zen4.
-- **`FP64_DIV_NS`**: measured via `tools/bench_div_chain.c` — a
+- **`FP64_DIV_NS`**: measured via `tools/bench_div_chain.c`, a
   dependency-chained microbenchmark that reproduces the actual usage pattern
   (leaf extraction's synthetic-division recurrence). Critically, this is NOT an
-  independent/vectorizable division loop — that would measure throughput, a
+  independent/vectorizable division loop, that would measure throughput, a
   very different and wrong number for this sequential-dependency-chain usage.
 
 Both tools are wired into `tools/calibrate_full.sh` as standard pipeline steps
@@ -432,7 +432,7 @@ Pinning both constants can raise the fit's RMS log-relative error if the
 other parameters. Observed on M3 Pro (10.2% RMS error with both pinned, vs.
 6.57% unpinned; `FFT_OVERHEAD_NS` pushed to a physically odd 631ns to
 compensate). This is a collinearity limitation in the current training-data
-coverage, not a correctness issue — `./bench_grid verify` still passes ALL
+coverage, not a correctness issue, `./bench_grid verify` still passes ALL
 TESTS and dispatch decisions remain sound. Improving `sample_plans.c`'s B/n
 coverage to break this collinearity is flagged as real, open follow-up work.
 
@@ -483,7 +483,7 @@ empirical kernel benchmarks in `devices/b200/gpu_fft_config.h` -- see
 
 > **Diagnostic pass (July 2026):** The GPU planner was confirmed NOT to have the
 > CPU's wrap-correction cost-model bug. `src/gpu/gpu_plan.cu` uses one constant
-> (`GPU_SCHOOL_FMA_NS`) uniformly in both joint and independent paths — no
+> (`GPU_SCHOOL_FMA_NS`) uniformly in both joint and independent paths, no
 > code-level asymmetry. Additionally, the GPU's fitted `C_wrap` is
 > diagnostic-only (`fit_gpu_cost_model.py` never writes it to any config
 > header), so even if under-identified it has zero effect on real planning.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gen_calib_skeleton.py — Shared calibration skeleton + band-boundary generator.
+gen_calib_skeleton.py, Shared calibration skeleton + band-boundary generator.
 
 Parameterized by device; produces the full calibration point list and band
 boundaries per the adaptive calibration methodology.
@@ -24,7 +24,7 @@ import sys
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# 7-smooth number generation — EXACT ports from the codebase
+# 7-smooth number generation, EXACT ports from the codebase
 # ────────────────────────────────────────────────────────────────────────────
 
 def generate_7smooth_cpu(max_n: int) -> list[int]:
@@ -51,7 +51,7 @@ def generate_7smooth_cpu(max_n: int) -> list[int]:
             b *= 3
         a *= 2
 
-    # Insertion sort — matches src/icm.c exactly (~500 elements, one-time)
+    # Insertion sort, matches src/icm.c exactly (~500 elements, one-time)
     for i in range(1, len(smooth)):
         key = smooth[i]
         j = i - 1
@@ -102,7 +102,7 @@ def generate_7smooth_gpu(max_n: int) -> list[int]:
 
 
 def generate_7smooth(max_n: int, *, use_gpu_algo: bool = False) -> list[int]:
-    """Unified entry point — both algorithms produce identical output."""
+    """Unified entry point, both algorithms produce identical output."""
     if use_gpu_algo:
         return generate_7smooth_gpu(max_n)
     else:
@@ -125,7 +125,7 @@ def is_7smooth(n: int) -> bool:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Skeleton n selection — log-spaced targets snapped to nearest 7-smooth
+# Skeleton n selection, log-spaced targets snapped to nearest 7-smooth
 # ────────────────────────────────────────────────────────────────────────────
 
 def pick_skeleton_n(lo: int, hi: int, ratio: float,
@@ -145,7 +145,7 @@ def pick_skeleton_n(lo: int, hi: int, ratio: float,
     if ratio <= 1.0:
         raise ValueError(f"ratio={ratio} must be > 1.0")
 
-    # Build a working set of smooth numbers — go beyond hi so every
+    # Build a working set of smooth numbers, go beyond hi so every
     # target has candidates on both sides.
     work_smooth = [s for s in smooth if lo <= s <= hi * ratio]
     log_smooth = [math.log(s) for s in work_smooth]
@@ -155,7 +155,7 @@ def pick_skeleton_n(lo: int, hi: int, ratio: float,
     while True:
         target = lo * (ratio ** i)
         if target > hi * ratio:
-            break  # one full step past hi — enough for snapping
+            break  # one full step past hi, enough for snapping
         i += 1
 
         # Find nearest by log-distance
@@ -227,7 +227,7 @@ def k_anchors_for_n(n: int, smooth_up_to_257: list[int]) -> list[int]:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Band boundaries — midpoints in log-space between consecutive skeleton n
+# Band boundaries, midpoints in log-space between consecutive skeleton n
 # ────────────────────────────────────────────────────────────────────────────
 
 def build_bands(skeleton: list[int], lo: int, hi: int) -> list[dict]:
@@ -351,7 +351,7 @@ def main() -> None:
     print(f"[{args.device}] {len(all_points)} total (n,k) calibration points",
           file=sys.stderr)
 
-    # Quick estimate check — the three k-anchor categories produce
+    # Quick estimate check, the three k-anchor categories produce
     # 15 (tiny) + ~63 (almost-7-smooth) + 8 (rel. fractions) ≈ 86 per n
     # with minimal overlap for n ≥ 256.
     points_per_n = len(all_points) / len(skeleton) if skeleton else 0

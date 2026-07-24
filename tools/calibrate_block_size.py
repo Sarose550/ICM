@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-calibrate_block_size.py — Adaptive calibration orchestrator.
+calibrate_block_size.py, Adaptive calibration orchestrator.
 
 One command per device.  Drives skeleton generation, base-table sweep,
 and per-band adaptive refinement with immediate re-injection.  Does NOT
-rebuild the C library or run verify — that is the calling node's job.
+rebuild the C library or run verify, that is the calling node's job.
 
 Usage:
   python3 tools/calibrate_block_size.py --device m3_pro
@@ -215,7 +215,7 @@ def run_validate_probe(validate_bin: str, n: int, k: int,
         # CPU: "n,k,auto_B,auto_ms,best_B,best_ms,gap_pct" (7 columns)
         if len(parts) != 7:
             raise RuntimeError(f"Unexpected CPU validate output: {line}")
-        # n, k from output (columns 0,1) — we already know them
+        # n, k from output (columns 0,1), we already know them
         auto_B = int(parts[2])
         auto_ms = float(parts[3])
         best_B = int(parts[4])
@@ -266,7 +266,7 @@ def inject_table(config_path: str, device_meta: dict,
     n_match = re.search(n_pattern, text)
     if not n_match:
         raise RuntimeError(f"{prefix}_n[] array not found in {config_path}")
-    # Find the matching closing brace — we need to find from the opening brace
+    # Find the matching closing brace, we need to find from the opening brace
     # of the initializer (which starts at n_match.end() - 1)
     brace_start = n_match.end() - 1  # position of '{'
     brace_end = _find_matching_brace(text, brace_start)
@@ -373,7 +373,7 @@ def _draw_log_uniform_nk(n_lo: float, n_hi: float,
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Adaptive calibration orchestrator — one command per device."
+        description="Adaptive calibration orchestrator, one command per device."
     )
     parser.add_argument("--device", required=True,
                         choices=["m3_pro", "zen4", "b200"])
@@ -509,7 +509,7 @@ def main() -> None:
 
             # Compare gap_pct (percent) against gap_threshold*100
             if gap_pct > gap_threshold * 100.0:
-                # Gap exceeds threshold — refine this point
+                # Gap exceeds threshold, refine this point
                 auto_B = probe["auto_B"]
                 print(f"    [{probes_in_band}] n={n} k={k} gap={gap_pct:.2f}% "
                       f"> {gap_threshold*100:.1f}% → refining near auto_B={auto_B}")
@@ -566,7 +566,7 @@ def main() -> None:
 
         print(f"  Band {band_id} {status}")
         if hit_safety_cap:
-            print(f"    ⚠  This band did not converge — region may need human attention.")
+            print(f"    ⚠  This band did not converge, region may need human attention.")
         print()
 
         per_band_results.append({

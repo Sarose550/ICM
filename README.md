@@ -191,7 +191,7 @@ make
 make parallel
 ```
 
-Uses system FFTW3. For AMD platforms, AOCL-FFTW is recommended — see below.
+Uses system FFTW3. For AMD platforms, AOCL-FFTW is recommended, see below.
 
 ### Linux with AOCL-FFTW (AMD Zen 4)
 
@@ -201,7 +201,7 @@ make DEVICE=zen4
 make DEVICE=zen4 parallel
 ```
 
-AOCL-FFTW is the sole FFT backend for Zen 4 — a direct A/B test confirmed it is
+AOCL-FFTW is the sole FFT backend for Zen 4, a direct A/B test confirmed it is
 cleanly faster than plain FFTW at every calibrated size. Auto-detected if
 installed at `/usr/local/aocl-fftw`.
 

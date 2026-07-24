@@ -1,4 +1,4 @@
-# Dispatch Gap Quantification — Post-Schoolbook-Fix Analysis
+# Dispatch Gap Quantification, Post-Schoolbook-Fix Analysis
 
 **Date:** $(date)
 **Machine:** M3 Pro (Apple Silicon)
@@ -15,10 +15,10 @@ cost-model accuracy:
 | geo_mean(measured/predicted) | 1.740 | **1.126** |
 | log-stddev | 0.236 | **0.143** |
 | ratio range | [0.89, 3.67] | [1.00, 2.32] |
-| mean abs % error | — | 14.0% |
+| mean abs % error | n/a | 14.0% |
 
 The model bias dropped from +74% to +12.6%. The schoolbook fix was real and
-necessary. However, the dispatch crossover point barely moved — still at
+necessary. However, the dispatch crossover point barely moved, still at
 k≈260-320 instead of the ground-truth k≈120-160.
 
 ## 2. Leaf-Extraction Phase Profiling (Embedded)
@@ -35,7 +35,7 @@ timing within `engine_hybrid_core`):
 
 **Key finding: leaf extraction on M3 Pro is the OPPOSITE of what Zen4 found.**
 On Zen4, leaf was *underpredicted* by 1.86-2.44×. On M3 Pro, the model
-OVER-predicts leaf cost by 2.07× — the real per-player leaf cost is ~2.94 ns
+OVER-predicts leaf cost by 2.07x: the real per-player leaf cost is ~2.94 ns
 vs. the model's 5.875 ns (and even vs. FP64_DIV_NS=3.80 ns).
 
 The isolated microbenchmark (`tools/bench_leaf_fma.c`) that produced the
@@ -84,12 +84,12 @@ the crossover maybe 10-30 k-units lower but would not reach the target.
 | Block build | ~10% | Minor; re-measure if tree+leaf fixes aren't enough |
 
 **The tree cost model is the next target.** The leaf fix is a distraction on
-M3 Pro — it would make the model predict hybrid as *cheaper*, partially
+M3 Pro: it would make the model predict hybrid as *cheaper*, partially
 compensating for the tree underprediction, but not solving the root cause.
 
 ## Tools Committed
 
-- `tools/quantify_dispatch_gap.c` — Combined model-vs-measured comparison +
+- `tools/quantify_dispatch_gap.c`: combined model-vs-measured comparison +
   crossover projection (Part 1 + synthesis from task description)
-- `tools/probe_leaf_extract.c` — Phase-by-phase timing of block_build, tree,
+- `tools/probe_leaf_extract.c`: phase-by-phase timing of block_build, tree,
   and leaf_divide embedded in real hybrid engine runs (Part 2 from task)

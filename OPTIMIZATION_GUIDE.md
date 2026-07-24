@@ -101,7 +101,7 @@ for each smooth S from L/2+1 to 2L:
 ```
 
 Example: for L=256 on M3 Pro, the FFT at size 240 (7-smooth) costs 676ns +
-16×17/2×0.516 = 746ns total, vs 256 (pow2) at 740ns — nearly tied, so the
+16×17/2×0.516 = 746ns total, vs 256 (pow2) at 740ns, nearly tied, so the
 optimizer picks the slightly faster 256 here. At smaller m values (m≤4),
 wrapping is typically profitable. WRAP_FMA_NS is device-specific: **M3 Pro =
 0.5160 ns**, Zen 4 = 0.4360 ns (measured via `./bench_grid profile`).
@@ -149,7 +149,7 @@ The code picks whichever is cheaper. In practice:
 - **Saturated levels** (build and correlate have similar conv_len): joint usually wins.
 - **Below-sat levels** (correlate conv_len ≈ 2× build): independent often wins, because
   padding the build to the correlate's larger size costs more than the caching saves.
-  But this depends on the device-specific ratios — on both M3 Pro and Zen 4,
+  But this depends on the device-specific ratios, on both M3 Pro and Zen 4,
   `PAIRED_CACHED_CORR_RATIO` (≈1.55) is substantially lower than `INDEP_PAIR_RATIO`
   (≈2.44), so joint caching wins at more levels than the old equal-ratio model predicted.
 
@@ -175,7 +175,7 @@ product before being overwritten. The fused version reduced linear times by 24%
 
 The batched linear engine's cost model uses **5×n×k × BATCHED_FMA_NS** FMAs per
 quadrature point (forward pass: BQ×(2k-1) FMAs/player; fused backward pass:
-BQ×(3k-1) FMAs/player — ~5k total per player, not 4k as older formulas assumed).
+BQ×(3k-1) FMAs/player, ~5k total per player, not 4k as older formulas assumed).
 `BATCHED_FMA_NS` (M3 Pro: 0.0954 ns) is fit directly against real
 `icm_run_linear_batched()` measurements; it is NOT the same as `FMA_NS` (which
 comes from an unrelated scalar schoolbook microbenchmark). Reusing `FMA_NS` here
@@ -317,7 +317,7 @@ OMP_NUM_THREADS=16 ./bench_grid
 ## Porting to a New Device (General)
 
 The codebase is designed for easy porting. All device-specific tuning lives in
-`devices/<DEVICE>/fft_config.h` — no changes to `src/icm.c` needed. The engines,
+`devices/<DEVICE>/fft_config.h`, no changes to `src/icm.c` needed. The engines,
 cost models, and dispatch logic are fully parameterized by the constants in that header.
 
 For the GPU planner (B200), the equivalent tuning lives in
@@ -374,7 +374,7 @@ The profile output has three measurement sections. Record these values:
 
 1. **FFT overhead table** - The "overhead" column is the per-call constant cost
    not captured in calibration (plan lookup, buffer copies, result extraction).
-   → `FFT_OVERHEAD_NS` (currently 0.0 on all calibrated devices — overhead is
+   → `FFT_OVERHEAD_NS` (currently 0.0 on all calibrated devices, overhead is
    baked into `calib_times_ns[]` which measures the full pipeline).
 
 2. **Schoolbook row** in the overhead table - `school_ns / cps²` at the largest
@@ -382,7 +382,7 @@ The profile output has three measurement sections. Record these values:
    → `FMA_NS` (measured: 0.0690 on Zen4 with AVX-512).
    Note: schoolbook COST DECISIONS now use per-size lookup tables
    (`schoolbook_mul_ns[]`, `schoolbook_corr_ns[]`) rather than the `FMA_NS`
-   formula — `FMA_NS` is primarily used for wrap-correction costing
+   formula, `FMA_NS` is primarily used for wrap-correction costing
    (`WRAP_FMA_NS`) and as a rough scalar-throughput reference.
 
 3. **Phase split table** - `f_fwd`, `f_pw`, `f_ifft` fractions at each FFT size.
@@ -433,7 +433,7 @@ ILAENV NX precedent: direct measurement, not closed-form modeling; see
 tools produce these tables:
 
 ```bash
-# Calibrate linear-vs-hybrid crossover (full equity only — not subset queries)
+# Calibrate linear-vs-hybrid crossover (full equity only, not subset queries)
 ./tools/calibrate_crossover   # writes N_CROSSOVER_POINTS, crossover_n[], crossover_k[]
                                 # into devices/<DEVICE>/fft_config.h
 
@@ -443,7 +443,7 @@ tools produce these tables:
 ```
 
 Subset queries (`n_targets > 0`) still use the analytical cost-model comparison in
-`select_engine_ex()` and `select_best_B()` — the empirical tables were calibrated
+`select_engine_ex()` and `select_best_B()`, the empirical tables were calibrated
 only for the full-equity case and subset behavior was never measured directly.
 Revisit if subset dispatch is shown to need the same fix.
 
@@ -457,7 +457,7 @@ This runs both linear and hybrid at each (n, k) and compares which wins against
 the empirical crossover table. If mismatches occur, re-run the calibration tools
 above on the target machine. The old analytical cost-model constants
 (`BATCHED_FMA_NS`, `PAIRED_CACHED_CORR_RATIO`, etc.) do NOT affect the
-full-equity dispatch decision anymore — they only matter for subset queries and
+full-equity dispatch decision anymore, they only matter for subset queries and
 for the intra-engine per-level FFT-vs-schoolbook decisions within the tree.
 
 **Step 7: Run the full benchmark grid.**
@@ -475,10 +475,10 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 
 | Feature | How it adapts |
 |---|---|
-| `select_engine(n,k)` (full equity) | Uses empirical crossover table `empirical_crossover_k(n)` — log-linear interpolation between calibrated (n, k_cross) points (`tools/calibrate_crossover.c`). Zen 4's table has higher k_cross values, shifting the crossover upward |
-| `select_engine(n,k)` (subset) | Still uses analytical cost-model comparison (`hybrid_total` vs `linear_per_qp` from `src/cost_model.h`) — the empirical table was only calibrated for full-equity dispatch |
-| `select_best_B(n,k)` (full equity) | Uses `empirical_best_B(n,k)` 2D nearest-neighbor lookup over a calibrated (n,k,B) grid (`tools/calibrate_best_b.c`). No interpolation — B is discrete in {8,16,24,32,48,64}. Typically B=32 on both Zen 4 and M3 Pro |
-| `select_best_B(n,k)` (subset) | Still uses analytical cost-model per-candidate tree cost summing — subset B selection was never measured/calibrated |
+| `select_engine(n,k)` (full equity) | Uses empirical crossover table `empirical_crossover_k(n)`, log-linear interpolation between calibrated (n, k_cross) points (`tools/calibrate_crossover.c`). Zen 4's table has higher k_cross values, shifting the crossover upward |
+| `select_engine(n,k)` (subset) | Still uses analytical cost-model comparison (`hybrid_total` vs `linear_per_qp` from `src/cost_model.h`), the empirical table was only calibrated for full-equity dispatch |
+| `select_best_B(n,k)` (full equity) | Uses `empirical_best_B(n,k)` 2D nearest-neighbor lookup over a calibrated (n,k,B) grid (`tools/calibrate_best_b.c`). No interpolation, B is discrete in {8,16,24,32,48,64}. Typically B=32 on both Zen 4 and M3 Pro |
+| `select_best_B(n,k)` (subset) | Still uses analytical cost-model per-candidate tree cost summing, subset B selection was never measured/calibrated |
 | `ckpt_interval_batched` | Sized to fit working set in `L2_CACHE_SIZE`. Activates much earlier on Zen 4 (1MB vs 32MB) |
 | BQ=8 batched linear | Same interleaved `a_batch[j*BQ+qi]` layout. AVX-512 processes 8 doubles natively per instruction |
 | Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` and `schoolbook_mul_ns[]` lookup tables to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |
@@ -492,7 +492,7 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 | `FMA_NS` | Hardware-specific scalar FMA cost | `./bench_grid profile` schoolbook row |
 | `WRAP_FMA_NS` | Memory-latency-bound wrap correction | `./bench_grid profile` wrap phase |
 | `BATCHED_FMA_NS` | Linear engine's interleaved inner-loop throughput | Fit against `icm_run_linear_batched()` measurements; NOT the same as FMA_NS |
-| `FFT_OVERHEAD_NS` | Plan lookup + buffer copy cost | `./bench_grid profile` overhead column (usually 0.0 — baked into calib) |
+| `FFT_OVERHEAD_NS` | Plan lookup + buffer copy cost | `./bench_grid profile` overhead column (usually 0.0, baked into calib) |
 | `PAIRED_CACHED_CORR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split + `fit_cost_model.py` |
 | `INDEP_PAIR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split + `fit_cost_model.py` |
 | `L2_CACHE_SIZE` | Hardware spec | CPU datasheet |
@@ -610,8 +610,8 @@ gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
 ## GPU Cost Model (B200)
 
 The GPU planner uses a separate cost model from the CPU. Unlike the CPU's
-9-parameter physics-based model, the GPU model fits only 4 constants —
-`C_wrap`, `C_school`, `R`, `C_gap` — with all other costs (compute-a,
+9-parameter physics-based model, the GPU model fits only 4 constants ,
+`C_wrap`, `C_school`, `R`, `C_gap`, with all other costs (compute-a,
 block-build, leaf-extract, accumulate) interpolated from empirical kernel
 benchmarks and cuFFT/cuFFTDx calibration tables in
 `devices/b200/gpu_fft_config.h`.
@@ -624,10 +624,10 @@ python3 tools/fit_gpu_cost_model.py gpu_sample_plans.csv devices/b200/gpu_fft_co
 
 The script uses differential evolution to minimize log-relative error
 across sampled (n,k,B) plans. The GPU calibration pipeline is:
-1. `calibrate_gpu.cu` — measure per-size cuFFT pipeline times →
+1. `calibrate_gpu.cu`, measure per-size cuFFT pipeline times →
    `devices/b200/gpu_fft_config.h`
-2. `gpu_sample_plans.cu` — sample planner decisions → `gpu_sample_plans.csv`
-3. `bench_kernels` — measure individual kernel costs → `bench_kernels_b200.csv`
-4. `fit_gpu_cost_model.py` — fit C_wrap, C_school, R, C_gap from the above
+2. `gpu_sample_plans.cu`, sample planner decisions → `gpu_sample_plans.csv`
+3. `bench_kernels`, measure individual kernel costs → `bench_kernels_b200.csv`
+4. `fit_gpu_cost_model.py`, fit C_wrap, C_school, R, C_gap from the above
 
 Or run the full campaign: `./tools/run_b200_campaign.sh`.

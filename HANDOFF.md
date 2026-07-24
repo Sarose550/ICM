@@ -30,7 +30,7 @@ verify and regenerate results from it. Nothing is currently broken in the
 the last commit), but there is a clear, agreed punch list to reach the
 final portfolio-ready state. See **Next Steps** below for the exact plan.
 Read the **Architecture: what's actually load-bearing** section before
-touching any calibration/cost-model code — it's easy to misjudge what's
+touching any calibration/cost-model code, it's easy to misjudge what's
 safe to change or delete without it.
 
 ## Architecture: what's actually load-bearing (read before touching cost-model code)
@@ -39,15 +39,15 @@ Dispatch happens in three separate layers. Only two of them were ever the
 "fragile aggregate formula" problem; the third was never broken and was
 never replaced.
 
-1. **Which engine?** (linear / hybrid / tree) — `select_engine_ex()` in
+1. **Which engine?** (linear / hybrid / tree), `select_engine_ex()` in
    `src/icm.c`. For full-equity queries (`n_targets <= 0`), uses the
    empirical crossover table (`crossover_n[]`/`crossover_k[]` in
    `fft_config.h`, log-linear interpolation via
    `empirical_crossover_k()` in `src/fft_cost_model.h`). For **subset**
    queries (`n_targets > 0`), still uses the old summed-analytical
    formula, which is confirmed measurably wrong (37-45% slower than
-   optimal at representative points) — see Next Steps.
-2. **Which block size B?** (only matters inside the hybrid engine) —
+   optimal at representative points), see Next Steps.
+2. **Which block size B?** (only matters inside the hybrid engine) ,
    `select_best_B()` in `src/icm.c`. Uses the empirical `bselect` table
    (`bselect_n[]`/`bselect_k[]`/`bselect_B[]`, 2D nearest-neighbor via
    `empirical_best_B()`), built by `tools/calibrate_best_b.c` +
@@ -73,7 +73,7 @@ go/no-go decision, and that's what turned out to be fragile in aggregate
 and got replaced this session (layer 2) and the session before (layer 1,
 full-equity only). `tools/calibrate.c`'s output (`calib_times_ns[]`,
 consumed by layer 3) is genuinely foundational and still load-bearing on
-every single computation — it is not dead code, and must never be
+every single computation, it is not dead code, and must never be
 skipped when porting to a new device.
 
 ## Critical operational notes
@@ -81,13 +81,13 @@ skipped when porting to a new device.
 **DeepSeek Deck network access.** The `deck` binary on `$PATH` resolves
 to a stale plugin-cache copy
 (`~/.claude/plugins/cache/deepseek-deck/deepseek-deck/1.0.0/bin/deck`)
-that does **not** support `--allow-network` — its argparse simply doesn't
+that does **not** support `--allow-network`, its argparse simply doesn't
 have the flag, even though the underlying worker sandbox (`deepseek-mcp`
 tools.py) supports network toggling. The **real, working** dev copy with
 `--allow-network` wired all the way through is at
 `~/Documents/deepseek-deck/bin/deck` (confirmed: same daemon serves both
 paths, since the CLI is just a thin HTTP client to a local daemon on port
-8787 — the daemon that's actually running is built from the dev repo, so
+8787, the daemon that's actually running is built from the dev repo, so
 using the dev repo's CLI binary is what actually matters). **Always
 invoke `/Users/samrosenstrauch/Documents/deepseek-deck/bin/deck` directly
 (or alias it) when a node needs `--allow-network`**, not whatever
@@ -95,7 +95,7 @@ resolves from `$PATH`.
 
 **Zen4 rental.** As of this writing, the AMD Ryzen 9 7950X-class instance
 is completely out of stock on vast.ai, and there is no clean hourly-billed
-alternative — checked Cherry Servers (right billing model, hourly, but
+alternative, checked Cherry Servers (right billing model, hourly, but
 currently 0 in stock at all 6 locations), Hetzner (has 7950X/7950X3D but
 monthly billing only, poor fit for a few hours of verification work).
 Check vast.ai stock again before assuming it's still unavailable; if
@@ -125,23 +125,23 @@ real, hours-long false alarm this session (a "3x anomaly" that was
 actually just this binary mix-up).
 
 **Zen4 needs `OMP_NUM_THREADS=16` explicitly**, never the default
-`nproc` (32, SMT-inclusive) — SMT siblings add no real throughput for
+`nproc` (32, SMT-inclusive), SMT siblings add no real throughput for
 this FPU/vector-port-bound workload. `make results-refresh` does NOT set
 this for you; you must prefix it (`OMP_NUM_THREADS=16 make
 results-refresh DEVICE=zen4`) or the parallel grid silently corrupts at
 small `n` (oversubscription contention, up to 20x+ slower than serial in
-some cells — looks exactly like a real regression until you check thread
+some cells, looks exactly like a real regression until you check thread
 counts).
 
 **B200.** As of this writing, no instance is rented (destroyed after the
 last session, standard practice). `results/gpu_heatmap_b200.csv` (dated
 2026-07-21) **predates** the GPU B-selection empirical-table fix
-(`src/gpu/gpu_plan.cu`, commit `b581dab`, dated 2026-07-23) — meaning the
+(`src/gpu/gpu_plan.cu`, commit `b581dab`, dated 2026-07-23), meaning the
 current committed B200 numbers in `RESULTS.md` and the paper reflect the
 OLD buggy dispatch (which picked B=128 when B=64 was optimal, 2-4%
 slower). This must be regenerated. Do NOT re-time the individual FFTs or
 re-run the GPU FFT calibration (`calibrate_gpu.cu`) or the B-selection
-adaptive calibration — all already correct and committed. The only thing
+adaptive calibration, all already correct and committed. The only thing
 that needs re-running is the benchmark sweep: `tools/heatmap_gpu.cu`
 (systematic grid, feeds `tab:gpu`/`fig:gpu-contour`) and
 `tools/push_limit_gpu.cu` (frontier probes, feeds `tab:gpu-frontier`).
@@ -154,20 +154,20 @@ now-closed crossover investigation. None are invoked by
 `calibrate_block_size.py`. Confirmed by reading each file's own header
 comment, which in every case names its own successor:
 
-- `tools/bench_leaf_fma.c` — superseded by `calibrate_leaf_realistic.c`
+- `tools/bench_leaf_fma.c`, superseded by `calibrate_leaf_realistic.c`
   per its own successor's docstring.
-- `tools/calibrate_leaf_realistic.c` — itself superseded (found buggy:
+- `tools/calibrate_leaf_realistic.c`, itself superseded (found buggy:
   reused one `HybridCtx` across reps, unrealistically cache-hot) by
   `tools/probe_leaf_extract.c`, which IS in active use.
-- `tools/b_optimal_sweep.c` — "validates `select_best_B()` against
+- `tools/b_optimal_sweep.c`, "validates `select_best_B()` against
   measured optimum" by sweeping every B; fully superseded by
   `calibrate_best_b.c` + `validate_best_b.c`.
-- `tools/eval_model_vs_plans.c` — evaluates the old summed-analytical
+- `tools/eval_model_vs_plans.c`, evaluates the old summed-analytical
   formula, which layers 1/2 above no longer use.
-- `tools/quantify_dispatch_gap.c` — one-off diagnostic, own header says
+- `tools/quantify_dispatch_gap.c`, one-off diagnostic, own header says
   "quantify remaining dispatch-point gap after schoolbook fix"; that
   investigation is closed.
-- `tools/probe_tree_levels.c` — compares against the old formula from
+- `tools/probe_tree_levels.c`, compares against the old formula from
   `select_engine_ex()`; also flagged in this file's own prior history as
   having produced an invalid finding due to a stale-formula bug.
 
@@ -187,18 +187,18 @@ invariants of code still in active use, not the abandoned formula),
 ## What Worked
 
 - **Tracing exact code usage instead of guessing** when asked "is this
-  dead code" or "is this still load-bearing" — reading each file's own
+  dead code" or "is this still load-bearing", reading each file's own
   header comment and grep-ing actual call sites resolved every question
   definitively, no hand-waving needed.
 - **Cross-referencing commit dates against data file mtimes** to catch
   the B200 staleness bug (`git log -1 --format=%ci <commit> -- <path>`
-  vs `ls -la` on the data file) — this is how the true "B200 predates its
+  vs `ls -la` on the data file), this is how the true "B200 predates its
   own dispatch fix" finding was actually confirmed, not asserted.
 - **Direct reproduction of anomalies before believing them.** The
   "3x variance" scare traced to a real, findable cause (serial/parallel
   binary mix-up) once actually investigated with `ps`/build-flag checks,
   rather than accepted as unexplained noise.
-- **Using `git-filter-repo` for a clean commit-message rewrite** — once
+- **Using `git-filter-repo` for a clean commit-message rewrite**, once
   scoped correctly (see below), it does exactly what's needed with
   verifiable output (message content changed, tree content unchanged,
   confirmed via `git diff <old> <new> --stat` being empty).
@@ -215,7 +215,7 @@ invariants of code still in active use, not the abandoned formula),
   commits that need editing, and amending each one individually (`git
   rebase <base> --exec <script>` works non-interactively and only
   touches commits after `<base>`). Verify with `git merge-tree
-  $(git merge-base origin/main HEAD) origin/main HEAD` before pushing —
+  $(git merge-base origin/main HEAD) origin/main HEAD` before pushing ,
   zero `<<<<<<< .our` lines means genuinely no conflict, not just no
   visible diff.
 - **Ad-hoc single-rep manual probes (`./bench_grid bench <n> <n> 1`)
@@ -225,7 +225,7 @@ invariants of code still in active use, not the abandoned formula),
   `bench_grid` (full grid, no subcommand) and `tools/contour_1s.c`
   (`--contour` mode). There is also `bench_grid threshold`, a real
   binary-search tool for the precise `k=n` 1-second boundary specifically
-  — use that instead of eyeballing an interpolation or manually probing,
+ , use that instead of eyeballing an interpolation or manually probing,
   next time this number is needed.
 - **A crude 2-point linear interpolation across a wide n-range
   (e.g. n=16,384 to n=32,768) systematically overshoots a superlinear
@@ -237,7 +237,7 @@ invariants of code still in active use, not the abandoned formula),
 - **Asserting "nothing changed so the old data is still valid" without
   checking commit dates against data file dates.** Told the user the
   B200 numbers were fine because "nothing GPU-related changed this
-  session" — wrong, the B-selection fix landed earlier the same day,
+  session", wrong, the B-selection fix landed earlier the same day,
   before this session's board even started, and the heatmap was never
   re-swept after it. Always check dates, don't reason from session
   boundaries.
@@ -256,7 +256,7 @@ where noted.
 1. **Point subset-query dispatch at the existing empirical `bselect`
    table** instead of the known-broken analytical formula, as an
    interim improvement (not the fully-correct fix, which would need its
-   own `(n, target_frac) -> crossover_k` calibration — that's out of
+   own `(n, target_frac) -> crossover_k` calibration, that's out of
    scope here, flagged as a possible future board). This is a small,
    low-risk patch to `select_engine_ex()`'s subset-query branch in
    `src/icm.c`. Verify with the same real-measurement methodology C4
@@ -280,7 +280,7 @@ where noted.
 5. **De-slopify all MD files and the two files C3's cleanup pass never
    touched** (`tools/gen_calib_skeleton.py`, `tools/calibrate_block_size.py`).
    227 em-dashes were counted across `*.md` files this session (paper
-   itself is already clean, 0 em-dashes) — strip them to standard
+   itself is already clean, 0 em-dashes), strip them to standard
    punctuation, and check for any remaining session-narrative/AI-tell
    comments in code.
 6. **Regenerate `RESULTS.md` and re-sync the paper** once steps 3-4 land:
