@@ -1202,6 +1202,47 @@ bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_d
     return true;
 }
 
+/* ── cuFFT workspace estimation ────────────────────────────────── */
+
+/* Create trial cuFFT plans at candidate qb, query their work_size
+ * (zero VRAM committed: auto-allocation is disabled), take the max
+ * across all FFT levels, then destroy all trial plans.
+ * Returns SIZE_MAX if any trial plan creation fails (infeasible qb). */
+size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb) {
+    size_t max_ws = 0;
+    for (int ell = 1; ell < plan->L; ++ell) {
+        auto &lp = plan->levels[ell];
+        if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
+        int fft_n = lp.fft_n;
+        int child_batch = plan->nn[ell - 1];
+        int parent_batch = plan->nn[ell];
+
+        cufftHandle plans[4] = {0, 0, 0, 0};
+        int n_created = 0;
+        if (!create_cufft_plan(&plans[0], fft_n, qb * child_batch, true))   goto infeasible;
+        n_created = 1;
+        if (!create_cufft_plan(&plans[1], fft_n, qb * parent_batch, false)) goto infeasible;
+        n_created = 2;
+        if (!create_cufft_plan(&plans[2], fft_n, qb * parent_batch, true))  goto infeasible;
+        n_created = 3;
+        if (!create_cufft_plan(&plans[3], fft_n, qb * 2 * parent_batch, false)) goto infeasible;
+        n_created = 4;
+
+        for (int i = 0; i < 4; ++i) {
+            size_t ws = 0;
+            cufftGetSize(plans[i], &ws);
+            if (ws > max_ws) max_ws = ws;
+        }
+        for (int i = 0; i < 4; ++i) cufftDestroy(plans[i]);
+        continue;
+
+    infeasible:
+        for (int i = 0; i < n_created; ++i) cufftDestroy(plans[i]);
+        return SIZE_MAX;
+    }
+    return max_ws;
+}
+
 #if ICM_HAVE_VKFFT
 /* ── VkFFT plan helpers ───────────────────────────────────────── */
 

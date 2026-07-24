@@ -307,6 +307,7 @@ bool device_sort_players(GpuPlan *plan);
 bool allocate_plan_device_memory(GpuPlan *plan);
 bool choose_uncached_levels(GpuPlan *plan);
 bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist = 0);
+size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb);
 
 #if ICM_HAVE_VKFFT
 /* VkFFT plan creation and dispatch helpers (gpu_plan.cu / gpu_exec.cu) */
