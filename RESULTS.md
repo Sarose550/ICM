@@ -202,6 +202,25 @@ At the 1-second boundary (from regenerated contour sweep, Q=256):
 | 10000 | 31,562 | 94,375 | 3.0x |
 | 13000 | 30,062 | 92,625 | 3.1x |
 
+### Known scaling limit: parallel speedup collapses at n ≥ 16,384
+
+Parallel speedup on the 16-physical-core 7950X is a healthy 10–14x below
+n=16,384 (e.g. n=8,192, k=n: 12.0x) but falls to ~3.3x at n=16,384 and stays
+there through n=65,536 (k=n). This is a genuine memory-bandwidth/cache-capacity
+wall, not a thread-affinity, NUMA, or CCD-migration bug — confirmed directly
+via `perf stat` (n=8,192 healthy: IPC=1.53, 4.4% cache-miss rate; n=16,384
+collapsed: IPC=0.57, 10.5% cache-miss rate — cycles grew 6.3x while
+instructions only grew 2.35x, i.e. the extra time is memory stalls, not more
+work). `OMP_PROC_BIND=close/spread` and explicit `taskset`/`GOMP_CPU_AFFINITY`
+pinning to all 16 physical cores were tested directly and did not recover
+speedup, ruling out cross-CCD (2×8-core, 2×32MB L3) placement as the cause —
+consistent with the aggregate working set across 16 concurrently-running
+hybrid-engine FFT trees exceeding the combined 64MB L3 capacity somewhere
+between n=8,192 and n=16,384, forcing DRAM traffic that 16 threads then
+contend over. Documented here as a known, real scaling limit rather than
+scoped as a fix — reducing the hybrid engine's per-thread memory footprint at
+large n would need its own dedicated pass with unclear payoff.
+
 ### 1-second threshold: n ≈ 27,000 (k=n, single-threaded), n ≈ 65,000 (k=n, 16-thread)
 
 Serial: interpolated from bench_grid (n=16,384 at 508 ms, n=32,768 at 1,230 ms). Parallel: bench_grid n=65,536, k=n at 999 ms; regenerated contour and grid (July 2026).
