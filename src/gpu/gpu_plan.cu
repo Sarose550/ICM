@@ -1612,7 +1612,37 @@ retry_arena:
             if (plan->corr_fft[ell].plan_inv) { cufftGetSize(plan->corr_fft[ell].plan_inv, &ws); max_ws = std::max(max_ws, ws); }
         }
         if (max_ws > 0) {
-            if (!alloc_device(plan, &plan->shared_cufft_workspace, max_ws, plan->stream_compute)) return false;
+            if (!alloc_device(plan, &plan->shared_cufft_workspace, max_ws, plan->stream_compute)) {
+                if (plan->q_batch > 1 && arena_retries < 4) {
+                    for (int e = 1; e < plan->L; ++e) {
+                        auto &bf = plan->build_fft[e];
+                        auto &cf = plan->corr_fft[e];
+#if ICM_HAVE_VKFFT
+                        if (bf.vkfft_fwd_initialized) { destroy_vkfft_app(&bf.vkfft_app_fwd); bf.vkfft_fwd_initialized = 0; }
+                        if (bf.vkfft_inv_initialized) { destroy_vkfft_app(&bf.vkfft_app_inv); bf.vkfft_inv_initialized = 0; }
+                        if (cf.vkfft_fwd_initialized) { destroy_vkfft_app(&cf.vkfft_app_fwd); cf.vkfft_fwd_initialized = 0; }
+                        if (cf.vkfft_inv_initialized) { destroy_vkfft_app(&cf.vkfft_app_inv); cf.vkfft_inv_initialized = 0; }
+#endif
+                        if (bf.plan_fwd) { cufftDestroy(bf.plan_fwd); bf.plan_fwd = 0; }
+                        if (bf.plan_inv) { cufftDestroy(bf.plan_inv); bf.plan_inv = 0; }
+                        if (cf.plan_fwd) { cufftDestroy(cf.plan_fwd); cf.plan_fwd = 0; }
+                        if (cf.plan_inv) { cufftDestroy(cf.plan_inv); cf.plan_inv = 0; }
+                    }
+                    cudaFree(plan->arena_base); plan->arena_base = nullptr;
+                    plan->arena_total_bytes = 0;
+                    plan->peak_vram_bytes = 0;
+                    plan->current_vram_bytes = 0;
+                    cudaStreamDestroy(plan->stream_compute); plan->stream_compute = nullptr;
+                    cudaStreamDestroy(plan->stream_aux);     plan->stream_aux = nullptr;
+                    cudaEventDestroy(plan->evt_a_ready[0]);  plan->evt_a_ready[0] = nullptr;
+                    cudaEventDestroy(plan->evt_a_ready[1]);  plan->evt_a_ready[1] = nullptr;
+                    if (plan->evt_prop_done) { cudaEventDestroy(plan->evt_prop_done); plan->evt_prop_done = nullptr; }
+                    plan->q_batch = std::max(1, plan->q_batch / 2);
+                    arena_retries++;
+                    goto retry_arena;
+                }
+                return false;
+            }
             plan->shared_cufft_workspace_bytes = max_ws;
             for (int ell = 1; ell < plan->L; ++ell) {
                 auto &lp = plan->levels[ell];
