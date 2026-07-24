@@ -1,24 +1,24 @@
 OpenMP enabled: 16 threads
 === CORRECTNESS VERIFICATION ===
 
-tree   n=16   uniform      PASS     err=7.43e-13  
+tree   n=16   uniform      PASS     err=7.44e-13  
 naive  n=16   uniform      PASS     err=7.43e-13  
 linear n=16   uniform      PASS     err=7.43e-13  
 hyb8   n=16   uniform      PASS     err=7.43e-13  
-xchk   n=16   uniform      PASS     diff=5.94e-16  
+xchk   n=16   uniform      PASS     diff=4.12e-16  
 V2     n=16   uniform      PASS     err=9.79e-13  
 tree   n=16   adversarial  PASS     err=5.02e-13  
 naive  n=16   adversarial  PASS     err=5.02e-13  
 linear n=16   adversarial  PASS     err=5.02e-13  
-hyb8   n=16   adversarial  PASS     err=5.02e-13  
+hyb8   n=16   adversarial  PASS     err=5.03e-13  
 xchk   n=16   adversarial  PASS     diff=3.33e-16  
 V2     n=16   adversarial  PASS     err=5.01e-13  
 tree   n=16   geometric    PASS     err=5.81e-13  
-naive  n=16   geometric    PASS     err=5.81e-13  
+naive  n=16   geometric    PASS     err=5.82e-13  
 linear n=16   geometric    PASS     err=5.81e-13  
 hyb8   n=16   geometric    PASS     err=5.81e-13  
 xchk   n=16   geometric    PASS     diff=4.00e-16  
-V2     n=16   geometric    PASS     err=6.41e-13  
+V2     n=16   geometric    PASS     err=6.40e-13  
 tree   n=16   equal        PASS     err=1.04e-12  
 naive  n=16   equal        PASS     err=1.04e-12  
 linear n=16   equal        PASS     err=1.04e-12  
@@ -29,30 +29,30 @@ tree   n=16   adv_1e9      PASS     err=1.54e-10
 naive  n=16   adv_1e9      PASS     err=1.54e-10  
 linear n=16   adv_1e9      PASS     err=1.54e-10  
 hyb8   n=16   adv_1e9      PASS     err=1.54e-10  
-xchk   n=16   adv_1e9      PASS     diff=6.66e-16  
+xchk   n=16   adv_1e9      PASS     diff=0.00e+00  
 V2     n=16   adv_1e9      PASS     err=1.54e-10  
 tree   n=32   uniform      PASS     err=7.83e-13  
 naive  n=32   uniform      PASS     err=7.83e-13  
 linear n=32   uniform      PASS     err=7.83e-13  
 hyb8   n=32   uniform      PASS     err=7.83e-13  
-xchk   n=32   uniform      PASS     diff=6.35e-16  
+xchk   n=32   uniform      PASS     diff=5.60e-16  
 V2     n=32   uniform      PASS     err=1.05e-12  
-tree   n=32   adversarial  PASS     err=5.02e-13  
+tree   n=32   adversarial  PASS     err=5.03e-13  
 naive  n=32   adversarial  PASS     err=5.02e-13  
 linear n=32   adversarial  PASS     err=5.02e-13  
 hyb8   n=32   adversarial  PASS     err=5.02e-13  
-xchk   n=32   adversarial  PASS     diff=4.53e-16  
+xchk   n=32   adversarial  PASS     diff=4.44e-16  
 V2     n=32   adversarial  PASS     err=5.09e-13  
 tree   n=32   geometric    PASS     err=5.83e-13  
 naive  n=32   geometric    PASS     err=5.83e-13  
 linear n=32   geometric    PASS     err=5.83e-13  
 hyb8   n=32   geometric    PASS     err=5.83e-13  
-xchk   n=32   geometric    PASS     diff=1.73e-15  
-V2     n=32   geometric    PASS     err=6.43e-13  
+xchk   n=32   geometric    PASS     diff=1.86e-15  
+V2     n=32   geometric    PASS     err=6.42e-13  
 tree   n=32   equal        PASS     err=1.08e-12  
 naive  n=32   equal        PASS     err=1.07e-12  
-linear n=32   equal        PASS     err=1.08e-12  
-hyb8   n=32   equal        PASS     err=1.08e-12  
+linear n=32   equal        PASS     err=1.07e-12  
+hyb8   n=32   equal        PASS     err=1.07e-12  
 xchk   n=32   equal        PASS     diff=2.07e-16  
 V2     n=32   equal        PASS     err=1.66e-12  
 tree   n=32   adv_1e9      PASS     err=1.54e-10  
@@ -61,29 +61,29 @@ linear n=32   adv_1e9      PASS     err=1.54e-10
 hyb8   n=32   adv_1e9      PASS     err=1.54e-10  
 xchk   n=32   adv_1e9      PASS     diff=4.53e-16  
 V2     n=32   adv_1e9      PASS     err=1.54e-10  
-tree   n=64   uniform      PASS     err=8.11e-13  
+tree   n=64   uniform      PASS     err=8.12e-13  
 naive  n=64   uniform      PASS     err=8.11e-13  
 linear n=64   uniform      PASS     err=8.11e-13  
 hyb8   n=64   uniform      PASS     err=8.11e-13  
-xchk   n=64   uniform      PASS     diff=9.45e-16  
+xchk   n=64   uniform      PASS     diff=1.14e-15  
 V2     n=64   uniform      PASS     err=1.09e-12  
 tree   n=64   adversarial  PASS     err=5.05e-13  
 naive  n=64   adversarial  PASS     err=5.04e-13  
 linear n=64   adversarial  PASS     err=5.04e-13  
-hyb8   n=64   adversarial  PASS     err=5.03e-13  
+hyb8   n=64   adversarial  PASS     err=5.04e-13  
 xchk   n=64   adversarial  PASS     diff=9.99e-16  
 V2     n=64   adversarial  PASS     err=4.57e-13  
 tree   n=64   geometric    PASS     err=5.85e-13  
 naive  n=64   geometric    PASS     err=5.84e-13  
 linear n=64   geometric    PASS     err=5.84e-13  
 hyb8   n=64   geometric    PASS     err=5.84e-13  
-xchk   n=64   geometric    PASS     diff=9.03e-16  
+xchk   n=64   geometric    PASS     diff=1.09e-15  
 V2     n=64   geometric    PASS     err=6.46e-13  
 tree   n=64   equal        PASS     err=1.09e-12  
 naive  n=64   equal        PASS     err=1.09e-12  
 linear n=64   equal        PASS     err=1.09e-12  
 hyb8   n=64   equal        PASS     err=1.09e-12  
-xchk   n=64   equal        PASS     diff=7.64e-16  
+xchk   n=64   equal        PASS     diff=5.73e-16  
 V2     n=64   equal        PASS     err=1.67e-12  
 tree   n=64   adv_1e9      PASS     err=1.54e-10  
 naive  n=64   adv_1e9      PASS     err=1.54e-10  
@@ -95,19 +95,19 @@ tree   n=128  uniform      PASS     err=8.17e-13
 naive  n=128  uniform      PASS     err=8.16e-13  
 linear n=128  uniform      PASS     err=8.15e-13  
 hyb8   n=128  uniform      PASS     err=8.15e-13  
-xchk   n=128  uniform      PASS     diff=1.45e-15  
+xchk   n=128  uniform      PASS     diff=1.58e-15  
 V2     n=128  uniform      PASS     err=1.10e-12  
 tree   n=128  adversarial  PASS     err=5.03e-13  
 naive  n=128  adversarial  PASS     err=5.01e-13  
 linear n=128  adversarial  PASS     err=5.01e-13  
 hyb8   n=128  adversarial  PASS     err=5.01e-13  
-xchk   n=128  adversarial  PASS     diff=2.11e-15  
+xchk   n=128  adversarial  PASS     diff=2.00e-15  
 V2     n=128  adversarial  PASS     err=4.14e-13  
 tree   n=128  geometric    PASS     err=5.86e-13  
 naive  n=128  geometric    PASS     err=5.85e-13  
 linear n=128  geometric    PASS     err=5.85e-13  
 hyb8   n=128  geometric    PASS     err=5.85e-13  
-xchk   n=128  geometric    PASS     diff=1.17e-15  
+xchk   n=128  geometric    PASS     diff=1.45e-15  
 V2     n=128  geometric    PASS     err=6.46e-13  
 tree   n=128  equal        PASS     err=1.10e-12  
 naive  n=128  equal        PASS     err=1.10e-12  
@@ -119,31 +119,31 @@ tree   n=128  adv_1e9      PASS     err=1.54e-10
 naive  n=128  adv_1e9      PASS     err=1.54e-10  
 linear n=128  adv_1e9      PASS     err=1.54e-10  
 hyb8   n=128  adv_1e9      PASS     err=1.54e-10  
-xchk   n=128  adv_1e9      PASS     diff=2.04e-15  
+xchk   n=128  adv_1e9      PASS     diff=1.63e-15  
 V2     n=128  adv_1e9      PASS     err=1.54e-10  
 tree   n=256  uniform      PASS     err=8.17e-13  
 naive  n=256  uniform      PASS     err=8.14e-13  
 linear n=256  uniform      PASS     err=8.15e-13  
 hyb8   n=256  uniform      PASS     err=8.14e-13  
-xchk   n=256  uniform      PASS     diff=2.27e-15  
+xchk   n=256  uniform      PASS     diff=2.48e-15  
 V2     n=256  uniform      PASS     err=1.09e-12  
 tree   n=256  adversarial  PASS     err=5.10e-13  
 naive  n=256  adversarial  PASS     err=5.07e-13  
 linear n=256  adversarial  PASS     err=5.07e-13  
-hyb8   n=256  adversarial  PASS     err=5.07e-13  
-xchk   n=256  adversarial  PASS     diff=4.44e-15  
+hyb8   n=256  adversarial  PASS     err=5.06e-13  
+xchk   n=256  adversarial  PASS     diff=4.33e-15  
 V2     n=256  adversarial  PASS     err=1.30e-12  
 tree   n=256  geometric    PASS     err=5.88e-13  
-naive  n=256  geometric    PASS     err=5.85e-13  
+naive  n=256  geometric    PASS     err=5.86e-13  
 linear n=256  geometric    PASS     err=5.86e-13  
 hyb8   n=256  geometric    PASS     err=5.85e-13  
-xchk   n=256  geometric    PASS     diff=2.18e-15  
+xchk   n=256  geometric    PASS     diff=2.20e-15  
 V2     n=256  geometric    PASS     err=6.47e-13  
 tree   n=256  equal        PASS     err=1.10e-12  
 naive  n=256  equal        PASS     err=1.10e-12  
 linear n=256  equal        PASS     err=1.10e-12  
 hyb8   n=256  equal        PASS     err=1.10e-12  
-xchk   n=256  equal        PASS     diff=9.04e-16  
+xchk   n=256  equal        PASS     diff=1.08e-15  
 V2     n=256  equal        PASS     err=1.82e-12  
 tree   n=256  adv_1e9      PASS     err=1.54e-10  
 naive  n=256  adv_1e9      PASS     err=1.54e-10  
@@ -154,28 +154,28 @@ V2     n=256  adv_1e9      PASS     err=1.54e-10
 tree   n=1024 uniform      PASS     err=8.08e-13  
 linear n=1024 uniform      PASS     err=7.98e-13  
 hyb8   n=1024 uniform      PASS     err=7.98e-13  
-xchk   n=1024 uniform      PASS     diff=8.64e-15  
+xchk   n=1024 uniform      PASS     diff=8.58e-15  
 tree   n=1024 adversarial  PASS     err=5.26e-13  
 linear n=1024 adversarial  PASS     err=5.11e-13  
 hyb8   n=1024 adversarial  PASS     err=5.11e-13  
-xchk   n=1024 adversarial  PASS     diff=1.81e-14  
+xchk   n=1024 adversarial  PASS     diff=1.82e-14  
 tree   n=1024 adv_1e9      PASS     err=1.54e-10  
 linear n=1024 adv_1e9      PASS     err=1.54e-10  
 hyb8   n=1024 adv_1e9      PASS     err=1.54e-10  
-xchk   n=1024 adv_1e9      PASS     diff=1.44e-15  
-tree   n=4096 uniform      PASS     err=8.45e-13  
+xchk   n=1024 adv_1e9      PASS     diff=1.33e-15  
+tree   n=4096 uniform      PASS     err=8.46e-13  
 linear n=4096 uniform      PASS     err=8.05e-13  
 hyb8   n=4096 uniform      PASS     err=8.05e-13  
-xchk   n=4096 uniform      PASS     diff=2.87e-14  
+xchk   n=4096 uniform      PASS     diff=2.85e-14  
 tree   n=4096 adversarial  PASS     err=4.58e-13  
 linear n=4096 adversarial  PASS     err=3.98e-13  
 hyb8   n=4096 adversarial  PASS     err=4.01e-13  
-xchk   n=4096 adversarial  PASS     diff=7.53e-14  
+xchk   n=4096 adversarial  PASS     diff=7.56e-14  
 tree   n=4096 adv_1e9      PASS     err=1.54e-10  
 linear n=4096 adv_1e9      PASS     err=1.54e-10  
 hyb8   n=4096 adv_1e9      PASS     err=1.54e-10  
-xchk   n=4096 adv_1e9      PASS     diff=3.50e-14  
-subset n=1024 10/1024      PASS     diff=2.15e-16  
+xchk   n=4096 adv_1e9      PASS     diff=3.52e-14  
+subset n=1024 10/1024      PASS     diff=2.13e-16  
 
 ALL TESTS PASSED
 
@@ -185,17 +185,17 @@ n       k=10                                k=50                                
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 (median of 5 runs per engine per cell)
 
-64      L:0.0123(T0.0591 L0.0123 H0.0453 )  L:0.0206(T0.0794 L0.0206 H0.0528 )  L:0.0239(T0.0772 L0.0239 H0.0516 )  L:0.0144(T0.0660 L0.0144 H0.0405 )  L:0.0171(T0.0709 L0.0171 H0.0467 )  L:0.0245(T0.0778 L0.0245 H0.0515 )
-128     L:0.0210(T0.115 L0.0210 H0.0904 )   L:0.0378(T0.155 L0.0378 H0.107 )    L:0.0620(T0.165 L0.0620 H0.130 )    L:0.0291(T0.132 L0.0291 H0.0986 )   L:0.0439(T0.152 L0.0439 H0.109 )    L:0.0777(T0.164 L0.0777 H0.117 )  
-256     L:0.0368(T0.229 L0.0368 H0.183 )    L:0.0752(T0.303 L0.0752 H0.224 )    L:0.147 (T0.318 L0.147 H0.248 )     L:0.0953(T0.299 L0.0953 H0.231 )    L:0.222 (T0.321 L0.222 H0.246 )     H:0.257 (T0.331 L0.368 H0.257 )   
-512     L:0.0684(T0.451 L0.0684 H0.325 )    L:0.179 (T0.593 L0.179 H0.457 )     L:0.292 (T0.632 L0.292 H0.523 )     L:0.389 (T0.658 L0.389 H0.497 )     H:0.537 (T0.694 L0.800 H0.537 )     H:0.577 (T0.744 L1.87 H0.577 )    
-1024    L:0.130 (T0.882 L0.130 H0.687 )     L:0.354 (T1.17 L0.354 H0.940 )      L:0.567 (T1.26 L0.567 H1.06 )       H:1.13  (T1.40 H1.13 )              H:1.20  (T1.50 H1.20 )              H:1.31  (T1.62 H1.31 )            
-2048    L:0.311 (T1.78 L0.311 H1.33 )       L:0.717 (T2.30 L0.717 H1.71 )       L:1.17  (T2.62 L1.17 H2.21 )        H:2.54  (T3.08 H2.54 )              H:2.77  (T3.38 H2.77 )              H:2.95  (T3.64 H2.95 )            
-4096    L:0.616 (T3.72 L0.616 H2.82 )       L:1.40  (T4.39 L1.40 H3.51 )        L:2.41  (T5.02 L2.41 H4.06 )        H:5.82  (T6.88 H5.82 )              H:6.46  (T7.54 H6.46 )              H:6.83  (T9.83 H6.83 )            
-8192    L:1.23  (T7.36 L1.23 H5.80 )        L:2.86  (T8.99 L2.86 H6.86 )        L:4.99  (T10.4 L4.99 H8.08 )        H:13.9  (T17.6 H13.9 )              H:15.5  (T22.4 H15.5 )              H:17.7  (T29.5 H17.7 )            
-16384   L:2.53  (T14.6 L2.53 H11.7 )        L:5.69  (T24.9 L5.69 H13.8 )        L:9.36  (T29.9 L9.36 H16.7 )        H:82.7  (T114 H82.7 )               H:113   (T138 H113 )                H:153   (T163 H153 )              
-32768   L:5.70  (T40.0 L5.70 H22.6 )        L:11.9  (T123 L11.9 H32.9 )         L:20.9  (T151 L20.9 H56.7 )         H:262   (T314 H262 )                H:307   (T342 H307 )                H:380   (T387 H380 )              
-65536   L:19.3  (T179 L19.3 H76.8 )         L:29.1  (T306 L29.1 H115 )          L:45.7  (T349 L45.7 H192 )          H:650   (T756 H650 )                H:782   (T850 H782 )                T:999   (T999 H1020 )             
+64      L:0.0140(T0.0670 L0.0140 H0.0514 )  L:0.0230(T0.0917 L0.0230 H0.0534 )  L:0.0260(T0.0903 L0.0260 H0.0594 )  L:0.0138(T0.0713 L0.0138 H0.0413 )  L:0.0162(T0.0717 L0.0162 H0.0478 )  L:0.0241(T0.0803 L0.0241 H0.0558 )
+128     L:0.0203(T0.114 L0.0203 H0.0947 )   L:0.0386(T0.168 L0.0386 H0.111 )    L:0.0685(T0.171 L0.0685 H0.130 )    L:0.0307(T0.138 L0.0307 H0.0975 )   L:0.0461(T0.161 L0.0461 H0.109 )    L:0.0814(T0.179 L0.0814 H0.119 )  
+256     L:0.0350(T0.214 L0.0350 H0.179 )    L:0.0781(T0.309 L0.0781 H0.227 )    L:0.151 (T0.322 L0.151 H0.240 )     L:0.0896(T0.303 L0.0896 H0.232 )    L:0.195 (T0.335 L0.195 H0.245 )     H:0.254 (T0.347 L0.375 H0.254 )   
+512     L:0.0646(T0.457 L0.0646 H0.369 )    L:0.175 (T0.617 L0.175 H0.464 )     L:0.296 (T0.666 L0.296 H0.519 )     L:0.404 (T0.651 L0.404 H0.512 )     H:0.545 (T0.716 L0.735 H0.545 )     H:0.593 (T0.760 L1.83 H0.593 )    
+1024    L:0.130 (T0.814 L0.130 H0.693 )     L:0.351 (T1.29 L0.351 H0.964 )      L:0.602 (T1.33 L0.602 H1.23 )       H:1.14  (T1.46 H1.14 )              H:1.26  (T1.61 H1.26 )              H:1.33  (T1.69 H1.33 )            
+2048    L:0.313 (T1.80 L0.313 H1.35 )       L:0.719 (T2.40 L0.719 H1.76 )       L:1.19  (T2.68 L1.19 H2.21 )        H:2.62  (T3.29 H2.62 )              H:2.85  (T3.59 H2.85 )              H:3.01  (T3.72 H3.01 )            
+4096    L:0.631 (T3.74 L0.631 H2.64 )       L:1.43  (T4.91 L1.43 H3.52 )        L:2.34  (T5.27 L2.34 H4.76 )        H:5.99  (T7.38 H5.99 )              H:6.59  (T7.94 H6.59 )              H:6.96  (T8.42 H6.96 )            
+8192    L:1.21  (T6.56 L1.21 H5.20 )        L:2.79  (T9.64 L2.79 H7.31 )        L:4.76  (T11.1 L4.76 H8.31 )        H:17.8  (T19.2 H17.8 )              H:16.9  (T24.1 H16.9 )              H:21.9  (T31.5 H21.9 )            
+16384   L:2.58  (T15.0 L2.58 H11.9 )        L:5.59  (T22.1 L5.59 H16.0 )        L:9.55  (T33.1 L9.55 H16.8 )        H:84.6  (T120 H84.6 )               H:110   (T148 H110 )                H:149   (T177 H149 )              
+32768   L:5.96  (T42.6 L5.96 H23.4 )        L:11.8  (T129 L11.8 H57.9 )         L:20.0  (T163 L20.0 H84.9 )         H:280   (T332 H280 )                H:311   (T366 H311 )                H:359   (T412 H359 )              
+65536   L:20.4  (T190 L20.4 H80.6 )         L:32.5  (T325 L32.5 H125 )          L:45.8  (T369 L45.8 H217 )          H:644   (T820 H644 )                H:747   (T911 H747 )                H:928   (T1090 H928 )             
 
 Legend: T=tree(+FFT), L=linear, H=hybrid(B=8). Best engine shown.
 Done.
