@@ -1,166 +1,235 @@
-/* validate_best_b.c — Direct empirical validation of icm_select_best_B(n,k).
+/* validate_best_b.c — Single-point probe: for a given (n,k), report the
+ * cost-model choice (auto_B) vs. the empirically-fastest B (best_B) with
+ * timing and gap.
  *
- * For each (n,k) in a sparse grid spanning the just-fixed linear/hybrid
- * crossover region (where B-selection actually matters), this tool times
- * the REAL hybrid engine at EVERY candidate B ∈ {8,16,24,32,48,64} using
- * median-of-7-reps timing — the project's established discipline — and
- * reports whether the cost-model-driven icm_select_best_B chooses the
- * empirically-fastest B.
+ * This is the "oracle" a later adaptive loop calls per probe — one point
+ * at a time, fast, with machine-parseable output.
  *
- * Methodology:
- *   Q=256 (matches bench_grid/crossover conventions)
- *   payout[m] = (double)(n - m)  (matches calibrate_crossover)
- *   S[i] = 100.0 + 9900.0 * rand()/RAND_MAX  with srand(42)
- *   median of 7 reps per candidate
+ * Usage:
+ *   validate_best_b <n> <k> [--config /path/to/fft_config.h]
  *
- * Build:
+ * Output (one line to stdout, CSV with header prefix #):
+ *   n,k,auto_B,auto_ms,best_B,best_ms,gap_pct
+ *
+ * Columns:
+ *   n,k       — input parameters (int)
+ *   auto_B    — B chosen by icm_select_best_B(n,k) (int)
+ *   auto_ms   — median-of-7 timing of hybrid engine at auto_B, in ms (double)
+ *   best_B    — empirically-fastest B in {8,16,24,32,48,64} (int)
+ *   best_ms   — median-of-7 timing at best_B, in ms (double)
+ *   gap_pct   — (auto_ms - best_ms) / best_ms * 100; 0.0 if auto_B == best_B
+ *               or auto is faster (double)
+ *
+ * All measurements: Q=256, srand(42), payout[m]=n-m, S[i]=100+9900*rand()/RAND_MAX
+ * — matching bench_grid crossover and calibrate_best_b conventions exactly.
+ *
+ * Discovery strategy for best_B:
+ *   1 rep per candidate to rank, then 2 more reps on top-2 if within 3%,
+ *   median of those 3 determines the winner. (Same as calibrate_best_b.)
+ *   Then a fresh median-of-7 for both auto_B and best_B for the final
+ *   reported ms values — ensures fair, low-noise head-to-head.
+ *
+ * Build (macOS M3 Pro):
  *   gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
  *       -o build/validate_best_b tools/validate_best_b.c src/icm.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
- *
- * This is a throwaway diagnostic tool — context objects are deliberately
- * leaked rather than calling icm_ctx_destroy with potentially-wrong
- * EngineKind enum values.
+ * Build (Linux/Zen4, AOCL-FFTW):
+ *   gcc -O3 -march=znver4 -Isrc -Idevices/zen4 -I/usr/local/aocl-fftw/include \
+ *       -o build/validate_best_b tools/validate_best_b.c src/icm.c \
+ *       -L/usr/local/aocl-fftw/lib -Wl,-rpath,/usr/local/aocl-fftw/lib \
+ *       -lfftw3 -lm -ldl -lmvec
  */
 
 #include "icm.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
-#define N_REPS   7
-#define Q_PROBE  256
+#define Q_PROBE        256
+#define N_REPS_FINAL   7
+#define N_CANDIDATES   6
+#define RUNOFF_PCT     3.0
+
+static const int B_candidates[N_CANDIDATES] = {8, 16, 24, 32, 48, 64};
 
 static int cmp_double(const void *a, const void *b) {
     double da = *(const double *)a, db = *(const double *)b;
     return (da > db) ? 1 : (da < db) ? -1 : 0;
 }
 
-int main(void) {
-    icm_init(NULL);
+/* ── Single-rep timing ─────────────────────────────────────────── */
 
-    int n_vals[]      = {1024, 4096, 8192, 16384};
-    int n_n            = 4;
-    int k_vals[]       = {150, 250, 400, 800, 2000};
-    int n_k            = 5;
-    int B_candidates[] = {8, 16, 24, 32, 48, 64};
-    int n_B            = 6;
+static double time_one(int n, int k, int B, const double *S,
+                       const double *payout, double *equity) {
+    void *hc = icm_hybrid_ctx_create(n, S, k, B);
+    double t = icm_run_engine(n, S, Q_PROBE, payout, k, equity,
+                               icm_engine_hybrid(), hc) / (double)Q_PROBE;
+    /* Deliberately leak hc — this is a short-lived offline calibration
+     * tool where getting EngineKind enum wrong for icm_ctx_destroy
+     * would segfault. Leaking is safe; guessing the enum wrong isn't. */
+    return t;
+}
 
-    /* Table header */
-    printf("    n     k  model_B  real_fastest_B  "
-           "model_B_time_ns  real_fastest_B_time_ns  %%slower\n");
-    printf("------ ----- -------- ---------------  "
-           "---------------  ----------------------  --------\n");
+/* ── Median-of-7 timing ────────────────────────────────────────── */
 
-    int verdict_ok = 1;
+static double time_median7(int n, int k, int B, const double *S,
+                           const double *payout, double *equity) {
+    double samples[N_REPS_FINAL];
+    for (int r = 0; r < N_REPS_FINAL; r++) {
+        samples[r] = time_one(n, k, B, S, payout, equity);
+    }
+    qsort(samples, N_REPS_FINAL, sizeof(double), cmp_double);
+    return samples[N_REPS_FINAL / 2];
+}
 
-    for (int ni = 0; ni < n_n; ni++) {
-        int n = n_vals[ni];
+/* ── Main ───────────────────────────────────────────────────────── */
 
-        for (int ki = 0; ki < n_k; ki++) {
-            int k = k_vals[ki];
-            if (k > n) continue;
+int main(int argc, char **argv) {
+    int n = 0, k = 0;
+    const char *config_path = NULL;
 
-            /* Allocate working arrays */
-            double *S      = (double *)malloc(n * sizeof(double));
-            double *payout = (double *)malloc(k * sizeof(double));
-            double *equity = (double *)malloc(n * sizeof(double));
-
-            /* Generate stacks: same convention as every other tool in this project */
-            srand(42);
-            for (int i = 0; i < n; i++)
-                S[i] = 100.0 + 9900.0 * ((double)rand() / RAND_MAX);
-
-            /* payout[m] = (double)(n-m) — matches bench_grid crossover */
-            for (int m = 0; m < k; m++)
-                payout[m] = (double)(n - m);
-
-            /* Model's choice */
-            int model_B = icm_select_best_B(n, k);
-
-            /* Time every candidate B, find the empirically fastest */
-            int    best_B     = -1;
-            double best_time  = 1e18;
-
-            for (int bi = 0; bi < n_B; bi++) {
-                int B = B_candidates[bi];
-                if (B > k || B > n) continue;
-
-                double samples[N_REPS];
-                for (int r = 0; r < N_REPS; r++) {
-                    void *hc = icm_hybrid_ctx_create(n, S, k, B);
-                    samples[r] = icm_run_engine(n, S, Q_PROBE, payout, k,
-                                                 equity, icm_engine_hybrid(), hc);
-                    /* Deliberately leak hc — see file header */
-                }
-                qsort(samples, N_REPS, sizeof(double), cmp_double);
-                double med = samples[N_REPS / 2];
-
-                if (med < best_time) {
-                    best_time = med;
-                    best_B    = B;
-                }
-            }
-
-            /* Find model_B's median time: re-run a fresh timing specifically
-             * for model_B so the number is directly comparable (same noise
-             * environment) rather than cherry-picked from the scan above. */
-            double model_time = 0.0;
-            {
-                double samples[N_REPS];
-                for (int r = 0; r < N_REPS; r++) {
-                    void *hc = icm_hybrid_ctx_create(n, S, k, model_B);
-                    samples[r] = icm_run_engine(n, S, Q_PROBE, payout, k,
-                                                 equity, icm_engine_hybrid(), hc);
-                }
-                qsort(samples, N_REPS, sizeof(double), cmp_double);
-                model_time = samples[N_REPS / 2];
-            }
-
-            /* Also re-time the real fastest B for a fair head-to-head.
-             * The scan above gave us a rank-order, but we want a fresh
-             * median from the same "noise epoch" as model_time. */
-            double real_time = 0.0;
-            {
-                double samples[N_REPS];
-                for (int r = 0; r < N_REPS; r++) {
-                    void *hc = icm_hybrid_ctx_create(n, S, k, best_B);
-                    samples[r] = icm_run_engine(n, S, Q_PROBE, payout, k,
-                                                 equity, icm_engine_hybrid(), hc);
-                }
-                qsort(samples, N_REPS, sizeof(double), cmp_double);
-                real_time = samples[N_REPS / 2];
-            }
-
-            /* Calculate % slower: (model_time - real_time) / real_time * 100 */
-            double pct_slower = 100.0 * (model_time - real_time) / real_time;
-            if (pct_slower < 0.0) pct_slower = 0.0;  /* model was faster — good */
-
-            printf("%6d %5d %8d %15d  %15.1f %22.1f  %7.2f%%\n",
-                   n, k, model_B, best_B,
-                   model_time, real_time, pct_slower);
-
-            if (best_B != model_B && pct_slower > 5.0) {
-                verdict_ok = 0;
-            }
-
-            free(S);
-            free(payout);
-            free(equity);
+    /* Parse args */
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--config")) {
+            if (i + 1 < argc) config_path = argv[++i];
+            else { fprintf(stderr, "--config requires a path\n"); return 1; }
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "Unknown flag: %s\n", argv[i]);
+            return 1;
+        } else if (n == 0) {
+            n = atoi(argv[i]);
+        } else if (k == 0) {
+            k = atoi(argv[i]);
+        } else {
+            fprintf(stderr, "Extra argument: %s\n", argv[i]);
+            return 1;
         }
     }
 
-    printf("\n── VERDICT ──\n");
-    if (verdict_ok) {
-        printf("PASS: icm_select_best_B selects the empirically-optimal B "
-               "(or within ~5%%) across the tested grid.\n");
-    } else {
-        printf("ACTIONABLE GAP: icm_select_best_B does NOT reliably select "
-               "the fastest B — the summed-constants cost model is inaccurate "
-               "for B-selection, just as it was for the linear/hybrid "
-               "crossover decision.\n");
+    if (n <= 0 || k <= 0 || k > n) {
+        fprintf(stderr,
+                "Usage: validate_best_b <n> <k> [--config /path/to/fft_config.h]\n"
+                "  n > 0, 0 < k <= n\n");
+        return 1;
     }
-    printf("\n");
 
-    return verdict_ok ? 0 : 1;
+    /* ── Init ICM ─────────────────────────────────────────────── */
+    /* --config is accepted for future use (in-progress candidate table);
+     * currently icm_init(NULL) reads the compiled-in fft_config.h. */
+    (void)config_path;
+    icm_init(NULL);
+
+    /* ── Allocate ─────────────────────────────────────────────── */
+    double *S      = (double *)malloc(n * sizeof(double));
+    double *payout = (double *)malloc(k * sizeof(double));
+    double *equity = (double *)malloc(n * sizeof(double));
+    if (!S || !payout || !equity) { fprintf(stderr, "OOM\n"); return 1; }
+
+    /* Generate stacks: same convention as every other tool */
+    srand(42);
+    for (int i = 0; i < n; i++)
+        S[i] = 100.0 + 9900.0 * ((double)rand() / RAND_MAX);
+
+    /* payout[m] = (n-m) */
+    for (int m = 0; m < k; m++)
+        payout[m] = (double)(n - m);
+
+    /* ── auto_B from cost model ──────────────────────────────── */
+    int auto_B = icm_select_best_B(n, k);
+
+    /* ── Phase 1: 1 rep per candidate to find best_B ────────── */
+    double t1[N_CANDIDATES];
+    int    valid[N_CANDIDATES];
+    int    n_valid = 0;
+
+    for (int bi = 0; bi < N_CANDIDATES; bi++) {
+        int B = B_candidates[bi];
+        if (B > n) { valid[bi] = 0; continue; }
+        valid[bi] = 1;
+        n_valid++;
+        t1[bi] = time_one(n, k, B, S, payout, equity);
+    }
+
+    if (n_valid == 0) {
+        fprintf(stderr, "n=%d k=%d: no valid B candidates (n < smallest candidate B=%d)\n",
+                n, k, B_candidates[0]);
+        free(S); free(payout); free(equity);
+        return 1;
+    }
+
+    /* Find top-2 */
+    int    best_idx = -1, second_idx = -1;
+    double best_t = 1e18, second_t = 1e18;
+
+    for (int bi = 0; bi < N_CANDIDATES; bi++) {
+        if (!valid[bi]) continue;
+        if (t1[bi] < best_t) {
+            second_t   = best_t;
+            second_idx = best_idx;
+            best_t     = t1[bi];
+            best_idx   = bi;
+        } else if (t1[bi] < second_t) {
+            second_t   = t1[bi];
+            second_idx = bi;
+        }
+    }
+
+    int best_B;
+
+    if (n_valid == 1) {
+        best_B = B_candidates[best_idx];
+    } else {
+        /* Check if runoff needed */
+        int do_runoff = 0;
+        if (best_idx >= 0 && second_idx >= 0 && best_t > 0.0) {
+            double pct = 100.0 * (second_t - best_t) / best_t;
+            if (pct <= RUNOFF_PCT) do_runoff = 1;
+        }
+
+        if (do_runoff) {
+            double a_s[3], b_s[3];
+            a_s[0] = t1[best_idx];
+            b_s[0] = t1[second_idx];
+            for (int r = 1; r < 3; r++) {
+                a_s[r] = time_one(n, k, B_candidates[best_idx], S, payout, equity);
+                b_s[r] = time_one(n, k, B_candidates[second_idx], S, payout, equity);
+            }
+            qsort(a_s, 3, sizeof(double), cmp_double);
+            qsort(b_s, 3, sizeof(double), cmp_double);
+            best_B = (a_s[1] <= b_s[1]) ? B_candidates[best_idx]
+                                        : B_candidates[second_idx];
+        } else {
+            best_B = B_candidates[best_idx];
+        }
+    }
+
+    /* ── Phase 2: fresh median-of-7 for final ms values ──────── */
+    double auto_ms = time_median7(n, k, auto_B, S, payout, equity);
+    double best_ms = time_median7(n, k, best_B, S, payout, equity);
+
+    /* gap: positive means auto_B is slower than best_B */
+    double gap_pct = 0.0;
+    if (best_ms > 0.0) {
+        gap_pct = 100.0 * (auto_ms - best_ms) / best_ms;
+        if (gap_pct < 0.0) gap_pct = 0.0;  /* auto was faster — no gap */
+    }
+
+    /* ── Machine-readable output to stdout ────────────────────
+     * Format: n,k,auto_B,auto_ms,best_B,best_ms,gap_pct
+     * auto_ms and best_ms are in NANOSECONDS per QP (ns/qp),
+     * matching the convention used throughout the codebase.
+     * To convert to milliseconds: divide by 1e6.
+     * gap_pct is dimensionless (percentage).
+     */
+    printf("%d,%d,%d,%.6f,%d,%.6f,%.4f\n",
+           n, k, auto_B, auto_ms, best_B, best_ms, gap_pct);
+    fflush(stdout);
+
+    /* Debug to stderr */
+    fprintf(stderr, "[%d,%d] auto_B=%d (%.1f ns/qp) best_B=%d (%.1f ns/qp) gap=%.2f%%\n",
+            n, k, auto_B, auto_ms, best_B, best_ms, gap_pct);
+
+    free(S); free(payout); free(equity);
+    return 0;
 }
