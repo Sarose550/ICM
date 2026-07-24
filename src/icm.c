@@ -2238,103 +2238,35 @@ static int B_to_table_index(int B) {
     }
 }
 
-/* Engine dispatch: compare estimated linear vs hybrid cost for given (n, k).
+/* Engine dispatch: linear vs hybrid, for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.
  * n_targets: number of target players for subset queries (0 or n = all players).
- * When n_targets < n, the backward/leaf-extract phases scale with n_targets/n. */
+ *
+ * Uses the empirically-measured crossover table (src/fft_cost_model.h's
+ * empirical_crossover_k(), calibrated by tools/calibrate_crossover.c)
+ * rather than a summed analytical cost comparison. Closed-form cost models
+ * miss microarchitectural effects even when every constant is individually
+ * correct (a known result in the autotuning literature: FFTW MEASURE/PATIENT
+ * vs its ESTIMATE heuristic, ATLAS's AEOS). See LAPACK ILAENV NX for the
+ * structural precedent.
+ *
+ * The table was calibrated on full-equity queries only. It is reused here
+ * for subset queries too (n_targets < n) as an interim measure: the linear
+ * engine's forward pass and g-propagation are always full-cost regardless
+ * of n_targets, so real linear subset cost tracks full-equity cost far more
+ * closely than a target_frac-scaled model would suggest -- a dedicated
+ * (n, target_frac) -> crossover_k calibration would sharpen this further
+ * but is out of scope here. */
 static int select_engine_ex(int n, int k, int n_targets) {
+    (void)n_targets;
     if (n < 16 || k < 4) return 0;
-
-    /* target_frac: fraction of players needing equity extraction.
-     * Forward pass is always full-n; backward scales with target_frac. */
-    double target_frac = (n_targets > 0 && n_targets < n)
-                         ? (double)n_targets / (double)n : 1.0;
-
-    /* Linear cost: forward pass (full) + backward pass (scaled by target_frac).
-     * The roofline gives the combined fwd+bwd cost; approximate as 50/50 split. */
-    double linear_full = linear_roofline_cost(n, k, LINEAR_BQ);
-    double linear_per_qp = linear_full * (0.5 + 0.5 * target_frac);
 
     int B = select_best_B(n, k);
     { const char *fb = getenv("ICM_FORCE_B");
       if (fb && fb[0]) { int v = atoi(fb); if (v > 0 && v <= n && v <= k) B = v; } }
-    int nblocks = (n + B - 1) / B;
-    /* block_build: per-player cost via direct lookup table (non-linear in B). */
-    double block_build = (double)n * block_build_ns_per_player[B_to_table_index(B)];
-    TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
-    double tree = 0;
-    for (int ell = 1; ell < tc->L - 1; ell++) {
-        int cps = tc->psz[ell-1], nr = tc->n_real[ell];
-        if (tc->use_fft[ell]) {
-            int bfn = tc->build_fft_n[ell];
-            int bwm = tc->build_wrap_m[ell];
-            int idx = 0;
-            { int lo=0,hi=N_CALIBRATED_SIZES-1;
-              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-              idx=lo; }
-            double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                             + (double)bwm*(bwm+1)/2.0*WRAP_FMA_NS;
-            double corr;
-            if (tc->fft_cache_ok[ell]) {
-                corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                     + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*WRAP_FMA_NS;
-            } else {
-                int cfn = tc->corr_fft_n[ell];
-                int cwm = tc->corr_wrap_m[ell];
-                int cidx=0;
-                {int lo=0,hi=N_CALIBRATED_SIZES-1;
-                 while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
-                 cidx=lo;}
-                corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                     + (double)cwm*(cwm+1)*WRAP_FMA_NS;
-            }
-            tree += nr * (build_fft + corr);
-        } else {
-            /* Schoolbook cost via direct per-size lookup table.
-             * Binary-search calib_sizes[] for cps (exact match guaranteed —
-             * cps is always a power-of-2 multiple of B or a smooth k_padded cap,
-             * both of which are in calib_sizes[] by construction). */
-            int idx;
-            { int lo=0,hi=N_CALIBRATED_SIZES-1;
-              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
-              idx=lo; }
-            double s = schoolbook_mul_ns[idx];
-            double c = (double)cps * tc->g_needed[ell-1] * schoolbook_corr_ns[idx];
-            tree += nr * (s + c);
-        }
-    }
-    tree_ctx_destroy(tc);
 
-    /* leaf_extract: per-player cost via direct lookup table.
-     * FP64_DIV_NS is the division-bound floor (directly measured, one div per player).
-     * leaf_fma_ns_per_player[] gives the FMA-chain side (per player, already includes
-     * amortized per-block overhead from the benchmark measurement — per_block_ns / B).
-     * The max() decides which bottleneck dominates.
-     * For subset queries, only target players need extraction. */
-    int bidx = B_to_table_index(B);
-    double le_cost_per_player = (FP64_DIV_NS > leaf_fma_ns_per_player[bidx])
-                                ? FP64_DIV_NS : leaf_fma_ns_per_player[bidx];
-    double leaf_extract = (double)n * le_cost_per_player;
-    double hybrid_total = block_build + tree + leaf_extract * target_frac;
-
-    /* Full-equity queries (n_targets == 0): use the empirically-measured
-     * crossover table instead of the summed analytical cost comparison.
-     * Closed-form cost models miss microarchitectural effects even when
-     * every constant is individually correct (a known result in the
-     * autotuning literature: FFTW MEASURE/PATIENT vs its ESTIMATE
-     * heuristic, ATLAS's AEOS). See src/fft_cost_model.h's
-     * empirical_crossover_k() (LAPACK ILAENV NX precedent) and
-     * tools/calibrate_crossover.c for the calibration.
-     *
-     * Subset queries (n_targets > 0) still use the analytical comparison
-     * above -- the empirical table was only calibrated for full-equity
-     * dispatch. */
-    if (n_targets <= 0 || n_targets >= n) {
-        double k_cross = empirical_crossover_k(n);
-        return ((double)k < k_cross) ? 0 : B;
-    }
-
-    return (hybrid_total < linear_per_qp) ? B : 0;
+    double k_cross = empirical_crossover_k(n);
+    return ((double)k < k_cross) ? 0 : B;
 }
 
 /* Convenience wrapper for full-equity queries (all players). */
