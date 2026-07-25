@@ -85,7 +85,9 @@ gate_fail() {
 
 remote() {
     # Run a command on the remote box, echoing it first.
-    echo "  [remote] $*"
+    # The echo goes to stderr so it never contaminates $(remote ...) command
+    # substitution -- only the remote command's real stdout is captured.
+    echo "  [remote] $*" >&2
     ssh -p "$B200_PORT" "$B200_HOST" "$@"
 }
 
@@ -151,19 +153,14 @@ else
         die "REPO_SOURCE '$REPO_SOURCE' is not a git repo (local directory not found or no .git)"
     fi
     remote "mkdir -p '$REMOTE_WORKDIR'" || die "mkdir remote workdir failed"
-    echo "  rsync $REPO_SOURCE/ -> $B200_HOST:$REMOTE_WORKDIR/"
-    rsync -avz -e "ssh -p $B200_PORT" \
-        --exclude='.git' \
-        --exclude='build/' \
-        --exclude='*.o' \
-        --exclude='bench_gpu' \
-        --exclude='bench_gpu_fused' \
-        --exclude='calibrate_gpu' \
-        --exclude='heatmap_gpu' \
-        --exclude='push_limit_gpu' \
-        --exclude='__pycache__/' \
-        --exclude='*.pyc' \
-        "$REPO_SOURCE/" "$B200_HOST:$REMOTE_WORKDIR/" || die "rsync failed"
+    echo "  rsync $REPO_SOURCE/ -> $B200_HOST:$REMOTE_WORKDIR/ (git-tracked + untracked-but-not-ignored files only)"
+    # Transfer exactly what git knows about (tracked + untracked-but-unignored,
+    # e.g. this session's not-yet-committed sprint board) -- never a raw
+    # directory rsync.  Local scratch dirs (venvs, old worktrees, prior
+    # results) can be 100s of MB of junk that has no business on a build box.
+    ( cd "$REPO_SOURCE" && git ls-files --cached --others --exclude-standard -z ) \
+        | rsync -avz --from0 --files-from=- -e "ssh -p $B200_PORT" \
+            "$REPO_SOURCE/" "$B200_HOST:$REMOTE_WORKDIR/" || die "rsync failed"
 fi
 
 # 0c. Detect cuFFTDx include path

@@ -449,30 +449,64 @@ coverage to break this collinearity is flagged as real, open follow-up work.
 
 | n | k=64 | k=1024 | k=n/2 | k=n |
 |---|------|--------|-------|-----|
-| 4,096 | 0.37 | 0.75 | 0.82 | 0.86 |
-| 16,384 | 1.19 | 2.86 | 4.07 | 4.37 |
-| 65,536 | 4.40 | 10.83 | 19.85 | 20.64 |
-| 262,144 | 17.14 | 42.21 | 97.60 | 101.3 |
-| 1,048,576 | 68.09 | 167.34 | 683.06 | 687.67 |
-| 4,194,304 | 273.28 | 873.28 | 2475.64 | 2500.45 |
+| 4,096 | 0.54 | 0.94 | 1.04 | 1.08 |
+| 16,384 | 1.34 | 7.62 | 4.52 | 5.16 |
+| 65,536 | 5.13 | 25.72 | 44.55 | 20.65 |
+| 262,144 | 38.97 | 50.75 | 219.68 | 118.21 |
+| 1,048,576 | 171.03 | 410.27 | 588.15 | 593.80 |
+| 4,194,304 | 317.54 | OOM (see below) | 5050.43 | 5524.33 |
 
-Sampled from the 211-point calibration heatmap (`results/gpu_heatmap_b200.csv`).
+Sampled from the 211-point calibration heatmap (`results/gpu_heatmap_b200.csv`),
+regenerated 2026-07-25 against the post-G/G2/G3/G4 codebase (commit
+`abd9fa4` and later) and a freshly re-extended FFT/workspace calibration
+(67,108,864 max size, matching the previously-validated range).
 
-### Frontier probes (dedicated max-n / max-field search, `tools/push_limit_gpu.cu`)
+> **Known open issue, NOT fixed as of this table (see HANDOFF.md for full
+> writeup):** 21 of 211 cells in this sweep failed with a CUDA
+> out-of-memory error, all at large n (2,097,152 - 33,554,432) in a
+> consistent middle-k band. The n=4,194,304, k=1,024 cell above is one of
+> them (shown as OOM rather than a fabricated number). This is a distinct,
+> newer finding from the one this session's G/G2/G3/G4 commits fixed --
+> verified NOT the same root cause (the exact same failing (n,k) points
+> pass cleanly when run in isolation outside the long sweep). Root cause
+> not yet identified; flagged for a dedicated follow-up rather than a
+> rushed fix.
 
-These are not part of the systematic grid above -- they're the specific `n`
-values a binary search landed on to pin down the 1-second and 626ms
-boundaries.
+### Frontier probes (dedicated max-n / max-field search)
+
+These are not part of the systematic grid above -- they're specific `n`
+values used to characterize large-n behavior.
 
 | n | k | Time (ms) |
 |---|---|-----------|
-| 1,441,792 | n | 866 |
-| 1,572,864 | n | 1,148 |
-| 6,291,456 | 100 | 626.3 |
+| 1,441,792 | n | 1,125 |
+| 1,572,864 | n | 1,124 |
+| 6,291,456 | 100 | 950.5 |
 | 8,388,608 | 100 | 1,235 |
-| 16,777,216 | 10 | 2,592 |
+| 16,777,216 | 10 | 1,365 |
 
-### 1-second threshold: n ≈ 1,441,792 (k=n), n ≈ 6,291,456 (k=100)
+Regenerated 2026-07-25 via a targeted auto-dispatch probe
+(`scripts/frontier_probe.cu`), not the original `tools/push_limit_gpu.cu`
+exhaustive B/M/T hyperparameter sweep -- that tool's full 20-value n-grid
+search was measured taking over 3.5 minutes on just its first (smallest) n
+value with no early-exit for the feasible region, making a full run
+impractical within the session's time/budget. The numbers above use the
+same real full computation and the empirically-validated auto B-selection
+(`gbselect_*` table) that production dispatch actually uses, just without
+hunting for the absolute-optimal B/M/T at each point the way the original
+tool does. If exact reproduction of the original tool's methodology
+matters for the paper, `push_limit_gpu` should be re-run to completion in
+a future session with a larger time budget.
+
+### 1-second threshold: needs re-measurement
+
+The previous n≈1,441,792 (k=n) / n≈6,291,456 (k=100) threshold estimates
+predate this session's dispatch/workspace fixes and the frontier-probe
+methodology change above; the new numbers no longer land cleanly on those
+boundaries (e.g. n=6,291,456 now measures 950ms, not 626ms). A precise
+re-measurement needs a real binary search (matching how the original
+thresholds were found), not a re-interpretation of the existing 5 sample
+points -- flagged as a follow-up, not resolved here.
 
 ### Dispatch: three-tier kernel planner (schoolbook / cuFFTDx fused / batched cuFFT), cost-based per tree level
 

@@ -23,15 +23,107 @@ nothing stale, hand-waved, or silently broken.
 
 ## START HERE
 
+**Read "GPU OOM: what's fixed and what's still open" below before touching
+anything GPU-related.** It has two distinct findings from the 2026-07-25
+session: one fully fixed and hardware-verified (four stacked commits), one
+genuinely NOT fixed and not yet understood. Do not conflate them.
+
 The repo is mid-cleanup after a long session that widened the B-selection
 calibration methodology, then hit several real problems while trying to
-verify and regenerate results from it. Nothing is currently broken in the
-*committed* state (`bench_grid verify` passes on both CPU platforms as of
-the last commit), but there is a clear, agreed punch list to reach the
-final portfolio-ready state. See **Next Steps** below for the exact plan.
-Read the **Architecture: what's actually load-bearing** section before
-touching any calibration/cost-model code, it's easy to misjudge what's
-safe to change or delete without it.
+verify and regenerate results from it. `bench_grid verify` and
+`bench_gpu_fused verify` both pass cleanly as of the last commit (CPU and
+GPU, confirmed on real M3 Pro and B200 hardware respectively). There is a
+clear, agreed punch list to reach the final portfolio-ready state, see
+**Next Steps** below, plus one newly-found open GPU issue that needs a
+dedicated investigation before the GPU results can be called final. Read
+the **Architecture: what's actually load-bearing** section before touching
+any calibration/cost-model code, it's easy to misjudge what's safe to
+change or delete without it.
+
+## GPU OOM: what's fixed and what's still open (2026-07-25)
+
+### Fixed, hardware-verified: the original n=2,097,152 k=256/512 OOM
+
+Four stacked commits, each reviewed line-by-line before landing (see
+`git log` for `8ce8a07`, `2f8fd22`, `66a2bc8`, `abd9fa4`):
+1. Reactive retry-on-OOM for the shared cuFFT workspace allocation.
+2. Proactive: query real cuFFT workspace size before committing to a
+   `q_batch`, instead of an incomplete estimate.
+3. Replace live per-plan cuFFT workspace probing with an offline
+   calibration table (mirrors the existing FFT-timing calibration
+   pattern), live probing kept as a fallback for uncalibrated sizes.
+4. **Root cause**: `allocate_level_buffers()` was unconditionally
+   creating a real cuFFT plan (with real, batch-scaled VRAM workspace)
+   for every FFT-tier level, including FUSED-tier (cuFFTDx) levels that
+   never actually execute against that plan and, per NVIDIA's own
+   cuFFTDx docs, need zero workspace at every size this codebase uses
+   (powers of 2, 64-8192, all under the documented 32768 no-workspace
+   threshold). Now skipped for confirmed cuFFTDx-supported FUSED levels;
+   a lazy on-demand fallback exists for the rare case cuFFTDx dispatch
+   itself fails at runtime.
+
+Verified directly on a rented B200 (2026-07-25): `bench_gpu_fused verify`
+passes 36/0 with the fix; the exact failing point (n=2097152, k=256 and
+k=512) passes in an isolated repro, with debug output confirming
+`cufft_ws=0.0 MB` for that specific case (every level in its tree is
+FUSED-tier, so the fix means zero cuFFT plans are even created for it).
+
+### NOT fixed, newly found, root cause unknown: long-sweep-only OOM
+
+The full 211-point `heatmap_gpu` sweep (run 2026-07-25, after all 4 fixes
+above and a correctly-ranged 67.1M-max calibration) failed on 21/211
+cells, all at large n (2,097,152 - 33,554,432), consistently in a
+middle-k band (e.g. at n=2097152: k=64 and k=128 pass, k=256/512/1024/2048
+all fail, k=4096+ passes again -- same pattern repeats at n=4194304,
+8388608, 16777216). See `results/b200_2026-07-25/heatmap_full.log` for
+the full log and `results/gpu_heatmap_time.png` for the visual (white
+gaps in a clean column band).
+
+**Confirmed NOT the same bug as above**: every one of the 21 failing
+(n,k) points, when re-run standalone in an isolated process
+(`scripts/frontier_probe.cu`), passes cleanly -- including the exact
+points that failed in the sweep (n=2097152 k=256, n=4194304 k=512,
+n=8388608 k=128, n=16777216 k=128, all confirmed individually). This
+means the failure depends on the LONG-RUNNING PROCESS STATE from many
+prior sequential plan create/destroy cycles within `heatmap_gpu`'s single
+process, not anything about the (n,k) point itself in isolation.
+
+**Ruled out this session** (don't re-check these, move on to new
+hypotheses): a short 3-call sequential repro (k=64 -> 128 -> 256 at
+n=2097152, mimicking the exact lead-up to the first failure) does NOT
+reproduce it -- so it's not "any prior allocation at all," it needs
+something closer to the full ~190-cell sequence before it manifests.
+`IcmGpuOptions` are identical between the isolated repro and the sweep
+tool (checked directly, both use `memory_strategy=0`,
+`force_uncached_*_levels=-1`), so it's not an options/config difference.
+
+**Not attempted this session, deliberately**: no live patch was applied.
+The user explicitly said not to reach for a reactive/hacky fix here (per
+the same principle that made the retry-only version of the OOM fix above
+unacceptable as a *primary* mechanism). This needs real diagnosis before
+a fix is written -- candidate directions for a future session:
+- CUDA's default allocator (not the async pool -- the main arena uses
+  plain `cudaMalloc`) fragmenting after many large alloc/free cycles of
+  varying sizes in one process. Test by inserting `cudaDeviceReset()` +
+  `icm_gpu_init(0)` between every cell (not just failures) in a
+  diagnostic copy of `heatmap_gpu.cu` and seeing if the failures
+  disappear -- if so, that's strong confirmation, and the real fix would
+  be understanding WHY the allocator can't reclaim/coalesce rather than
+  just resetting every cell as a workaround.
+- Check for an actual leak (not just fragmentation) in
+  `icm_gpu_plan_destroy()` -- does every allocation made during
+  `allocate_plan_device_memory()` get freed, including anything the G4
+  lazy-fallback path (`ensure_cufft_plans_for_level`) might allocate on
+  the rare cells where it fires?
+- Instrument with `ICM_GPU_DEBUG_PLAN=1` across a long real sequence
+  (not just the failing cell in isolation) to see if `current_vram_bytes`
+  / actual free VRAM (`cudaMemGetInfo`) drifts from what the plan
+  accounting believes it is over many cells.
+
+This is why the "1-second threshold" and `push_limit_gpu` frontier
+numbers in `RESULTS.md` are marked as needing re-measurement rather than
+finalized -- until this is understood, any long-running sweep's numbers
+near the affected n/k range should be treated with appropriate caution.
 
 ## Architecture: what's actually load-bearing (read before touching cost-model code)
 
@@ -273,10 +365,25 @@ where noted.
    `make results-refresh DEVICE=zen4` (with `OMP_NUM_THREADS=16`
    explicit) to refresh `results/`. Also run `bench_grid threshold` for
    a precise, non-interpolated `k=n` 1-second boundary.
-4. **B200**: rent a fresh instance, reuse the existing FFT calibration
-   and B-selection table (no re-timing), run ONLY `tools/heatmap_gpu.cu`
-   and `tools/push_limit_gpu.cu` to refresh the systematic grid and
-   frontier-probe numbers. Destroy the instance immediately after.
+4. **B200**: DONE 2026-07-25, but with an open follow-up. Rented an
+   instance, found and fixed a real GPU OOM bug (4 stacked commits, see
+   "GPU OOM: what's fixed and what's still open" above), regenerated
+   the FFT+workspace calibration (67.1M max size, matching the
+   previously-validated range) and the full 211-point heatmap. 190/211
+   cells succeeded cleanly; 21 failed with a newly-found, NOT-YET-FIXED
+   issue that only manifests in the long-running sweep, not in
+   isolation (full details + candidate diagnosis directions in the
+   section above). `tools/push_limit_gpu.cu`'s full exhaustive B/M/T
+   search was measured as impractically slow (>3.5 min on just its
+   first, smallest n value, no early-exit) and was not run to
+   completion; a targeted auto-dispatch probe
+   (`scripts/frontier_probe.cu`) was used instead for the 5
+   `RESULTS.md` frontier points, but this is not equivalent to the
+   original tool's methodology. Follow-up needed: (a) diagnose and fix
+   the long-sweep OOM, (b) either speed up `push_limit_gpu` or budget
+   real time for it, (c) re-run the full heatmap once (a) is fixed to
+   fill the 21 missing cells, (d) redo the 1-second threshold binary
+   search properly.
 5. **De-slopify all MD files and the two files C3's cleanup pass never
    touched** (`tools/gen_calib_skeleton.py`, `tools/calibrate_block_size.py`).
    227 em-dashes were counted across `*.md` files this session (paper
