@@ -295,6 +295,75 @@ bool run_build_level_fft(GpuPlan *plan, int ell) {
     return true;
 }
 
+/* Lazily create cuFFT plans for a FUSED-tier level whose cuFFTDx dispatch
+ * failed at runtime.  Plans were skipped in allocate_level_buffers() because
+ * cuFFTDx needs zero workspace for power-of-2 sizes, so the cuFFT plan (and
+ * its batch-scaled VRAM reservation) is only needed if we actually fall back.
+ * Also ensures shared_cufft_workspace is large enough for the new plans. */
+static bool ensure_cufft_plans_for_level(GpuPlan *plan, int ell) {
+    auto &b = plan->build_fft[ell];
+    auto &c = plan->corr_fft[ell];
+    int fft_n = plan->levels[ell].fft_n;
+
+    if (!b.plan_fwd) {
+        if (!create_cufft_plan(&b.plan_fwd, fft_n, b.batch_fwd, true)) return false;
+        if (!CUFFT_OK(cufftSetStream(b.plan_fwd, plan->stream_compute))) return false;
+    }
+    if (!b.plan_inv) {
+        if (!create_cufft_plan(&b.plan_inv, fft_n, b.batch_inv, false)) return false;
+        if (!CUFFT_OK(cufftSetStream(b.plan_inv, plan->stream_compute))) return false;
+    }
+    if (!c.plan_fwd) {
+        if (!create_cufft_plan(&c.plan_fwd, fft_n, c.batch_fwd, true)) return false;
+        if (!CUFFT_OK(cufftSetStream(c.plan_fwd, plan->stream_compute))) return false;
+    }
+    if (!c.plan_inv) {
+        if (!create_cufft_plan(&c.plan_inv, fft_n, c.batch_inv, false)) return false;
+        if (!CUFFT_OK(cufftSetStream(c.plan_inv, plan->stream_compute))) return false;
+    }
+
+    /* Grow shared workspace if the new plans need more than pre-allocated.
+     * FUSED-tier sizes are small (≤8192) so the existing workspace (sized
+     * for CUFFT-tier levels at much larger n) should already cover this;
+     * the realloc path is a safety net for the edge case where ALL levels
+     * are FUSED-tier and shared_cufft_workspace was never allocated.
+     * When the buffer moves, update EVERY live cuFFT plan's work area. */
+    size_t needed = 0;
+    { size_t ws; cufftGetSize(b.plan_fwd,  &ws); needed = std::max(needed, ws); }
+    { size_t ws; cufftGetSize(b.plan_inv,  &ws); needed = std::max(needed, ws); }
+    { size_t ws; cufftGetSize(c.plan_fwd,  &ws); needed = std::max(needed, ws); }
+    { size_t ws; cufftGetSize(c.plan_inv,  &ws); needed = std::max(needed, ws); }
+    if (needed > plan->shared_cufft_workspace_bytes) {
+        if (plan->shared_cufft_workspace) {
+            cudaFree(plan->shared_cufft_workspace);
+            plan->current_vram_bytes -= plan->shared_cufft_workspace_bytes;
+        }
+        plan->shared_cufft_workspace = nullptr;
+        plan->shared_cufft_workspace_bytes = 0;
+        if (!alloc_device(plan, &plan->shared_cufft_workspace, needed, plan->stream_compute))
+            return false;
+        plan->shared_cufft_workspace_bytes = needed;
+        /* Re-bind all pre-existing cuFFT plans to the new workspace */
+        for (int e = 1; e < plan->L; ++e) {
+            auto &bf = plan->build_fft[e];
+            auto &cf = plan->corr_fft[e];
+            if (bf.plan_fwd) CUFFT_OK(cufftSetWorkArea(bf.plan_fwd, plan->shared_cufft_workspace));
+            if (bf.plan_inv) CUFFT_OK(cufftSetWorkArea(bf.plan_inv, plan->shared_cufft_workspace));
+            if (cf.plan_fwd) CUFFT_OK(cufftSetWorkArea(cf.plan_fwd, plan->shared_cufft_workspace));
+            if (cf.plan_inv) CUFFT_OK(cufftSetWorkArea(cf.plan_inv, plan->shared_cufft_workspace));
+        }
+    } else {
+        /* Workspace didn't move — just bind the four new plans */
+        if (plan->shared_cufft_workspace) {
+            CUFFT_OK(cufftSetWorkArea(b.plan_fwd, plan->shared_cufft_workspace));
+            CUFFT_OK(cufftSetWorkArea(b.plan_inv, plan->shared_cufft_workspace));
+            CUFFT_OK(cufftSetWorkArea(c.plan_fwd, plan->shared_cufft_workspace));
+            CUFFT_OK(cufftSetWorkArea(c.plan_inv, plan->shared_cufft_workspace));
+        }
+    }
+    return true;
+}
+
 bool run_build_level_fused(GpuPlan *plan, int ell) {
     auto &lp = plan->levels[ell];
     if (!plan->opts.use_cufftdx || g_runtime_fused_max_conv_len <= 0 ||
@@ -321,7 +390,10 @@ bool run_build_level_fused(GpuPlan *plan, int ell) {
                                            plan->stream_compute,
                                            child_stride, parent_stride);
     }
-    if (!ok) return run_build_level_fft(plan, ell);
+    if (!ok) {
+        if (!ensure_cufft_plans_for_level(plan, ell)) return false;
+        return run_build_level_fft(plan, ell);
+    }
     if (lp.build_wrap_m > 0) {
         k_wrap_build<<<nparents, 64, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, nparents,
@@ -612,7 +684,10 @@ bool run_prop_level_fused(GpuPlan *plan, int ell) {
                                           plan->stream_compute,
                                           parent_stride, child_stride, child_stride);
     }
-    if (!ok) return run_prop_level_fft(plan, ell);
+    if (!ok) {
+        if (!ensure_cufft_plans_for_level(plan, ell)) return false;
+        return run_prop_level_fft(plan, ell);
+    }
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents, 64, 0, plan->stream_compute>>>(
             plan->d_g_levels[ell - 1], child_gsz, nparents,
@@ -792,7 +867,10 @@ bool run_build_level_fused_qb(GpuPlan *plan, int ell, int qb) {
                                                  plan->d_poly_levels[ell], ps, nparents_total,
                                                  1.0 / (double)lp.fft_n, plan->stream_compute,
                                                  cs, ps);
-    if (!ok) return run_build_level_fft_qb(plan, ell, qb);
+    if (!ok) {
+        if (!ensure_cufft_plans_for_level(plan, ell)) return false;
+        return run_build_level_fft_qb(plan, ell, qb);
+    }
     if (lp.build_wrap_m > 0) {
         k_wrap_build<<<nparents_total, 64, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, nparents_total,
@@ -1020,7 +1098,10 @@ bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
                                                 plan->d_g_levels[ell - 1], cs, len_out, nparents_total,
                                                 1.0 / (double)lp.fft_n, plan->stream_compute,
                                                 ps, cs, cs);
-    if (!ok) return run_prop_level_fft_qb(plan, ell, qb);
+    if (!ok) {
+        if (!ensure_cufft_plans_for_level(plan, ell)) return false;
+        return run_prop_level_fft_qb(plan, ell, qb);
+    }
     if (lp.corr_wrap_m > 0) {
         k_wrap_corr_pair<<<nparents_total, 64, 0, plan->stream_compute>>>(
             plan->d_g_levels[ell - 1], child_gsz, nparents_total,

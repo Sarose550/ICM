@@ -1242,6 +1242,9 @@ size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb) {
     for (int ell = 1; ell < plan->L; ++ell) {
         auto &lp = plan->levels[ell];
         if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
+        /* FUSED-tier cuFFTDx-supported levels execute via cuFFTDx (zero workspace);
+         * skip — no cuFFT workspace contribution. */
+        if (lp.tier == GPU_TIER_FUSED && plan->opts.use_cufftdx && is_cufftdx_supported_fft_n(lp.fft_n)) continue;
         int fft_n = lp.fft_n;
         int child_batch = plan->nn[ell - 1];
         int parent_batch = plan->nn[ell];
@@ -1272,6 +1275,7 @@ size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb) {
     for (int ell = 1; ell < plan->L; ++ell) {
         auto &lp = plan->levels[ell];
         if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
+        if (lp.tier == GPU_TIER_FUSED && plan->opts.use_cufftdx && is_cufftdx_supported_fft_n(lp.fft_n)) continue;
         int fft_n = lp.fft_n;
         int child_batch = plan->nn[ell - 1];
         int parent_batch = plan->nn[ell];
@@ -1458,11 +1462,16 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     b.spec_in = plan->shared_build_work.spec_in;
     b.spec_mid = plan->shared_build_work.spec_mid;
     b.real_out = nullptr;
-    /* cuFFT plans use stride = fft_n (contiguous in scratch buffer) */
-    if (!create_cufft_plan(&b.plan_fwd, fft_n, qb * child_batch, true)) return false;
-    if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false)) return false;
-    if (!CUFFT_OK(cufftSetStream(b.plan_fwd, plan->stream_compute))) return false;
-    if (!CUFFT_OK(cufftSetStream(b.plan_inv, plan->stream_compute))) return false;
+    /* FUSED-tier levels with cuFFTDx support need no cuFFT plan workspace
+     * (NVIDIA docs: powers of 2 up to 32768 require zero workspace).
+     * Skip plan creation here; lazily created on the rare fallback path. */
+    bool skip_cufft = (lp.tier == GPU_TIER_FUSED && plan->opts.use_cufftdx && is_cufftdx_supported_fft_n(fft_n));
+    if (!skip_cufft) {
+        if (!create_cufft_plan(&b.plan_fwd, fft_n, qb * child_batch, true)) return false;
+        if (!create_cufft_plan(&b.plan_inv, fft_n, qb * parent_batch, false)) return false;
+        if (!CUFFT_OK(cufftSetStream(b.plan_fwd, plan->stream_compute))) return false;
+        if (!CUFFT_OK(cufftSetStream(b.plan_inv, plan->stream_compute))) return false;
+    }
 
 #if ICM_HAVE_VKFFT
     /* VkFFT plans also use stride = fft_n (read/write scratch buffer via gather/scatter) */
@@ -1489,10 +1498,12 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     c.spec_in = plan->shared_corr_work.spec_in;
     c.spec_mid = plan->shared_corr_work.spec_mid;
     c.real_out = nullptr;
-    if (!create_cufft_plan(&c.plan_fwd, fft_n, qb * parent_batch, true)) return false;
-    if (!create_cufft_plan(&c.plan_inv, fft_n, qb * 2 * parent_batch, false)) return false;
-    if (!CUFFT_OK(cufftSetStream(c.plan_fwd, plan->stream_compute))) return false;
-    if (!CUFFT_OK(cufftSetStream(c.plan_inv, plan->stream_compute))) return false;
+    if (!skip_cufft) {
+        if (!create_cufft_plan(&c.plan_fwd, fft_n, qb * parent_batch, true)) return false;
+        if (!create_cufft_plan(&c.plan_inv, fft_n, qb * 2 * parent_batch, false)) return false;
+        if (!CUFFT_OK(cufftSetStream(c.plan_fwd, plan->stream_compute))) return false;
+        if (!CUFFT_OK(cufftSetStream(c.plan_inv, plan->stream_compute))) return false;
+    }
 
 #if ICM_HAVE_VKFFT
     if (b.use_vkfft) {
