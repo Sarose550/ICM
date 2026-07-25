@@ -364,6 +364,37 @@ static bool make_plan(cufftHandle *plan, int n, int batch, bool r2c) {
                     "cufftMakePlanMany c2r");
 }
 
+/* Probe cuFFT workspace size (bytes) for a given (n, batch, r2c).  Creates
+ * a throwaway plan with auto-allocation disabled, reads work_size from the
+ * out-param, then destroys the plan — zero net VRAM committed.  Returns 0
+ * on any cuFFT error. */
+static size_t probe_plan_ws(int n, int batch, bool r2c) {
+    cufftHandle plan = 0;
+    if (!cufft_ok(cufftCreate(&plan), "cufftCreate ws")) return 0;
+    cufftSetAutoAllocation(plan, 0);
+    int rank = 1;
+    int dims[1] = {n};
+    int inembed[1] = {n};
+    int onembed[1] = {n / 2 + 1};
+    size_t ws = 0;
+    bool ok;
+    if (r2c) {
+        ok = cufft_ok(cufftMakePlanMany(plan, rank, dims,
+                                        inembed, 1, n,
+                                        onembed, 1, n / 2 + 1,
+                                        CUFFT_D2Z, batch, &ws),
+                      "cufftMakePlanMany r2c ws");
+    } else {
+        ok = cufft_ok(cufftMakePlanMany(plan, rank, dims,
+                                        onembed, 1, n / 2 + 1,
+                                        inembed, 1, n,
+                                        CUFFT_Z2D, batch, &ws),
+                      "cufftMakePlanMany c2r ws");
+    }
+    cufftDestroy(plan);
+    return ok ? ws : 0;
+}
+
 static double measure_cufft_build_ns(int fft_n, int batch, int quick) {
     int cn = fft_n / 2 + 1;
     size_t bytes_r = (size_t)batch * (size_t)fft_n * sizeof(double);
@@ -611,6 +642,9 @@ static int write_header(const char *path,
                         const std::vector<double> &dx_r2c_build_ns,
                         const std::vector<double> &dx_r2c_corr_ns,
                         bool has_r2c_calib,
+                        const std::vector<unsigned long long> &r2c_ws_bytes,
+                        const std::vector<unsigned long long> &c2r_ws_bytes,
+                        bool has_ws_calib,
                         double school_ns,
                         double fft_overhead_ns,
                         double hbm_gbps,
@@ -649,6 +683,20 @@ static int write_header(const char *path,
         write_arr("gpu_calib_cufftdx_r2c_build_ns", dx_r2c_build_ns);
         write_arr("gpu_calib_cufftdx_r2c_corr_ns", dx_r2c_corr_ns);
         fprintf(f, "#define GPU_HAS_R2C_CALIB 1\n\n");
+    }
+
+    if (has_ws_calib) {
+        auto write_ull_arr = [&](const char *name, const std::vector<unsigned long long> &v) {
+            fprintf(f, "static const unsigned long long %s[GPU_N_CALIBRATED_SIZES] = {\n  ", name);
+            for (size_t i = 0; i < v.size(); ++i) {
+                fprintf(f, "%llu%s", v[i], (i + 1 == v.size()) ? "" : ",");
+                if ((i + 1) % 8 == 0 && i + 1 != v.size()) fprintf(f, "\n  ");
+            }
+            fprintf(f, "\n};\n\n");
+        };
+        write_ull_arr("gpu_calib_r2c_ws_bytes", r2c_ws_bytes);
+        write_ull_arr("gpu_calib_c2r_ws_bytes", c2r_ws_bytes);
+        fprintf(f, "#define GPU_HAS_CUFFT_WS_CALIB 1\n\n");
     }
 
     fprintf(f, "#define GPU_SCHOOL_FMA_NS %.8f\n", school_ns);
@@ -711,6 +759,18 @@ int main(int argc, char **argv) {
     std::vector<double> paired_ratios;
     std::vector<double> indep_ratios;
 
+    /* cuFFT workspace calibration: measure at batch=1 and at the timing
+     * batch to verify linear-in-batch scaling, then store per-batch-unit. */
+    int ws_calib = env_int_clamped("ICM_GPU_CALIB_WS", 1, 0, 1);
+    /* ULLONG_MAX marks "not calibrated" (probe failed for this size) so the
+     * runtime lookup treats it as a table miss, never as a real 0-byte
+     * workspace requirement. */
+    const unsigned long long WS_UNCALIBRATED = std::numeric_limits<unsigned long long>::max();
+    std::vector<unsigned long long> r2c_ws_bytes(smooth.size(), WS_UNCALIBRATED);
+    std::vector<unsigned long long> c2r_ws_bytes(smooth.size(), WS_UNCALIBRATED);
+    bool has_ws_calib = false;
+    int ws_nonlin_count = 0;
+
     for (size_t i = 0; i < smooth.size(); ++i) {
         int n = smooth[i];
         int batch = pick_batch_for_fft_n(n);
@@ -736,6 +796,36 @@ int main(int argc, char **argv) {
             dx_r2c_build_ns[i] = t_r2c_build;
             dx_r2c_corr_ns[i] = t_r2c_corr;
             has_r2c_calib = true;
+        }
+        /* Workspace calibration: probe at batch=1 and at timing batch.
+         * If linearity holds (ws(b) / ws(1) ≈ b), store ws(1) as the
+         * per-batch-unit value.  If ws(1)==0, derive per-batch from the
+         * timing batch instead and flag the size as unverified. */
+        if (ws_calib) {
+            size_t ws1_r2c = probe_plan_ws(n, 1, true);
+            size_t ws1_c2r = probe_plan_ws(n, 1, false);
+            size_t wsb_r2c = probe_plan_ws(n, batch, true);
+            size_t wsb_c2r = probe_plan_ws(n, batch, false);
+            if (ws1_r2c > 0 && wsb_r2c > 0 && ws1_c2r > 0 && wsb_c2r > 0) {
+                double ratio_r2c = (double)wsb_r2c / ((double)ws1_r2c * (double)batch);
+                double ratio_c2r = (double)wsb_c2r / ((double)ws1_c2r * (double)batch);
+                bool r2c_lin = (ratio_r2c >= 0.95 && ratio_r2c <= 1.05);
+                bool c2r_lin = (ratio_c2r >= 0.95 && ratio_c2r <= 1.05);
+                r2c_ws_bytes[i] = (unsigned long long)ws1_r2c;
+                c2r_ws_bytes[i] = (unsigned long long)ws1_c2r;
+                if (r2c_lin && c2r_lin) {
+                    has_ws_calib = true;
+                } else {
+                    ws_nonlin_count++;
+                    printf("  WS nonlin n=%d batch=%d: r2c=%zu/%zu ratio=%.3f c2r=%zu/%zu ratio=%.3f\n",
+                           n, batch, ws1_r2c, wsb_r2c, ratio_r2c, ws1_c2r, wsb_c2r, ratio_c2r);
+                }
+            } else if (wsb_r2c > 0 && wsb_c2r > 0) {
+                /* batch=1 returned 0 — derive per-batch from timing batch */
+                r2c_ws_bytes[i] = (unsigned long long)((wsb_r2c + (size_t)batch - 1) / (size_t)batch);
+                c2r_ws_bytes[i] = (unsigned long long)((wsb_c2r + (size_t)batch - 1) / (size_t)batch);
+                has_ws_calib = true;
+            }
         }
         if (std::isfinite(t_corr) && std::isfinite(t_build) && t_build > 0.0) paired_ratios.push_back(t_corr / t_build);
         if (std::isfinite(t_indep) && std::isfinite(t_build) && t_build > 0.0) indep_ratios.push_back(t_indep / t_build);
@@ -769,8 +859,13 @@ int main(int argc, char **argv) {
     printf("GPU_VRAM_BYTES=%llu  GPU_SM_COUNT=%d\n",
            (unsigned long long)prop.totalGlobalMem, prop.multiProcessorCount);
 
+    if (ws_calib && ws_nonlin_count > 0)
+        printf("Workspace non-linear at %d/%zu sizes (stored per-batch-1 values anyway)\n",
+               ws_nonlin_count, smooth.size());
+
     if (!write_header(out_path, smooth, cufft_ns, dx_build_ns, dx_corr_ns,
                       dx_r2c_build_ns, dx_r2c_corr_ns, has_r2c_calib,
+                      r2c_ws_bytes, c2r_ws_bytes, has_ws_calib,
                       school_ns, overhead_ns, hbm, fused_max, paired_ratio, indep_ratio,
                       block_ns, leaf_ns,
                       (unsigned long long)prop.totalGlobalMem, prop.multiProcessorCount)) {

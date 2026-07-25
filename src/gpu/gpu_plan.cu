@@ -92,6 +92,27 @@ int find_calib_index(int fft_n) {
     return -1;
 }
 
+/* Look up offline-calibrated cuFFT workspace per-batch-unit (bytes).
+ * Returns SIZE_MAX if the size is not in the table, the table is absent
+ * (no GPU_HAS_CUFFT_WS_CALIB), or the size was probed but never
+ * successfully calibrated (calibrate_gpu.cu stores its own SIZE_MAX-style
+ * sentinel for those -- never treat that as a real 0-ish byte count).
+ * Mirrors find_calib_index exactly. */
+#ifdef GPU_HAS_CUFFT_WS_CALIB
+static size_t lookup_cufft_ws_bytes(int fft_n, bool r2c) {
+    int idx = find_calib_index(fft_n);
+    if (idx < 0) return SIZE_MAX;
+    unsigned long long v = r2c ? gpu_calib_r2c_ws_bytes[idx]
+                                : gpu_calib_c2r_ws_bytes[idx];
+    if (v == ~0ULL) return SIZE_MAX;
+    return (size_t)v;
+}
+#else
+static size_t lookup_cufft_ws_bytes(int, bool) {
+    return SIZE_MAX;
+}
+#endif
+
 double estimate_cufft_pipeline_ns(int fft_n) {
     int idx = find_calib_index(fft_n);
     if (idx >= 0) return gpu_calib_cufft_ns[idx] + GPU_FFT_OVERHEAD_NS;
@@ -1209,6 +1230,44 @@ bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_d
  * across all FFT levels, then destroy all trial plans.
  * Returns SIZE_MAX if any trial plan creation fails (infeasible qb). */
 size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb) {
+    /* Primary path: offline calibration table lookup.
+     * For each FFT level, look up the per-batch-unit workspace size
+     * (calibrated at batch=1), multiply by this level's actual batch
+     * count, and take the max across all 4 plan types (build fwd/inv,
+     * corr fwd/inv).  The per-batch-unit value was verified linear
+     * during calibration (measured at batch=1 and at the timing batch).
+     * If any level misses the table, fall through to live probing. */
+    size_t table_max_ws = 0;
+    bool table_ok = true;
+    for (int ell = 1; ell < plan->L; ++ell) {
+        auto &lp = plan->levels[ell];
+        if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
+        int fft_n = lp.fft_n;
+        int child_batch = plan->nn[ell - 1];
+        int parent_batch = plan->nn[ell];
+
+        size_t pb_r2c = lookup_cufft_ws_bytes(fft_n, true);
+        size_t pb_c2r = lookup_cufft_ws_bytes(fft_n, false);
+        if (pb_r2c == SIZE_MAX || pb_c2r == SIZE_MAX) {
+            table_ok = false;
+            break;
+        }
+        size_t w0 = pb_r2c * (size_t)(qb * child_batch);       /* build fwd */
+        size_t w1 = pb_c2r * (size_t)(qb * parent_batch);      /* build inv */
+        size_t w2 = pb_r2c * (size_t)(qb * parent_batch);      /* corr fwd */
+        size_t w3 = pb_c2r * (size_t)(qb * 2 * parent_batch);  /* corr inv */
+        size_t level_max = w0;
+        if (w1 > level_max) level_max = w1;
+        if (w2 > level_max) level_max = w2;
+        if (w3 > level_max) level_max = w3;
+        if (level_max > table_max_ws) table_max_ws = level_max;
+    }
+    if (table_ok) return table_max_ws;
+
+    /* Fallback: live trial-plan creation (G2, commit 2f8fd22).
+     * Creates 4 throwaway cuFFT plans per FFT level at candidate qb,
+     * queries work_size, takes the max, destroys all.  Kept as a
+     * safety net for any fft_n not in the calibration table. */
     size_t max_ws = 0;
     for (int ell = 1; ell < plan->L; ++ell) {
         auto &lp = plan->levels[ell];
