@@ -45,6 +45,15 @@ bool alloc_device(GpuPlan *plan, void **ptr, size_t bytes, cudaStream_t stream) 
     return true;
 }
 
+void free_device(GpuPlan *plan, void *ptr, cudaStream_t stream) {
+    if (!ptr) return;
+    if (plan->use_async_pool) {
+        cudaFreeAsync(ptr, stream);
+    } else {
+        cudaFree(ptr);
+    }
+}
+
 /* ── Smooth table ──────────────────────────────────────────────── */
 
 void build_smooth_table(int max_n, std::vector<int> &smooth) {
@@ -1428,13 +1437,25 @@ __global__ void k_scatter_strided(const double *src, int fft_n, double *dst,
 /* ── allocate_plan_device_memory ───────────────────────────────── */
 
 static bool maybe_init_mem_pool(GpuPlan *plan) {
-    if (!plan->opts.enable_graphs && plan->opts.memory_strategy != 2 && plan->opts.memory_strategy != 3) {
+    /* memory_strategy=1 ("full") opts out of pooling entirely.
+     * All other strategies (0=auto, 2=pool, 3=selective recompute)
+     * use the CUDA stream-ordered memory pool by default, matching
+     * PyTorch/RAPIDS RMM practice for long-lived processes with many
+     * varying-size allocations. */
+    if (plan->opts.memory_strategy == 1) {
         plan->use_async_pool = false;
         return true;
     }
     cudaMemPool_t pool = nullptr;
     if (!CUDA_OK(cudaDeviceGetDefaultMemPool(&pool, g_cuda_device))) return false;
-    uint64_t threshold = GPU_VRAM_BYTES;
+    /* Never auto-release: individual arenas in this workload run up to
+     * ~160GB, far bigger than any modest fraction of VRAM would retain,
+     * so a bounded threshold provides little protection against the
+     * fragmentation this pool exists to prevent. Unlike an unconditional
+     * "never release" with no way out, icm_gpu_release_pooled_memory()
+     * gives callers an explicit way to reclaim pooled memory when they
+     * actually need it, so defaulting to max retention here is safe. */
+    uint64_t threshold = UINT64_MAX;
     if (!CUDA_OK(cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold))) return false;
     plan->mem_pool = pool;
     plan->use_async_pool = true;
@@ -1616,7 +1637,12 @@ retry_arena:
         fprintf(stderr, "  arena_sz=%.1f MB  fft_scratch=%.1f MB  spec=(%.1f,%.1f,%.1f,%.1f) MB\n",
             arena_sz/1e6, fft_scratch_bytes/1e6, mb_si/1e6, mb_sm/1e6, mc_si/1e6, mc_sm/1e6);
     {
-        cudaError_t arena_err = cudaMalloc(&arena, arena_sz);
+        cudaError_t arena_err;
+        if (plan->use_async_pool) {
+            arena_err = cudaMallocAsync((void **)&arena, arena_sz, plan->stream_compute);
+        } else {
+            arena_err = cudaMalloc(&arena, arena_sz);
+        }
         if (arena_err != cudaSuccess) {
             if (plan->q_batch > 1 && arena_retries < 4) {
                 plan->q_batch = std::max(1, plan->q_batch / 2);
@@ -1689,7 +1715,6 @@ retry_arena:
     P(sc.spec_mid, cufftDoubleComplex*, mc_sm);
     if (fft_scratch_bytes > 0) P(plan->d_fft_scratch, double*, fft_scratch_bytes);
     #undef P
-    plan->use_async_pool = false;
     for (int ell = 1; ell < plan->L; ++ell) {
         if (!allocate_level_buffers(plan, ell, {})) return false;
     }
@@ -1739,7 +1764,7 @@ retry_arena:
                         if (cf.plan_fwd) { cufftDestroy(cf.plan_fwd); cf.plan_fwd = 0; }
                         if (cf.plan_inv) { cufftDestroy(cf.plan_inv); cf.plan_inv = 0; }
                     }
-                    cudaFree(plan->arena_base); plan->arena_base = nullptr;
+                    free_device(plan, plan->arena_base, plan->stream_compute); plan->arena_base = nullptr;
                     plan->arena_total_bytes = 0;
                     plan->peak_vram_bytes = 0;
                     plan->current_vram_bytes = 0;

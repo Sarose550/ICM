@@ -84,12 +84,12 @@ void destroy_plan(GpuPlan *plan) {
     }
 
     if (plan->shared_cufft_workspace) {
-        cudaFree(plan->shared_cufft_workspace);
+        free_device(plan, plan->shared_cufft_workspace, stream);
         plan->shared_cufft_workspace = nullptr;
     }
 
     if (plan->arena_base) {
-        cudaFree(plan->arena_base);
+        free_device(plan, plan->arena_base, stream);
         plan->arena_base = nullptr;
     }
 
@@ -335,7 +335,7 @@ static bool ensure_cufft_plans_for_level(GpuPlan *plan, int ell) {
     { size_t ws; cufftGetSize(c.plan_inv,  &ws); needed = std::max(needed, ws); }
     if (needed > plan->shared_cufft_workspace_bytes) {
         if (plan->shared_cufft_workspace) {
-            cudaFree(plan->shared_cufft_workspace);
+            free_device(plan, plan->shared_cufft_workspace, plan->stream_compute);
             plan->current_vram_bytes -= plan->shared_cufft_workspace_bytes;
         }
         plan->shared_cufft_workspace = nullptr;

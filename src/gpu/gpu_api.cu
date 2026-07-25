@@ -91,6 +91,16 @@ const char *icm_gpu_last_error(void) {
     return g_last_error.c_str();
 }
 
+int icm_gpu_release_pooled_memory(void) {
+    if (g_cuda_device < 0) return -1;
+    if (!CUDA_OK(cudaSetDevice(g_cuda_device))) return -1;
+    cudaMemPool_t pool = nullptr;
+    if (!CUDA_OK(cudaDeviceGetDefaultMemPool(&pool, g_cuda_device))) return -1;
+    /* Trim to 0: release all pooled memory back to the driver immediately. */
+    if (!CUDA_OK(cudaMemPoolTrimTo(pool, 0))) return -1;
+    return 0;
+}
+
 IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptions *opts) {
     if (g_cuda_device < 0) {
         set_last_errorf("icm_gpu_init must be called before icm_gpu_plan_create");
@@ -165,7 +175,15 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         per_q_bytes += (size_t)plan->N_tree * (plan->B + 1) * sizeof(double); /* block_prods_qbatch */
         /* Reserve ~5% for cuFFT workspace, driver overhead, and safety margin.
          * The per_q_bytes estimate is accurate (includes spec/scratch/cache),
-         * so we can use most of the remaining VRAM. */
+         * so we can use most of the remaining VRAM.
+         *
+         * With the memory pool enabled (default), GPU_VRAM_BYTES reflects
+         * total device memory, not current real availability — the pool may
+         * retain freed allocations from prior plans.  This is acceptable
+         * because cudaMallocAsync draws from the pool first, so the budget
+         * calculation remains a reasonable upper bound.  Callers that need a
+         * hard guarantee can call icm_gpu_release_pooled_memory() before
+         * plan creation to return all pooled memory to the driver. */
         size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.90);
 
         int best_qb = 1;

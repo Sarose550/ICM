@@ -56,6 +56,12 @@ int icm_gpu_init(int device_id);
 void icm_gpu_shutdown(void);
 const char *icm_gpu_last_error(void);
 
+/* Release all memory held by the CUDA stream-ordered memory pool back to
+ * the driver.  Safe to call at any time; subsequent allocations will
+ * re-populate the pool as needed.  Returns 0 on success, non-zero if no
+ * pool exists or the trim operation fails. */
+int icm_gpu_release_pooled_memory(void);
+
 /* Plan lifecycle */
 IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptions *opts);
 void icm_gpu_plan_destroy(IcmGpuPlan *plan);

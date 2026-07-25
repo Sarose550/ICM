@@ -271,6 +271,7 @@ inline double now_ns_host() {
 int next_pow2_int(int n);
 void update_vram_alloc(GpuPlan *plan, size_t bytes);
 bool alloc_device(GpuPlan *plan, void **ptr, size_t bytes, cudaStream_t stream);
+void free_device(GpuPlan *plan, void *ptr, cudaStream_t stream);
 
 /* ── Plan helpers (gpu_plan.cu) ─────────────────────────────────── */
 void build_smooth_table(int max_n, std::vector<int> &smooth);
