@@ -23,29 +23,71 @@ nothing stale, hand-waved, or silently broken.
 
 ## START HERE
 
-**Read "GPU OOM: what's fixed and what's still open" below before touching
-anything GPU-related.** Two distinct OOM findings from the 2026-07-25 to
-2026-07-26 sessions, both now fixed and hardware-verified (six stacked
-commits total).
+Continue using the `supervisor-dag` skill/pattern for this work: a live
+strike board, DeepSeek Deck workers for the mechanical/investigative
+lifting, supervisor review of every diff before it lands, real hardware
+verification before anything is called done. That pattern is how the
+GPU OOM chain below got found, fixed, and verified across several rounds
+without losing track of state -- keep doing it that way, don't drop to
+ad-hoc work.
 
-The repo is mid-cleanup after a long session that widened the B-selection
-calibration methodology, then hit several real problems while trying to
-verify and regenerate results from it. `bench_grid verify` and
-`bench_gpu_fused verify` both pass cleanly as of the last commit (CPU and
-GPU, confirmed on real M3 Pro and B200 hardware respectively). There is a
-clear, agreed punch list to reach the final portfolio-ready state, see
-**Next Steps** below, plus one newly-found open GPU issue that needs a
-dedicated investigation before the GPU results can be called final. Read
-the **Architecture: what's actually load-bearing** section before touching
-any calibration/cost-model code, it's easy to misjudge what's safe to
-change or delete without it.
+**First priority: a cleanup/audit pass.** The user flagged (2026-07-26)
+that repo state may have drifted from what was explicitly asked for
+across the last few sessions. Concrete, CONFIRMED drift found so far
+(don't re-derive, these are checked, not suspected):
 
-## GPU OOM: history, both findings now fixed (2026-07-25 to 2026-07-26)
+1. **The paper (`~/Documents/ICM_paper`) is stale.** Last commit
+   `98b7f79`, 2026-07-24 01:41 -- before the subset-dispatch fix, the dead
+   code deletion, both GPU OOM fixes, and the regenerated heatmap data.
+   `RESULTS.md` has changed substantially since; the paper has not.
+   Violates this file's own standing rule ("must never diverge"). Needs a
+   full re-sync pass once the remaining GPU numbers below are finalized.
+2. **`src/icm_gpu.h`'s `memory_strategy` doc comment is stale.** Still
+   reads `/* 0=auto, 1=full, 2=pool, 3=selective recompute */` -- as of
+   commit `386c856`, `0=auto` now ALSO enables the memory pool by
+   default (matching what used to be `2`'s exclusive behavior), and `1`
+   is now specifically the pool opt-out. The comment no longer describes
+   what the values actually do. Needs a rewrite.
+3. **`CLAUDE.md`'s Directory Structure section doesn't mention
+   `scripts/`.** That directory (created 2026-07-25/26) holds
+   `gpu_ws_repro.cu`, `frontier_probe.cu`, `b200_verify_and_sweep.sh`,
+   `heatmap_gpu_reset_every_cell.cu`, `DIAGNOSTIC_REPORT.md`. Decide
+   which of these are still earning their place (see item 4) and
+   document the survivors.
+4. **Judgment call needed, not yet made**: now that the long-sweep OOM is
+   fixed, is `scripts/DIAGNOSTIC_REPORT.md` (a diagnosis of a now-closed
+   issue) and `scripts/heatmap_gpu_reset_every_cell.cu` (a diagnostic
+   tool for a hypothesis that's now confirmed) still worth keeping, or
+   are they dead weight per this project's own established convention of
+   deleting superseded investigation tools (see the precedent: 6 files
+   already deleted this way, commit `318a3ed`)? Lean toward keeping
+   `DIAGNOSTIC_REPORT.md` as a permanent record (it's genuinely
+   informative, unlike the old one-off dead tools) but this is worth a
+   real decision, not a default.
+5. **Verify nothing else in `RESULTS.md`/paper references numbers that
+   predate the 2026-07-26 fixes.** Specifically check the CPU-side
+   sections too, not just GPU -- the M3 Pro data (see below) checked out
+   fine, but do a full read-through, not a spot check.
 
-### Fixed, hardware-verified: the original n=2,097,152 k=256/512 OOM
+**M3 Pro data status, already checked, do not re-derive**: `results/*m3pro*`
+files (bench grids, contour sweeps, plots) were last regenerated in
+commit `a05652e`, ~11 minutes before the subset-dispatch fix (commit
+`44bc959`) landed the same session. Checked whether this matters: the
+subset-dispatch fix only touches `n_targets > 0` paths, and the only
+"subset" content in the M3 Pro files is a single pre-existing correctness
+check line (`subset n=1024 10/1024 PASS`), not a performance number --
+`bench_grid`'s `subset-speed` performance benchmark was never run/included
+in these files at all. **Conclusion: M3 Pro data is NOT stale relative to
+the subset fix.** Both files show `ALL TESTS PASSED`. Nothing funky found.
+This does not need re-verification unless something else changes CPU
+dispatch code again.
 
-Four stacked commits, each reviewed line-by-line before landing (see
-`git log` for `8ce8a07`, `2f8fd22`, `66a2bc8`, `abd9fa4`):
+## GPU OOM: history, both findings fixed and hardware-verified (2026-07-25 to 2026-07-26)
+
+### Original OOM: n=2,097,152 k=256/512
+
+Four stacked commits, each reviewed line-by-line before landing (`8ce8a07`,
+`2f8fd22`, `66a2bc8`, `abd9fa4`):
 1. Reactive retry-on-OOM for the shared cuFFT workspace allocation.
 2. Proactive: query real cuFFT workspace size before committing to a
    `q_batch`, instead of an incomplete estimate.
@@ -62,69 +104,74 @@ Four stacked commits, each reviewed line-by-line before landing (see
    a lazy on-demand fallback exists for the rare case cuFFTDx dispatch
    itself fails at runtime.
 
-Verified directly on a rented B200 (2026-07-25): `bench_gpu_fused verify`
-passes 36/0 with the fix; the exact failing point (n=2097152, k=256 and
-k=512) passes in an isolated repro, with debug output confirming
-`cufft_ws=0.0 MB` for that specific case (every level in its tree is
-FUSED-tier, so the fix means zero cuFFT plans are even created for it).
+Verified on a rented B200 (2026-07-25): `bench_gpu_fused verify` passes
+36/0; the exact failing point (n=2097152, k=256/512) passes in an
+isolated repro, debug output confirming `cufft_ws=0.0 MB` (every level in
+its tree is FUSED-tier, so zero cuFFT plans are even created for it).
 
-### FIXED 2026-07-26: long-sweep-only OOM
+### Second OOM: long-sweep-only, found while verifying the first fix
 
-The full 211-point `heatmap_gpu` sweep (run 2026-07-25, after all 4 fixes
-above and a correctly-ranged 67.1M-max calibration) failed on 21/211
+The full 211-point `heatmap_gpu` sweep (2026-07-25) failed on 21/211
 cells, all at large n (2,097,152 - 33,554,432), consistently in a
-middle-k band (e.g. at n=2097152: k=64 and k=128 pass, k=256/512/1024/2048
-all fail, k=4096+ passes again -- same pattern repeats at n=4194304,
-8388608, 16777216).
+middle-k band. Every one of those exact points passed cleanly in
+isolation, meaning the failure depended on long-running process state
+(~190 prior sequential plan create/destroy cycles), not the (n,k) point
+itself.
 
-**Root cause**: a static-analysis pass (`scripts/DIAGNOSTIC_REPORT.md`)
-traced every allocation/free pairing across the plan lifecycle and found
-no genuine leak. Leading hypothesis: CUDA default-allocator fragmentation
-after ~190 varying-size `cudaMalloc`/`cudaFree` cycles in one process --
-consistent with every observed symptom (fails only after many cycles,
-only at large n, passes in complete isolation). Two real bugs found in
+**Root cause**: a DeepSeek static-analysis pass (`scripts/DIAGNOSTIC_REPORT.md`)
+traced every allocation/free pairing and found no genuine leak. Leading
+hypothesis: CUDA default-allocator fragmentation. Two real bugs found in
 this codebase's existing (but non-functional for the allocations that
 matter) memory-pool support: the main arena allocation used a raw
 `cudaMalloc` completely independent of `plan->use_async_pool` at every
 setting, and a stray `plan->use_async_pool = false` disabled pooling for
-the one allocation that could previously use it, regardless of
-`memory_strategy`.
+the one allocation that could previously use it.
 
 **Fix** (commit `386c856`): route the arena and shared cuFFT workspace
 allocations through a CUDA stream-ordered memory pool
 (`cudaMallocAsync`/`cudaFreeAsync`), remove the stray override, make
-pooling the default (`memory_strategy=0`, matching PyTorch's CUDA caching
-allocator and RAPIDS RMM's pool allocator both defaulting to pooling
-rather than gating it to specific workload types), and add
+pooling the default (matching PyTorch/RAPIDS RMM practice), add
 `icm_gpu_release_pooled_memory()` as an explicit escape valve. Release
-threshold set to `UINT64_MAX` (never auto-release) rather than a bounded
-fraction of VRAM -- a 25% draft was tried and rejected during review
-(178GB * 0.25 = ~48GB, smaller than several of the ~78-162GB arenas it
-needed to protect), and the new escape valve makes unconditional
-retention safe since a caller can explicitly reclaim memory when needed.
+threshold set to `UINT64_MAX` (never auto-release, not a bounded
+fraction -- individual arenas run up to ~160GB, so a modest fraction-of-
+VRAM cap would provide little real protection; the escape valve makes
+unconditional retention safe).
 
 **Verified on real B200 hardware (2026-07-26)**: `bench_gpu_fused verify`
-passes 36/0 with the fix (no correctness regression from the async
-alloc/free changes). The full 211-point `heatmap_gpu` sweep now passes
-with **zero errors**, including all 21 previously-failing cells --
-confirmed directly against the exact failing points (n=2097152 k=256/512,
-n=4194304 k=1024, n=8388608 k=64/262144, n=16777216 k=128), all now
-returning real timing/memory data. See `results/gpu_heatmap_time.png` for
-the visual (no gaps) and `results/gpu_heatmap_b200.csv` for the full data.
+passes 36/0. The full 211-point `heatmap_gpu` sweep now passes with
+**zero errors**, confirmed directly against all 6 representative
+previously-failing points. `RESULTS.md` and `results/gpu_heatmap_*.png`
+regenerated from the complete, gap-free data. A DeepSeek sanity pass over
+the new CSV flagged several apparent non-monotonicities; triaged and
+found none indicate a real problem (mix of expected tool behavior --
+`reps=1` above 100ms is intentional, `cv=0.000` for single-rep cells is
+`cv_ms()`'s defined return, `B=32` at n=1,048,576 is that exact point's
+real calibrated B-selection value -- and two plausible single-shot
+measurement-noise points, not re-verified further).
 
-**Diagnosis trail** (kept for reference, not action items -- issue is
-closed): confirmed NOT the same bug as the original OOM (every failing
-point passed in isolation via `scripts/frontier_probe.cu`, meaning the
-failure depended on long-running process state, not the (n,k) point
-itself); ruled out a short 3-call sequential repro and an options/config
-difference; deliberately did not patch reactively without a diagnosed
-cause first, per explicit user instruction. Full detail in
-`scripts/DIAGNOSTIC_REPORT.md` and git history for commit `386c856`.
+### Still open: the 1-second threshold / frontier probes
 
-The "1-second threshold" and `push_limit_gpu` frontier numbers in
-`RESULTS.md` still need re-measurement (unrelated follow-up, not blocked
-by this fix -- `tools/push_limit_gpu.cu`'s full exhaustive search was
-separately found impractically slow, see item 4 in Next Steps below).
+**This was explicitly asked for and is NOT done.** `tools/push_limit_gpu.cu`'s
+real methodology (a binary search for the 1000ms crossing) is what
+originally produced the threshold numbers in `RESULTS.md`. That tool also
+does an exhaustive B/M/T hyperparameter grid search alongside the
+threshold search, which was measured as impractically slow (>3.5 min on
+just its first, smallest n value, no early-exit) and was not run to
+completion. A substitute (`scripts/frontier_probe.cu`) was used instead,
+but it only measures timing at the 5 OLD threshold points -- it does not
+search for a new threshold, so the actual number the user asked for was
+never produced. `RESULTS.md`'s "1-second threshold" section currently
+says "needs re-measurement" rather than a number, correctly, not a
+placeholder guess.
+
+**Next action**: write a real binary search using the lightweight
+single-measurement approach `frontier_probe.cu` already established (one
+`icm_gpu_equity` call per candidate n via `icm_gpu_plan_create` +
+`icm_gpu_equity_with_plan`, not the full B/M/T sweep) -- narrow in on
+where k=n crosses 1000ms and separately where k=100 crosses 1000ms, same
+two curves as the original `RESULTS.md` table. Should take a few minutes
+on a B200, not the 3.5+ minutes-per-n the exhaustive tool needs. Not yet
+written as of this handoff.
 
 ## Architecture: what's actually load-bearing (read before touching cost-model code)
 
@@ -133,14 +180,14 @@ Dispatch happens in three separate layers. Only two of them were ever the
 never replaced.
 
 1. **Which engine?** (linear / hybrid / tree), `select_engine_ex()` in
-   `src/icm.c`. For full-equity queries (`n_targets <= 0`), uses the
-   empirical crossover table (`crossover_n[]`/`crossover_k[]` in
-   `fft_config.h`, log-linear interpolation via
-   `empirical_crossover_k()` in `src/fft_cost_model.h`). For **subset**
-   queries (`n_targets > 0`), still uses the old summed-analytical
-   formula, which is confirmed measurably wrong (37-45% slower than
-   optimal at representative points), see Next Steps.
-2. **Which block size B?** (only matters inside the hybrid engine) ,
+   `src/icm.c`. Uses the empirical crossover table
+   (`crossover_n[]`/`crossover_k[]` in `fft_config.h`, log-linear
+   interpolation via `empirical_crossover_k()` in `src/fft_cost_model.h`)
+   for BOTH full-equity and subset queries as of commit `44bc959` (the
+   subset-specific analytical formula was removed; subset dispatch now
+   reuses the same empirical table, which closed a confirmed 37-45%
+   dispatch-accuracy gap).
+2. **Which block size B?** (only matters inside the hybrid engine),
    `select_best_B()` in `src/icm.c`. Uses the empirical `bselect` table
    (`bselect_n[]`/`bselect_k[]`/`bselect_B[]`, 2D nearest-neighbor via
    `empirical_best_B()`), built by `tools/calibrate_best_b.c` +
@@ -150,254 +197,196 @@ never replaced.
 3. **Inside the tree/hybrid engine, at every single tree level, every
    single call**: schoolbook or FFT? If FFT, which calibrated size?
    `best_fft_config()` / `best_fft_config_joint()` in
-   `src/fft_cost_model.h`, called directly from `tree_ctx_create_ex2()`
-   (`src/icm.c:1192,1239,1243,1271`). Reads `calib_times_ns[]` /
-   `calib_sizes[]` (the 749-entry per-FFT-size table from
-   `tools/calibrate.c`, real FFTW PATIENT measurements) and
-   `schoolbook_mul_ns[]` directly, picking whichever calibrated size (or
-   schoolbook) minimizes real measured cost for that exact convolution
-   length.
+   `src/fft_cost_model.h`, called directly from `tree_ctx_create_ex2()`.
+   Reads `calib_times_ns[]` / `calib_sizes[]` (the per-FFT-size table
+   from `tools/calibrate.c`, real FFTW PATIENT measurements) directly,
+   picking whichever calibrated size (or schoolbook) minimizes real
+   measured cost for that exact convolution length.
 
-**Layer 3 was never the problem and was never replaced with a lookup
-table.** It doesn't need to be: it already compares real measured
-per-size timings directly, not summed abstract constants. Only layers 1
-and 2 summed many individually-correct constants into one aggregate
-go/no-go decision, and that's what turned out to be fragile in aggregate
-and got replaced this session (layer 2) and the session before (layer 1,
-full-equity only). `tools/calibrate.c`'s output (`calib_times_ns[]`,
-consumed by layer 3) is genuinely foundational and still load-bearing on
-every single computation, it is not dead code, and must never be
-skipped when porting to a new device.
+**Layer 3 was never the problem.** It already compares real measured
+per-size timings directly, not summed abstract constants. Layers 1 and 2
+summed many individually-correct constants into one aggregate go/no-go
+decision, and that's what turned out fragile in aggregate and got
+replaced with empirical lookup tables. `tools/calibrate.c`'s output
+(consumed by layer 3) is genuinely foundational, not dead code, and must
+never be skipped when porting to a new device.
+
+**GPU memory allocation** (new as of commit `386c856`): the arena and
+shared cuFFT workspace now go through a CUDA stream-ordered memory pool
+by default (`memory_strategy=0`, the default used everywhere in this
+codebase). `memory_strategy=1` opts out for callers needing strict
+non-pooled allocation. `icm_gpu_release_pooled_memory()` lets a caller
+explicitly return pooled memory to the driver. See the GPU OOM section
+above for why this exists.
 
 ## Critical operational notes
 
 **DeepSeek Deck network access.** The `deck` binary on `$PATH` resolves
-to a stale plugin-cache copy
-(`~/.claude/plugins/cache/deepseek-deck/deepseek-deck/1.0.0/bin/deck`)
-that does **not** support `--allow-network`, its argparse simply doesn't
-have the flag, even though the underlying worker sandbox (`deepseek-mcp`
-tools.py) supports network toggling. The **real, working** dev copy with
-`--allow-network` wired all the way through is at
-`~/Documents/deepseek-deck/bin/deck` (confirmed: same daemon serves both
-paths, since the CLI is just a thin HTTP client to a local daemon on port
-8787, the daemon that's actually running is built from the dev repo, so
-using the dev repo's CLI binary is what actually matters). **Always
-invoke `/Users/samrosenstrauch/Documents/deepseek-deck/bin/deck` directly
-(or alias it) when a node needs `--allow-network`**, not whatever
-resolves from `$PATH`.
+to a stale plugin-cache copy that does not support `--allow-network`.
+The real, working dev copy is at `~/Documents/deepseek-deck/bin/deck`
+(same daemon serves both paths; the dev repo's CLI binary is what
+actually matters). Always invoke that path directly when a node needs
+`--allow-network`.
 
-**Zen4 rental.** As of this writing, the AMD Ryzen 9 7950X-class instance
-is completely out of stock on vast.ai, and there is no clean hourly-billed
-alternative, checked Cherry Servers (right billing model, hourly, but
-currently 0 in stock at all 6 locations), Hetzner (has 7950X/7950X3D but
-monthly billing only, poor fit for a few hours of verification work).
-Check vast.ai stock again before assuming it's still unavailable; if
-using a different provider, note the billing model may force a different
-workflow (can't just spin up/destroy in an hour).
+**Zen4 rental.** As of this writing, still completely out of stock on
+vast.ai (checked repeatedly across multiple sessions), no clean
+hourly-billed alternative found (Cherry Servers: right billing model,
+0 in stock everywhere; Hetzner: has the hardware, monthly billing only).
+Check vast.ai stock again before assuming it's still unavailable.
 
 **When a Zen4 box is available again**: do NOT re-run the adaptive
 B-selection calibration (already correct, already committed, 1944
 points) and do NOT rebuild AOCL-FFTW wisdom from scratch. Copy
 `devices/zen4/fftw_wisdom.dat` directly onto the new box (byte-identical
-port, verified working this exact way earlier this session), build
+port, verified working this exact way in a prior session), build
 AOCL-FFTW from source with the full flag set (`--enable-sse2 --enable-avx
 --enable-avx2 --enable-avx512 --enable-amd-opt`, needs `texinfo` package
 installed first or the docs sub-build fails), then rebuild the ICM
 binaries against the already-correct config. The ONLY thing that needs
-re-running there is the benchmark sweep itself.
+re-running there is the benchmark sweep itself. **Zen4 needs
+`OMP_NUM_THREADS=16` explicitly**, never the default `nproc` (32,
+SMT-inclusive) -- SMT siblings add no real throughput for this
+FPU/vector-port-bound workload; oversubscription silently corrupts
+parallel timing at small n (up to 20x+ slower, looks exactly like a real
+regression until you check thread counts).
 
 **`make results-refresh`'s parallel-binary gotcha.** The recipe ends by
 leaving the OpenMP-enabled `bench_grid` binary sitting in the working
-directory (it runs `make all` -> serial grid -> `make parallel` -> parallel
-grid, and both targets build the same output file name). If you
-manually run `./bench_grid ...` afterward expecting serial behavior,
-you'll silently get parallel timing instead. Always check for "OpenMP
-enabled: N threads" vs "OpenMP disabled (serial mode)" in the output, or
-just `make clean && make` before any manual serial probe. This caused a
-real, hours-long false alarm this session (a "3x anomaly" that was
-actually just this binary mix-up).
+directory. If you manually run `./bench_grid ...` afterward expecting
+serial behavior, you'll silently get parallel timing instead. Always
+check for "OpenMP enabled: N threads" vs "OpenMP disabled (serial mode)"
+in the output, or `make clean && make` before any manual serial probe.
 
-**Zen4 needs `OMP_NUM_THREADS=16` explicitly**, never the default
-`nproc` (32, SMT-inclusive), SMT siblings add no real throughput for
-this FPU/vector-port-bound workload. `make results-refresh` does NOT set
-this for you; you must prefix it (`OMP_NUM_THREADS=16 make
-results-refresh DEVICE=zen4`) or the parallel grid silently corrupts at
-small `n` (oversubscription contention, up to 20x+ slower than serial in
-some cells, looks exactly like a real regression until you check thread
-counts).
-
-**B200.** As of this writing, no instance is rented (destroyed after the
-last session, standard practice). `results/gpu_heatmap_b200.csv` (dated
-2026-07-21) **predates** the GPU B-selection empirical-table fix
-(`src/gpu/gpu_plan.cu`, commit `b581dab`, dated 2026-07-23), meaning the
-current committed B200 numbers in `RESULTS.md` and the paper reflect the
-OLD buggy dispatch (which picked B=128 when B=64 was optimal, 2-4%
-slower). This must be regenerated. Do NOT re-time the individual FFTs or
-re-run the GPU FFT calibration (`calibrate_gpu.cu`) or the B-selection
-adaptive calibration, all already correct and committed. The only thing
-that needs re-running is the benchmark sweep: `tools/heatmap_gpu.cu`
-(systematic grid, feeds `tab:gpu`/`fig:gpu-contour`) and
-`tools/push_limit_gpu.cu` (frontier probes, feeds `tab:gpu-frontier`).
-
-## Dead code, confirmed by tracing actual usage (not guessed)
-
-These are leftover from the analytical-cost-model-fitting era and the
-now-closed crossover investigation. None are invoked by
-`tools/calibrate_full.sh`, any Makefile target, `results-refresh`, or
-`calibrate_block_size.py`. Confirmed by reading each file's own header
-comment, which in every case names its own successor:
-
-- `tools/bench_leaf_fma.c`, superseded by `calibrate_leaf_realistic.c`
-  per its own successor's docstring.
-- `tools/calibrate_leaf_realistic.c`, itself superseded (found buggy:
-  reused one `HybridCtx` across reps, unrealistically cache-hot) by
-  `tools/probe_leaf_extract.c`, which IS in active use.
-- `tools/b_optimal_sweep.c`, "validates `select_best_B()` against
-  measured optimum" by sweeping every B; fully superseded by
-  `calibrate_best_b.c` + `validate_best_b.c`.
-- `tools/eval_model_vs_plans.c`, evaluates the old summed-analytical
-  formula, which layers 1/2 above no longer use.
-- `tools/quantify_dispatch_gap.c`, one-off diagnostic, own header says
-  "quantify remaining dispatch-point gap after schoolbook fix"; that
-  investigation is closed.
-- `tools/probe_tree_levels.c`, compares against the old formula from
-  `select_engine_ex()`; also flagged in this file's own prior history as
-  having produced an invalid finding due to a stale-formula bug.
-
-Their stale output files (`results/b_optimal_sweep_zen4.csv`,
-`results/B_probe_zen4.txt`) should go with them.
-
-Also: `CLAUDE.md`'s directory listing references `tools/gen_gpu_calib_lib.py`,
-which does not exist anywhere in `tools/`. Fix or remove that line.
-
-**Not dead, despite superficial similarity**: `gpu_phase_profile.cu`
-(feeds `fit_gpu_cost_model.py`'s constants for GPU engine/tier selection,
-a separate mechanism from B-selection that was never replaced),
-`test_cpu_cost_model.c` / `test_gpu_cost_model.cu` (test structural
-invariants of code still in active use, not the abandoned formula),
-`profile_harness.c` (generic ad-hoc profiling utility).
+**B200 build recipe, proven across 3 separate rented instances**: pip
+install `nvidia-mathdx` (may need `python3-pip` installed first, not
+always present on fresh images), apt install `libfftw3-dev`, glob
+`/usr/local/lib/python*/dist-packages/nvidia/mathdx/include` for
+`CUFFTDX_INC` (don't hardcode the Python minor version), `make
+bench_gpu_fused CUDA_ARCH=sm_100 CUFFTDX_INC=...`. **Deploy the repo via
+`git ls-files --cached --others --exclude-standard -z | rsync --from0
+--files-from=-`, never a raw directory rsync** -- a raw rsync pulled in a
+143MB local scratch/venv directory with zero relation to the build on one
+occasion. `devices/b200/gpu_fft_config.h` contains TWO independently
+calibrated sections that must both survive any regeneration: the FFT
+timing/workspace table (from `tools/calibrate_gpu.cu`, pass a real max
+size like `67108864`, its default of `131072` silently loses coverage
+above ~4M) and the `gbselect_*` B-selection table (from a separate tool,
+`tools/calibrate_gpu_best_b.cu` + `tools/calibrate_block_size.py`) --
+`calibrate_gpu`'s `write_header()` overwrites the WHOLE file, so
+re-running it clobbers the B-selection section unless you splice it back
+in from the pre-existing header afterward (do not re-run the B-selection
+calibration itself, it's expensive and already correct).
 
 ## What Worked
 
-- **Tracing exact code usage instead of guessing** when asked "is this
-  dead code" or "is this still load-bearing", reading each file's own
-  header comment and grep-ing actual call sites resolved every question
-  definitively, no hand-waving needed.
-- **Cross-referencing commit dates against data file mtimes** to catch
-  the B200 staleness bug (`git log -1 --format=%ci <commit> -- <path>`
-  vs `ls -la` on the data file), this is how the true "B200 predates its
-  own dispatch fix" finding was actually confirmed, not asserted.
-- **Direct reproduction of anomalies before believing them.** The
-  "3x variance" scare traced to a real, findable cause (serial/parallel
-  binary mix-up) once actually investigated with `ps`/build-flag checks,
-  rather than accepted as unexplained noise.
-- **Using `git-filter-repo` for a clean commit-message rewrite**, once
-  scoped correctly (see below), it does exactly what's needed with
-  verifiable output (message content changed, tree content unchanged,
-  confirmed via `git diff <old> <new> --stat` being empty).
+- **Doing real research before dispatching a fix, not guessing.** Fetched
+  official NVIDIA cuFFT/cuFFTDx documentation and read the actual kernel
+  dispatch code directly before writing the G4 task brief -- found the
+  real root cause (wasted cuFFT plan creation for FUSED-tier levels) this
+  way, not by assumption.
+- **Manually reviewing every DeepSeek diff line-by-line before committing,
+  every time, no exceptions.** Caught and fixed real bugs in three
+  separate deliverables this way: an infinite loop in G2 (qb==1 +
+  persistent failure never terminated), a silent-zero sentinel gap in G3
+  (probe failures defaulting to "confidently calibrated, needs 0 bytes"),
+  and a build command targeting the wrong GPU architecture in the
+  diagnostic report. None of these would have been caught by trusting a
+  worker's own "done and verified" framing.
+- **Isolated repro testing to distinguish "fixed" from "looks fixed."**
+  Directly reproducing the exact failing (n,k) points standalone, both to
+  confirm the original OOM fix worked and to prove the long-sweep OOM was
+  a genuinely different bug (same points passed in isolation, failed only
+  in the long sweep) -- this distinction was the key that unlocked the
+  correct root cause instead of chasing the wrong fix.
+- **Checking real industry practice (PyTorch, RAPIDS RMM) before deciding
+  a memory-pool design**, rather than reasoning from first principles
+  alone -- this directly informed making pooling the default rather than
+  a narrow opt-in, and the user's own pushback on the release threshold
+  (correctly identified 25% as too conservative for this workload's
+  actual allocation sizes) came from checking the real numbers, not
+  accepting a plausible-sounding default.
+- **Setting a hard, explicit time/credit budget before an unattended
+  overnight GPU run**, and killing a sweep mid-run when a mistake was
+  found (undersized calibration range) rather than letting bad data
+  finish generating. Preserved real money and avoided committing numbers
+  that would have needed redoing anyway.
 
 ## What Didn't Work / mistakes to avoid repeating
 
+- **Using `--fast` flags on benchmark tools without checking what they
+  actually cut.** `heatmap_gpu --fast` doesn't just reduce repetitions,
+  it truncates the n-range itself (stopped at 524K instead of 33M) --
+  producing data that looked complete but was missing most of the range
+  needed for the paper. Always read what a `--fast`/quick-mode flag
+  actually skips before using it for anything that will be reported.
+- **Substituting a smaller/faster tool for an established one without
+  flagging the methodology change loudly enough up front.** Using
+  `frontier_probe.cu` instead of `push_limit_gpu.cu` for frontier numbers
+  was reasonable given the real time constraint, but the substitution
+  meant the actual thing asked for (a real binary-search threshold) never
+  got produced, and that gap wasn't surfaced clearly until the user asked
+  directly. State explicitly what a substitution does NOT give you, not
+  just what it does.
+- **Running an orchestration script's remote command with `sudo` and
+  debug-echoing to stdout without checking for `$(...)` capture
+  contamination.** A `remote()` helper's own `echo "[remote] cmd"` line
+  going to stdout silently corrupted a `$(remote ...)` command
+  substitution used to detect an include path, causing a real build
+  failure that looked unrelated to its actual cause. Route debug/logging
+  output to stderr in any helper whose stdout might be captured.
 - **`git filter-repo --message-callback` without scoping the commit
-  range rewrites the ENTIRE reachable history, not just the commits you
-  intend to touch.** This gave every commit back to the beginning of the
-  branch a new SHA (even ones with no message change needed), breaking
-  the shared ancestry with `origin/main` and turning a clean PR into one
-  GitHub reported as `CONFLICTING`. The fix: build the corrected branch
-  by checking out the known-good base commit, cherry-picking just the
-  commits that need editing, and amending each one individually (`git
-  rebase <base> --exec <script>` works non-interactively and only
-  touches commits after `<base>`). Verify with `git merge-tree
-  $(git merge-base origin/main HEAD) origin/main HEAD` before pushing ,
-  zero `<<<<<<< .our` lines means genuinely no conflict, not just no
-  visible diff.
-- **Ad-hoc single-rep manual probes (`./bench_grid bench <n> <n> 1`)
-  outside the established sweep tools produce noise, not signal**, and
-  burn paid-instance time for no committed benefit. The project has
-  exactly two canonical tools for producing `RESULTS.md`/paper numbers:
-  `bench_grid` (full grid, no subcommand) and `tools/contour_1s.c`
-  (`--contour` mode). There is also `bench_grid threshold`, a real
-  binary-search tool for the precise `k=n` 1-second boundary specifically
- , use that instead of eyeballing an interpolation or manually probing,
-  next time this number is needed.
-- **A crude 2-point linear interpolation across a wide n-range
-  (e.g. n=16,384 to n=32,768) systematically overshoots a superlinear
-  timing curve.** The "n≈29,000" Zen4 1-second-threshold figure currently
-  in `RESULTS.md` was computed this way and is measurably wrong (real
-  direct probes near n=26,000-27,000 show the true crossing is close to
-  there, not 29,000). Use `bench_grid threshold` for this number, not
-  interpolation.
-- **Asserting "nothing changed so the old data is still valid" without
-  checking commit dates against data file dates.** Told the user the
-  B200 numbers were fine because "nothing GPU-related changed this
-  session", wrong, the B-selection fix landed earlier the same day,
-  before this session's board even started, and the heatmap was never
-  re-swept after it. Always check dates, don't reason from session
-  boundaries.
-- **Committing without checking for standing rules first.** Added
-  `Co-Authored-By`/`Claude-Session` trailers to every commit this
-  session, violating an explicit standing rule already in this file's
-  own history ("No Co-Authored-By trailers on any commit, ever"). Check
-  this file's own accumulated rules before the first commit of a
-  session, not after.
+  range rewrites the ENTIRE reachable history**, not just the commits you
+  intend to touch (from an earlier session) -- breaks shared ancestry
+  with `origin/main`. Fix: cherry-pick + `git rebase <base> --exec` on
+  just the commits needing changes, verify with `git merge-tree` before
+  pushing.
+- **Ad-hoc single-rep manual probes outside established sweep tools
+  produce noise, not signal**, and burn paid-instance time for no
+  committed benefit (from an earlier session). Use the canonical tools
+  (`bench_grid`, `tools/contour_1s.c --contour`, `bench_grid threshold`
+  for the CPU 1-second boundary specifically) or a properly-designed
+  binary search, not manual interpolation.
+- **Asserting "nothing changed so old data is still valid" without
+  checking commit dates against data file dates** (from an earlier
+  session) -- always check dates, don't reason from session boundaries.
+  This exact class of mistake is why the "M3 Pro data status" check
+  above was done explicitly rather than assumed, this time.
 
 ## Next Steps
 
-Ordered roughly as agreed with the user; items are independent except
-where noted.
+Ordered by priority; start at the top.
 
-1. **Point subset-query dispatch at the existing empirical `bselect`
-   table** instead of the known-broken analytical formula, as an
-   interim improvement (not the fully-correct fix, which would need its
-   own `(n, target_frac) -> crossover_k` calibration, that's out of
-   scope here, flagged as a possible future board). This is a small,
-   low-risk patch to `select_engine_ex()`'s subset-query branch in
-   `src/icm.c`. Verify with the same real-measurement methodology C4
-   used (median-of-7, real `icm_equity_subset()` calls) at the same
-   representative points already on record (37%/45% gaps) to confirm
-   the gap shrinks.
-2. **Delete the 6 confirmed-dead files** listed above, their stale
-   output CSVs, and fix the `gen_gpu_calib_lib.py` doc reference in
-   `CLAUDE.md`. Rebuild + `bench_grid verify` afterward to confirm
-   nothing was actually depended on.
-3. **Zen4**: get a fresh box (stock permitting), port wisdom directly
-   (no regeneration), build AOCL-FFTW with correct flags, rebuild
-   against the already-correct committed B-selection table, run ONLY
-   `make results-refresh DEVICE=zen4` (with `OMP_NUM_THREADS=16`
-   explicit) to refresh `results/`. Also run `bench_grid threshold` for
-   a precise, non-interpolated `k=n` 1-second boundary.
-4. **B200**: DONE, both the original and a second OOM found while
-   verifying it are now fixed and hardware-confirmed (see "GPU OOM:
-   what's fixed and what's still open" above -- 6 commits total,
-   `8ce8a07`..`386c856`). The full 211-point heatmap now passes with
-   zero errors. Remaining, smaller follow-up (unrelated to either OOM
-   fix): `tools/push_limit_gpu.cu`'s full exhaustive B/M/T search was
-   measured as impractically slow (>3.5 min on just its first, smallest
-   n value, no early-exit) and was not run to completion; a targeted
-   auto-dispatch probe (`scripts/frontier_probe.cu`) was used instead
-   for the 5 `RESULTS.md` frontier points, but this is not equivalent to
-   the original tool's methodology. Follow-up needed: (a) either speed
-   up `push_limit_gpu` or budget real time for it, (b) redo the
-   1-second threshold binary search properly.
-5. **De-slopify all MD files and the two files C3's cleanup pass never
-   touched** (`tools/gen_calib_skeleton.py`, `tools/calibrate_block_size.py`).
-   227 em-dashes were counted across `*.md` files this session (paper
-   itself is already clean, 0 em-dashes), strip them to standard
-   punctuation, and check for any remaining session-narrative/AI-tell
-   comments in code.
-6. **Regenerate `RESULTS.md` and re-sync the paper** once steps 3-4 land:
-   every number, table, and plot in `RESULTS.md` should also be in the
-   paper, in agreement, nothing stale in either. Recompile the PDF, copy
-   into `paper/icm_paper.pdf`, commit.
-7. **Standing, still open**: decide with the user whether to merge PR #7.
+1. **Cleanup/audit pass** (see START HERE above for the specific,
+   already-confirmed items -- don't re-derive, just fix): resync the
+   paper, fix the `memory_strategy` doc comment, document `scripts/` in
+   CLAUDE.md, decide on keeping vs. archiving the diagnostic-only files,
+   do a full read-through of `RESULTS.md` for any other stale numbers.
+   Good candidate for a DAG wave with DeepSeek doing the mechanical
+   doc-sync work and supervisor reviewing before commit, same pattern as
+   the rest of this session.
+2. **Write and run the real 1-second-threshold binary search** (see "GPU
+   OOM... Still open" above for the exact approach). This needs a fresh
+   B200 rental. Verify against the existing `frontier_probe.cu` points as
+   a sanity check, then produce the actual threshold numbers for both
+   k=n and k=100 curves.
+3. **Zen4**: still blocked on stock. Check vast.ai again; if available,
+   follow the exact procedure in "Critical operational notes" above (port
+   wisdom, don't recalibrate, `OMP_NUM_THREADS=16` explicit).
+4. **Regenerate `RESULTS.md` and re-sync the paper** once steps 2-3 land
+   (or once it's clear Zen4 will stay blocked for a while and the user
+   wants to proceed without it): every number, table, and plot in
+   `RESULTS.md` should also be in the paper, in agreement. Recompile the
+   PDF, copy into `paper/icm_paper.pdf`, commit.
+5. **Standing, still open**: decide with the user whether to merge PR #7.
    Never auto-decide this.
 
 ## Process note
 
 When a benchmark/calibration run touches a rented instance, log exactly
-which script was invoked and when, and cross-check the resulting data
-file's mtime against the commit date of anything it depends on (dispatch
-tables, cost-model code) before trusting it's current. This session lost
-significant time and trust to two variants of the same root problem:
-assuming data was current without checking dates against what actually
-changed.
+which script was invoked and when, cross-check the resulting data file's
+mtime against the commit date of anything it depends on, and set an
+explicit credit/time budget before letting anything run unattended.
+Verify DeepSeek worker output by reading the actual diff, never by
+trusting its own summary of what it did -- this session caught real bugs
+(an infinite loop, a silent-zero sentinel gap, a wrong build target) that
+the worker's own "complete and verified" framing did not disclose.
