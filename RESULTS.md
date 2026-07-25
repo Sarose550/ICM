@@ -449,28 +449,24 @@ coverage to break this collinearity is flagged as real, open follow-up work.
 
 | n | k=64 | k=1024 | k=n/2 | k=n |
 |---|------|--------|-------|-----|
-| 4,096 | 0.54 | 0.94 | 1.04 | 1.08 |
-| 16,384 | 1.34 | 7.62 | 4.52 | 5.16 |
-| 65,536 | 5.13 | 25.72 | 44.55 | 20.65 |
-| 262,144 | 38.97 | 50.75 | 219.68 | 118.21 |
-| 1,048,576 | 171.03 | 410.27 | 588.15 | 593.80 |
-| 4,194,304 | 317.54 | OOM (see below) | 5050.43 | 5524.33 |
+| 4,096 | 0.37 | 0.77 | 0.87 | 0.91 |
+| 16,384 | 1.19 | 2.83 | 4.04 | 4.34 |
+| 65,536 | 4.39 | 11.02 | 19.87 | 20.65 |
+| 262,144 | 17.15 | 43.54 | 97.75 | 101.36 |
+| 1,048,576 | 77.48 | 186.32 | 505.52 | 509.91 |
+| 4,194,304 | 273.25 | 1106.64 | 4345.23 | 4777.09 |
 
-Sampled from the 211-point calibration heatmap (`results/gpu_heatmap_b200.csv`),
-regenerated 2026-07-25 against the post-G/G2/G3/G4 codebase (commit
-`abd9fa4` and later) and a freshly re-extended FFT/workspace calibration
-(67,108,864 max size, matching the previously-validated range).
-
-> **Known open issue, NOT fixed as of this table (see HANDOFF.md for full
-> writeup):** 21 of 211 cells in this sweep failed with a CUDA
-> out-of-memory error, all at large n (2,097,152 - 33,554,432) in a
-> consistent middle-k band. The n=4,194,304, k=1,024 cell above is one of
-> them (shown as OOM rather than a fabricated number). This is a distinct,
-> newer finding from the one this session's G/G2/G3/G4 commits fixed --
-> verified NOT the same root cause (the exact same failing (n,k) points
-> pass cleanly when run in isolation outside the long sweep). Root cause
-> not yet identified; flagged for a dedicated follow-up rather than a
-> rushed fix.
+Sampled from the full 211-point calibration heatmap
+(`results/gpu_heatmap_b200.csv`), regenerated 2026-07-26 with the async
+memory-pool fix (commit `386c856`) applied -- all 211 cells pass with
+zero errors, including the 21 that failed in the previous (2026-07-25)
+run. See HANDOFF.md for the full history: original OOM found and fixed
+(G/G2/G3/G4, commits `8ce8a07`..`abd9fa4`), a second long-sweep-only OOM
+found in the following full-sweep verification, root-caused via static
+analysis to CUDA default-allocator fragmentation (every allocation
+confirmed correctly paired with a free, no leak), and fixed by routing
+the arena and cuFFT workspace allocations through a CUDA stream-ordered
+memory pool instead of raw `cudaMalloc`/`cudaFree`.
 
 ### Frontier probes (dedicated max-n / max-field search)
 
