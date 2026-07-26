@@ -26,61 +26,41 @@ nothing stale, hand-waved, or silently broken.
 Continue using the `supervisor-dag` skill/pattern for this work: a live
 strike board, DeepSeek Deck workers for the mechanical/investigative
 lifting, supervisor review of every diff before it lands, real hardware
-verification before anything is called done. That pattern is how the
-GPU OOM chain below got found, fixed, and verified across several rounds
+verification before anything is called done. That pattern is how every
+finding below got found, fixed, and verified across several rounds
 without losing track of state -- keep doing it that way, don't drop to
-ad-hoc work.
+ad-hoc work. (One real lapse this session: three single-node DeepSeek
+dispatches were done via direct `deck spawn` without a board file, purely
+out of habit, before the user caught it and asked for it to stop --
+they were retroactively logged onto a board afterward, but don't repeat
+the lapse. Every `Model: deepseek` node, however small, goes on a board.)
 
-**First priority: a cleanup/audit pass.** The user flagged (2026-07-26)
-that repo state may have drifted from what was explicitly asked for
-across the last few sessions. Concrete, CONFIRMED drift found so far
-(don't re-derive, these are checked, not suspected):
+**Current live board: `SPRINT_GPU_MONOTONICITY_DAG.md`.** Read it first --
+it has the up-to-date node graph. As of this writing: nodes A, B, G are
+done; **E (hardware-verify the B-selection calibration gap) is the next
+action**, followed by F (recalibrate, only if E confirms a real
+inversion), then H (finally run the threshold search). All three remaining
+nodes need a real B200 rental -- **do not rent without an explicit
+user go-ahead**, this was emphasized repeatedly this session after money
+was spent on a rental that then surfaced a new problem. See "Next action,
+on the next B200 rental" near the end of the "Non-monotonicity" section
+below for the exact ordered checklist, and the vast.ai balance snapshot
+there (~$3.93 as of this writing -- re-verify against the real balance,
+don't trust a stale number).
 
-1. **The paper (`~/Documents/ICM_paper`) is stale.** Last commit
-   `98b7f79`, 2026-07-24 01:41 -- before the subset-dispatch fix, the dead
-   code deletion, both GPU OOM fixes, and the regenerated heatmap data.
-   `RESULTS.md` has changed substantially since; the paper has not.
-   Violates this file's own standing rule ("must never diverge"). Needs a
-   full re-sync pass once the remaining GPU numbers below are finalized.
-2. **`src/icm_gpu.h`'s `memory_strategy` doc comment is stale.** Still
-   reads `/* 0=auto, 1=full, 2=pool, 3=selective recompute */` -- as of
-   commit `386c856`, `0=auto` now ALSO enables the memory pool by
-   default (matching what used to be `2`'s exclusive behavior), and `1`
-   is now specifically the pool opt-out. The comment no longer describes
-   what the values actually do. Needs a rewrite.
-3. **`CLAUDE.md`'s Directory Structure section doesn't mention
-   `scripts/`.** That directory (created 2026-07-25/26) holds
-   `gpu_ws_repro.cu`, `frontier_probe.cu`, `b200_verify_and_sweep.sh`,
-   `heatmap_gpu_reset_every_cell.cu`, `DIAGNOSTIC_REPORT.md`. Decide
-   which of these are still earning their place (see item 4) and
-   document the survivors.
-4. **Judgment call needed, not yet made**: now that the long-sweep OOM is
-   fixed, is `scripts/DIAGNOSTIC_REPORT.md` (a diagnosis of a now-closed
-   issue) and `scripts/heatmap_gpu_reset_every_cell.cu` (a diagnostic
-   tool for a hypothesis that's now confirmed) still worth keeping, or
-   are they dead weight per this project's own established convention of
-   deleting superseded investigation tools (see the precedent: 6 files
-   already deleted this way, commit `318a3ed`)? Lean toward keeping
-   `DIAGNOSTIC_REPORT.md` as a permanent record (it's genuinely
-   informative, unlike the old one-off dead tools) but this is worth a
-   real decision, not a default.
-5. **Verify nothing else in `RESULTS.md`/paper references numbers that
-   predate the 2026-07-26 fixes.** Specifically check the CPU-side
-   sections too, not just GPU -- the M3 Pro data (see below) checked out
-   fine, but do a full read-through, not a spot check.
-
-**M3 Pro data status, already checked, do not re-derive**: `results/*m3pro*`
-files (bench grids, contour sweeps, plots) were last regenerated in
-commit `a05652e`, ~11 minutes before the subset-dispatch fix (commit
-`44bc959`) landed the same session. Checked whether this matters: the
-subset-dispatch fix only touches `n_targets > 0` paths, and the only
-"subset" content in the M3 Pro files is a single pre-existing correctness
-check line (`subset n=1024 10/1024 PASS`), not a performance number --
-`bench_grid`'s `subset-speed` performance benchmark was never run/included
-in these files at all. **Conclusion: M3 Pro data is NOT stale relative to
-the subset fix.** Both files show `ALL TESTS PASSED`. Nothing funky found.
-This does not need re-verification unless something else changes CPU
-dispatch code again.
+**Historical, already fully resolved (do not re-derive, kept only for
+provenance)**: an earlier cleanup/audit pass (`SPRINT_CLEANUP_AUDIT_DAG.md`,
+closed and deleted 2026-07-25/26) found and fixed several instances of
+repo drift: the paper (`~/Documents/ICM_paper`) was stale relative to
+`RESULTS.md` (still true today, see Next Steps -- deliberately deferred
+until the GPU numbers below are finalized, not an oversight); a stale doc
+comment on `memory_strategy` in `src/icm_gpu.h` (fixed); `CLAUDE.md`'s
+Directory Structure section missing `scripts/` (fixed); a keep/delete
+decision on diagnostic-only files in `scripts/` (applied); and a full
+`RESULTS.md` read-through that found nothing else stale. M3 Pro CPU data
+(`results/*m3pro*`) was separately confirmed NOT stale relative to any
+subsequent fix and does not need re-verification unless CPU dispatch code
+changes again.
 
 ## GPU OOM: history, both findings fixed and hardware-verified (2026-07-25 to 2026-07-26)
 
@@ -164,14 +144,245 @@ never produced. `RESULTS.md`'s "1-second threshold" section currently
 says "needs re-measurement" rather than a number, correctly, not a
 placeholder guess.
 
-**Next action**: write a real binary search using the lightweight
-single-measurement approach `frontier_probe.cu` already established (one
-`icm_gpu_equity` call per candidate n via `icm_gpu_plan_create` +
-`icm_gpu_equity_with_plan`, not the full B/M/T sweep) -- narrow in on
-where k=n crosses 1000ms and separately where k=100 crosses 1000ms, same
-two curves as the original `RESULTS.md` table. Should take a few minutes
-on a B200, not the 3.5+ minutes-per-n the exhaustive tool needs. Not yet
-written as of this handoff.
+**Tool written, not yet run (2026-07-26).** `scripts/threshold_search_gpu.cu`:
+a real binary search using the lightweight single-measurement approach
+`frontier_probe.cu` already established (one `icm_gpu_equity_with_plan`
+call per candidate n, median of 5 reps, via `icm_gpu_plan_create` +
+`icm_gpu_equity_with_plan`, not the full B/M/T sweep). Searches both
+curves (k=n and k=100) for the 1000ms crossing. Written and reviewed
+line-by-line against `src/icm_gpu.h`'s real API signatures and the
+Makefile's actual `push_limit_gpu` build recipe (both check out exactly
+-- no fabricated calls, no wrong `-arch` flag this time). Cannot be
+built/run in this dev environment (no local CUDA hardware); needs a B200
+rental to actually execute. Expected runtime ~2-4 minutes.
+
+**Non-monotonicity data-quality gap, now closed (2026-07-26).** The
+"two plausible single-shot measurement noise" points flagged in commit
+`f568d40`'s message were explicitly not re-verified at the time. Re-checked
+from scratch this session (independent DeepSeek re-derivation, all 211
+CSV rows, all directions): one point (`n=512, k=64`, 0.11ms) is confirmed
+genuine timer jitter, harmless to any conclusion. The other
+(`n=4,194,304, k=128`, `893.3ms`, `reps=1`) is a **real bad data point**
+-- ~50-80% too high versus its neighbors (expected ~550-600ms based on
+the trend from `n=2,097,152`/`n=8,388,608`), the largest non-monotonicity
+in the dataset (31% dip to the next k). **Must be re-measured with
+reps>=5 on the next B200 rental before this cell is treated as final for
+`RESULTS.md`/the paper.** Two more cells (`n=8,388,608, k=128` and
+`n=1,048,576, k=128`) are lower-priority "should re-measure if time
+permits" -- both single-rep, both plausibly noisy but not confirmed bad.
+Everything else previously triaged as benign (`reps=1` above 100ms,
+`cv=0.000` for single-rep cells, `B=32` at `n=1,048,576`) was
+independently re-confirmed, still holds. Full data + reasoning in this
+session's `SPRINT_GPU_THRESHOLD_DAG.md` node `B_NONMONOTONICITY_REVERIFY`
+(board deleted at close per convention; this paragraph is the permanent
+record).
+
+**Non-monotonicity: root cause CONFIRMED via real B200 rental
+(2026-07-26), NOT measurement noise.** A prior planning pass (DeepSeek
+root-cause hypotheses, supervisor-reviewed) concluded single-rep
+measurement noise was the most plausible explanation. That hypothesis
+was tested directly on rented B200 hardware and **refuted**: re-measuring
+`n=4,194,304, k=128` at reps=5 returned **890.063ms with cv=0.0000**
+(fully deterministic across all 5 reps), matching the original 893.3ms
+almost exactly. The neighbor cell `n=4,194,304, k=256` (612ms) is
+genuinely faster despite having roughly double the convolution length
+(`build_conv=511` vs `255`) at every tree level -- a real, reproducible,
+counter-intuitive result, not noise.
+
+**Confirmed mechanism** (via `ICM_GPU_DEBUG_PLAN=1`, raw output kept at
+`scripts/b200_nonmono_debug_20260726.txt`; code read directly, not taken
+on faith):
+1. `best_fft_config_joint_gpu()` (`src/gpu/gpu_plan.cu:300`) picks
+   `fft_n`/wrap-correction size using ONLY cuFFT-batched cost estimates
+   (`estimate_cufft_pipeline_ns_batched`). For this cell it picked
+   `fft_n=128` with `wrap_m=127` (a large wrap correction) because that
+   looked cheapest under the cuFFT cost model, for 9 of 16 tree levels.
+2. `pick_tier_for_fft_len()` (`gpu_plan.cu:437`) then compares
+   fused-vs-cuFFT cost AT THAT ALREADY-CHOSEN fft_n (128) and picks
+   `GPU_TIER_FUSED` (fused nearly always wins at small sizes).
+3. The one check that would catch this -- "is a clean power-of-2 fused
+   size actually cheaper?" (`gpu_plan.cu:693`, and its twin at the
+   propagate-level path, `gpu_plan.cu:940`) -- is gated on
+   `tier != GPU_TIER_FUSED`. Since tier is already FUSED from step 2,
+   this comparison never runs. The model never checks "fused at 128 with
+   heavy wrap correction" against "fused at 256 with zero wrap
+   correction" -- exactly what the `k=256` neighbor cleanly uses instead,
+   and measures faster on real hardware.
+
+**This is a genuine, fixable cost-model bug** (not an inherent hardware
+property) at two symmetric call sites. Fix direction (not yet
+implemented -- needs care plus runtime re-verification, not a quick
+patch): the gate at both `gpu_plan.cu:693` and `:940` should also fire
+when tier is already FUSED but paying a nonzero wrap penalty
+(`bwrap > 0 || cwrap > 0`), not just when tier isn't FUSED at all. The
+"current cost" baseline computed in the `else` branch at those sites
+(currently always `estimate_cufft_pipeline_ns_batched(...)`) would also
+need to switch to `estimate_fused_build_ns`/`estimate_fused_corr_ns` when
+entering with tier already FUSED, or the comparison baseline would be
+wrong.
+
+**Session tooling notes**: both `scripts/threshold_search_gpu.cu` and
+the new `scripts/remeasure_nonmono.cu` originally had a doc-comment bug
+where `python*/dist-packages` (a literal `*/` from the glob pattern)
+closed the C block comment early, breaking compilation -- fixed in both
+(now uses `find ... -path '*dist-packages/...'` instead, no `*/`
+adjacency). Also: the Makefile's `GPU_OBJS_FUSED` pattern produces
+double-prefixed object names (`build/gpu_gpu_kernels_fused.o`, not
+`build/gpu_kernels_fused.o` as both tools' header comments assumed) --
+harmless for the Makefile itself but any hand-written link line (as in
+both scripts' build-recipe comments) must use the double-prefixed names.
+
+**Fix implemented (2026-07-26), not yet hardware-verified.**
+DeepSeek-drafted, supervisor-reviewed line-by-line against the actual
+diff (not accepted on the worker's own "done" framing). Applied at both
+call sites in `src/gpu/gpu_plan.cu` (~line 698, build-level path in
+`estimate_candidate_cost()`; ~line 959, propagate-level path in
+`build_plan_metadata()`): the gate now fires when
+`tier != GPU_TIER_FUSED || bwrap > 0 || cwrap > 0` (site-2 uses
+`build_wrap_m`/`corr_wrap_m`), instead of only `tier != GPU_TIER_FUSED`.
+When entering with tier already FUSED, the "current cost" baseline now
+uses `estimate_fused_build_ns`/`estimate_fused_corr_ns` plus the existing
+wrap-penalty formula shape (verified: build penalty uses `/2.0`, corr
+penalty doesn't -- an asymmetry that already existed in the original code
+and was preserved exactly, not "cleaned up"). Neither
+`best_fft_config_joint_gpu()`, `best_fft_config_gpu()`, nor
+`pick_tier_for_fft_len()` were touched, per constraint. Braces/syntax
+verified by direct read (no local CUDA toolchain to compile against);
+cannot be built/tested until the next B200 rental.
+
+**Blast radius (2026-07-26), offline simulation, real-hardware
+validated.** A Python reimplementation of the decision logic
+(`scripts/analyze_fftsize_bug_blast_radius.py`) exactly reproduced every
+real value from `scripts/b200_nonmono_debug_20260726.txt` before being
+trusted for a sweep (validation checked directly, not assumed).
+Sweeping 189 `(n,k)` grid points: **12 points affected (6.3%)**, every one
+sharing the identical signature `conv_build=255` (i.e. `k_pad=128`) at
+whichever tree levels hit that build length -- BEFORE: `fft_n=128,
+bwm=127/cwm=127`; AFTER: `fft_n=256, bwm=0/cwm=0`. **This is the same bug
+signature as the k=128->256 dips at n=65,536-524,288 (B=64) already
+cataloged from the earlier non-monotonicity re-verification pass** --
+confirmed directly by running the simulation at those exact points, not
+just by pattern-matching. That means this one fix, if it holds up on
+hardware, likely resolves 5 of the 11 previously-cataloged
+non-monotonicities (the mandatory `n=4,194,304,k=128` cell plus the four
+`n=65,536`-`524,288` k=128->256 dips), not just the one cell it was
+found from.
+
+**Fix hardware-verified on a second B200 rental (2026-07-26): real, large,
+correct.** Rebuilt with the fix, `bench_gpu_fused verify` passed 36/0 (no
+regression). Re-ran `scripts/remeasure_nonmono.cu` (extended with a
+generalization check at `n=524,288`): every previously-bad cell improved
+substantially and stayed fully deterministic (`cv≈0`) --
+`n=4,194,304,k=128` moved from ~890ms to **511.7ms** (right in the
+predicted ~500-650ms range); `n=8,388,608,k=128` from 1349.8ms to
+1025.8ms; `n=1,048,576,k=128` from 122.6ms to 93.7ms;
+`n=524,288,k=128` from 54.17ms to 42.2ms, now correctly below its
+`k=256` neighbor (51.2ms), resolving the inversion. Both previously-
+flagged non-monotonic pairs are now correctly ordered. Raw output kept
+at `scripts/b200_fix_verified_20260726.txt`.
+
+**Correction to the earlier caveat below (RESOLVED, was based on a wrong
+claim -- corrected same session):** an earlier note here said the cost
+model's own predicted benefit was 3-4 orders of magnitude smaller than
+the real ~280ms hardware gap, and speculated the GPU wrap-correction cost
+was under-modeled at the C-code/calibration level. **That speculation was
+investigated and refuted.** A dedicated trace (verified directly against
+source, not taken on a worker's framing) confirmed
+`icm_gpu_measure_fused_pair_ns()` (`src/gpu/gpu_api.cu:747-748`) DOES
+correctly divide the batched measurement by the batch count
+(`bsamp[...]/  (double)nparents`) before storing it -- the calibration
+values in `gpu_fft_config.h` are genuine, correctly-normalized per-FFT
+nanoseconds, not batch totals and not mislabeled microseconds (a
+different worker's claim to the contrary this session was independently
+checked and was wrong). The CPU calibration path (`tools/calibrate.c`)
+never batches at all, so the same class of risk does not exist there
+either -- **this does NOT ripple into the CPU cost model.** The real
+source of the earlier magnitude mismatch was an approximation error in
+the offline Python blast-radius/monotonicity simulation scripts
+(`scripts/analyze_fftsize_bug_blast_radius.py` and its extension), not in
+the production C++ cost model or the calibration data -- consistent with
+the fix's hardware-verified real benefit being large and correct as
+measured above.
+
+**Second, DIFFERENT non-monotonicity mechanism found (2026-07-26), not
+yet hardware-verified, blocks the threshold search.** While live-watching
+a `scripts/threshold_search_gpu.cu` run (killed early, not saved), the
+user observed a real-time cost drop near n≈2^20. Investigation traced
+this to the GPU B-selection calibration table (`gbselect_*` in
+`devices/b200/gpu_fft_config.h`): only 8 calibrated n-values exist, and
+the gap between `n=1,048,576` (`B=32`) and `n=1,572,864` (`B=96-192`) is
+a ~50% jump with nothing calibrated in between. Nearest-neighbor lookup
+therefore applies `B=32` as a hard cliff to every real n up to the
+geometric midpoint (~1,285,000) and jumps straight to `B=96+` above it --
+independently confirmed by directly reading the calibration table (not
+dependent on the simulation script above). **The correct fix is adding
+real calibration points in that gap, not "enforcing monotonicity"** --
+deliberately picking a worse B just to smooth the timing curve would defeat
+the entire purpose of the cost model and was explicitly rejected by the
+user. Per a dedicated investigation: this is achievable with EXISTING
+tooling (`tools/calibrate_gpu_best_b.cu`'s narrow-around resume mode +
+`tools/gen_calib_skeleton.py` for new anchor points + `calibrate_block_size.py`
+for injection), no new tools needed, estimated ~3-16 minutes of B200 time
+for ~8 new `(n,k)` points spanning the gap. **Not yet independently
+re-verified on real hardware** that this cliff actually causes a real
+wall-clock inversion (only confirmed via table-reading + offline
+simulation so far) -- do that before or alongside the recalibration.
+
+**GPU dispatch-validation harness written and reviewed (2026-07-26), not
+yet run.** `scripts/gpu_dispatch_validate.cu` -- the standing GPU
+analogue of `./bench_grid crossover` (Next Steps item 3 above). For a
+grid of `(n,k)` points spanning both the calibrated B-selection anchors
+and the identified sparse gap (n=1,200,000/1,300,000/1,400,000 included
+by design), it measures the real dispatched configuration and forces
+nearby alternative B values via the real `ICM_GPU_FORCE_B` mechanism
+(`gpu_plan.cu:850-854`), flagging any point where the dispatched choice
+isn't the fastest measured, plus a separate n-monotonicity sweep at fixed
+k. Supervisor-reviewed against actual source: API signatures, the
+`kBCandidates` table (verified an exact 48-element match against
+`gpu_plan.cu:11-16`), and the `ICM_GPU_FORCE_B` env-var mechanism all
+check out. **One real bug caught and fixed**: the build recipe comment
+had the dlink object misnamed `gpu_gpu_dlink_fused.o` (double-prefixed,
+copying the pattern of the other four objects) when the real file
+(confirmed against this session's actual build log) is single-prefixed,
+`gpu_dlink_fused.o` -- the `-dlink` step produces its own name, not the
+`GPU_OBJS_FUSED` pattern substitution the other four go through.
+**FIXED (was initially mis-assessed as a tolerable limitation, corrected
+same session):** `ICM_GPU_FORCE_B`'s override is silently ignored by the
+real dispatch code if the requested B exceeds `plan->k_pad`
+(`gpu_plan.cu:853`'s own constraint), which would otherwise make the tool
+compare the dispatched config against a second measurement of itself and
+report a false "optimal" verdict. Traced concretely (not hypothetically):
+this collides directly with the tool's own highest-priority test points
+(n=1,200,000/1,300,000/1,400,000 at k=100, right in the B-selection gap)
+-- if the dispatched B there lands past the calibration cliff (96+), the
+tool's "double" alternative would very plausibly exceed that k's
+rounded-up size and get silently rejected, masking a real answer exactly
+where it matters most. Fixed: `check_b_optimality()` now compares the
+plan's actual applied B against the B it intended to test, skips (does
+not count as a valid comparison) any mismatch with an explicit printed
+reason, and returns "skipped" for a point if every alternative was
+rejected this way, instead of silently reporting "optimal."
+
+**Next action, on the next B200 rental** (this session's second rental is
+destroyed; exact vast.ai invoice total this session: $1.376+$0.013 (first
+rental, GPU+storage) + $1.262+$0.011 (second rental) = **$2.662 spent**
+against the original ~$6.59 available (~$1.59 pre-existing + $5.00 added
+this session) -- **~$3.93 actually remains**, not the ~$4.19 estimated
+earlier in this document; verify against the real vast.ai balance before
+committing to a rental scope regardless, this number is a snapshot):
+(1) verify the B-selection
+cliff causes a real hardware timing inversion near n≈1.05M-1.57M on the
+`k=n` and/or `k=100` curves (a few targeted `remeasure`-style points,
+not a full sweep), (2) if confirmed, generate new skeleton anchor points
+in that gap and re-run the existing B-selection calibration tool (narrow-
+around mode) to close it, (3) spot-check the newly-identified affected
+cells from the fix already applied (`n=65,536`-`524,288, k=128`) if not
+already covered, (4) run `scripts/gpu_dispatch_validate.cu` (written,
+reviewed, ready -- see above) before trusting monotonicity broadly, (5)
+only then run `scripts/threshold_search_gpu.cu` for the actual threshold
+numbers. Live tracking for this whole arc is now on
+`SPRINT_GPU_MONOTONICITY_DAG.md` (nodes E/F/H still open, all
+hardware-gated -- do not rent without explicit user go-ahead).
 
 ## Architecture: what's actually load-bearing (read before touching cost-model code)
 
@@ -356,28 +567,56 @@ calibration itself, it's expensive and already correct).
 
 Ordered by priority; start at the top.
 
-1. **Cleanup/audit pass** (see START HERE above for the specific,
-   already-confirmed items -- don't re-derive, just fix): resync the
-   paper, fix the `memory_strategy` doc comment, document `scripts/` in
-   CLAUDE.md, decide on keeping vs. archiving the diagnostic-only files,
-   do a full read-through of `RESULTS.md` for any other stale numbers.
-   Good candidate for a DAG wave with DeepSeek doing the mechanical
-   doc-sync work and supervisor reviewing before commit, same pattern as
-   the rest of this session.
-2. **Write and run the real 1-second-threshold binary search** (see "GPU
-   OOM... Still open" above for the exact approach). This needs a fresh
-   B200 rental. Verify against the existing `frontier_probe.cu` points as
-   a sanity check, then produce the actual threshold numbers for both
-   k=n and k=100 curves.
-3. **Zen4**: still blocked on stock. Check vast.ai again; if available,
+1. **Cleanup/audit pass -- DONE except the paper resync (item 1 above),
+   which stays deliberately deferred until step 2 lands** (see START HERE
+   above): `memory_strategy` doc comment fixed, `scripts/` documented in
+   `CLAUDE.md`, diagnostic-file keep/delete decision made and applied,
+   full `RESULTS.md` read-through found nothing stale. Don't re-derive
+   any of this.
+2. **DO NOT run the 1-second-threshold binary search yet.** The
+   wrap-correction/tier-lock-in fix (`gpu_plan.cu:693`/`:940`) is
+   hardware-verified and real (see "Non-monotonicity" section above --
+   every re-measured cell improved substantially, two previously-inverted
+   pairs now correctly ordered). A second, DIFFERENT non-monotonicity
+   mechanism was found immediately after (the B-selection calibration
+   gap, see "Non-monotonicity" section) -- confirmed real by directly
+   reading the calibration table, but not yet independently re-verified
+   as an actual hardware timing inversion. **The correct fix is adding
+   more calibration points in that gap, NOT "enforcing monotonicity"**
+   -- deliberately picking a worse-performing B just to smooth the timing
+   curve would defeat the entire purpose of the cost model and was
+   explicitly rejected by the user. A separate worry (a possible unit/
+   batch-normalization bug in the GPU calibration tool) was raised,
+   investigated, and **refuted** -- the calibration values are correct,
+   this does not need further work. This is now fully tracked on
+   `SPRINT_GPU_MONOTONICITY_DAG.md` (nodes E/F/H) -- **the threshold
+   search (node H) must not run until E confirms/resolves the B-selection
+   gap on real hardware**, since the binary search's correctness depends
+   on genuine monotonicity.
+3. **GPU-side end-to-end dispatch-validation harness -- DONE, reviewed,
+   not yet run.** `scripts/gpu_dispatch_validate.cu`: the GPU analogue of
+   `./bench_grid crossover` that this session identified as a long-
+   standing gap (a major reason both bugs above went unnoticed for as
+   long as they did -- there was no systematic real-hardware check that
+   would have caught either). For a grid of `(n,k)` points spanning the
+   calibrated B-selection anchors and the identified sparse gap, it
+   measures the real dispatched configuration against nearby alternatives
+   on real hardware and checks n-monotonicity at fixed k. Two real bugs
+   were found in the tool itself during review and fixed before it's
+   trusted: a misnamed build object in its own build-recipe comment, and
+   a silent-override-rejection issue that could have masked a real
+   problem exactly at the border-region points this tool exists to check
+   (see "Non-monotonicity" section for both). Ready to run on the next
+   B200 rental (board node G, done).
+4. **Zen4**: still blocked on stock. Check vast.ai again; if available,
    follow the exact procedure in "Critical operational notes" above (port
    wisdom, don't recalibrate, `OMP_NUM_THREADS=16` explicit).
-4. **Regenerate `RESULTS.md` and re-sync the paper** once steps 2-3 land
+5. **Regenerate `RESULTS.md` and re-sync the paper** once steps 2-4 land
    (or once it's clear Zen4 will stay blocked for a while and the user
    wants to proceed without it): every number, table, and plot in
    `RESULTS.md` should also be in the paper, in agreement. Recompile the
    PDF, copy into `paper/icm_paper.pdf`, commit.
-5. **Standing, still open**: decide with the user whether to merge PR #7.
+6. **Standing, still open**: decide with the user whether to merge PR #7.
    Never auto-decide this.
 
 ## Process note

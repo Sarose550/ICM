@@ -14,7 +14,13 @@ typedef struct {
     int use_cufftdx;            /* Enable Tier-2 fused kernels when available */
     int enable_graphs;          /* Enable CUDA Graph execution */
     int enable_q_pipeline;      /* Enable q+1 build overlap with q propagate */
-    int memory_strategy;        /* 0=auto, 1=full, 2=pool, 3=selective recompute */
+    int memory_strategy;        /* 0=auto (default; pooled via cudaMallocAsync),
+                                  * 1=full (opts OUT of the memory pool, raw
+                                  * cudaMalloc instead), 2=pool (explicit,
+                                  * same pooled behavior as 0), 3=selective
+                                  * recompute (also pooled; additionally
+                                  * skips caching FFT results at some
+                                  * levels, recomputing them instead) */
     int force_uncached_fused_levels; /* -1 auto, else exact M for fused levels */
     int force_uncached_cufft_levels; /* -1 auto, else exact T for cuFFT levels */
     int fast_mode;              /* Fast mode may reduce Q in tools */

@@ -689,8 +689,14 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
          * at conv_len <= GPU_FUSED_MAX_CONV_LEN with zero-padding up to the
          * next power-of-2 — this is often faster than cuFFT at a smaller
          * non-power-of-2 size because the single-kernel fused approach
-         * eliminates 5+ kernel launches. */
-        if (tier != GPU_TIER_FUSED && conv_build <= g_runtime_fused_max_conv_len) {
+         * eliminates 5+ kernel launches.
+         * Also fire when tier is already GPU_TIER_FUSED but paying a nonzero
+         * wrap penalty (bwrap>0 || cwrap>0): best_fft_config_joint_gpu() may
+         * have chosen a small fft_n with heavy wrap correction that looked
+         * cheaper under the cuFFT cost model, but a clean power-of-2 fused
+         * size with zero wrap may be faster on real hardware. */
+        if (conv_build <= g_runtime_fused_max_conv_len
+            && (tier != GPU_TIER_FUSED || bwrap > 0 || cwrap > 0)) {
             int p2 = next_pow2_int(conv_build);
             double fb = estimate_fused_build_ns(p2);
             double fc = estimate_fused_corr_ns(p2);
@@ -704,16 +710,24 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
                 double fused_total = fb + fc
                     + (double)p2_bwrap * (double)(p2_bwrap + 1) / 2.0 * fma_ns * wrap_scale
                     + (double)p2_cwrap * (double)(p2_cwrap + 1) * fma_ns * wrap_scale;
-                double cufft_total;
+                double current_total;
                 if (tier == GPU_TIER_SCHOOLBOOK) {
-                    cufft_total = school_build + school_corr;
+                    current_total = school_build + school_corr;
+                } else if (tier == GPU_TIER_FUSED) {
+                    /* Already-fused: baseline is the current fused cost
+                     * including its wrap penalties — compare apples-to-apples
+                     * against a clean power-of-2 fused alternative. */
+                    current_total = estimate_fused_build_ns(fft_n)
+                        + estimate_fused_corr_ns(fft_n)
+                        + (double)bwrap * (double)(bwrap + 1) / 2.0 * fma_ns * wrap_scale
+                        + (double)cwrap * (double)(cwrap + 1) * fma_ns * wrap_scale;
                 } else {
-                    cufft_total = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch)
+                    current_total = estimate_cufft_pipeline_ns_batched(fft_n, eff_batch)
                         + (double)bwrap * (double)(bwrap + 1) / 2.0 * fma_ns * wrap_scale
                         + estimate_cufft_pipeline_ns_batched(fft_n, eff_batch) * GPU_PAIRED_CACHED_CORR_RATIO
                         + (double)cwrap * (double)(cwrap + 1) * fma_ns * wrap_scale;
                 }
-                if (fused_total < cufft_total) {
+                if (fused_total < current_total) {
                     fft_n = p2;
                     bwrap = p2_bwrap;
                     cwrap = p2_cwrap;
@@ -936,8 +950,14 @@ bool build_plan_metadata(GpuPlan *plan) {
 
             /* If the cuFFT config chose a non-fused size, check whether a
              * power-of-2 fused size would be cheaper.  Override fft_n so
-             * the execution engine uses the fused kernel. */
-            if (tier != GPU_TIER_FUSED && conv_build <= g_runtime_fused_max_conv_len) {
+             * the execution engine uses the fused kernel.
+             * Also fire when tier is already GPU_TIER_FUSED but paying a
+             * nonzero wrap penalty: best_fft_config_joint_gpu() may have
+             * chosen a small fft_n with heavy wrap correction that looked
+             * cheaper under the cuFFT cost model, but a clean power-of-2
+             * fused size with zero wrap may be faster on real hardware. */
+            if (conv_build <= g_runtime_fused_max_conv_len
+                && (tier != GPU_TIER_FUSED || build_wrap_m > 0 || corr_wrap_m > 0)) {
                 int p2 = next_pow2_int(conv_build);
                 double fb = estimate_fused_build_ns(p2);
                 double fc = estimate_fused_corr_ns(p2);
@@ -947,11 +967,22 @@ bool build_plan_metadata(GpuPlan *plan) {
                     double fused_total = fb + fc
                         + (double)p2_bwm * (double)(p2_bwm + 1) / 2.0 * tree_school_ns_per_fma() * wrap_scale
                         + (double)p2_cwm * (double)(p2_cwm + 1) * tree_school_ns_per_fma() * wrap_scale;
-                    double cufft_total = estimate_cufft_pipeline_ns(fft_n)
-                        + (double)build_wrap_m * (double)(build_wrap_m + 1) / 2.0 * tree_school_ns_per_fma() * wrap_scale
-                        + estimate_cufft_pipeline_ns(fft_n) * GPU_PAIRED_CACHED_CORR_RATIO
-                        + (double)corr_wrap_m * (double)(corr_wrap_m + 1) * tree_school_ns_per_fma() * wrap_scale;
-                    if (fused_total < cufft_total) {
+                    double current_total;
+                    if (tier == GPU_TIER_FUSED) {
+                        /* Already-fused: baseline is the current fused cost
+                         * including its wrap penalties — compare apples-to-apples
+                         * against a clean power-of-2 fused alternative. */
+                        current_total = estimate_fused_build_ns(fft_n)
+                            + estimate_fused_corr_ns(fft_n)
+                            + (double)build_wrap_m * (double)(build_wrap_m + 1) / 2.0 * tree_school_ns_per_fma() * wrap_scale
+                            + (double)corr_wrap_m * (double)(corr_wrap_m + 1) * tree_school_ns_per_fma() * wrap_scale;
+                    } else {
+                        current_total = estimate_cufft_pipeline_ns(fft_n)
+                            + (double)build_wrap_m * (double)(build_wrap_m + 1) / 2.0 * tree_school_ns_per_fma() * wrap_scale
+                            + estimate_cufft_pipeline_ns(fft_n) * GPU_PAIRED_CACHED_CORR_RATIO
+                            + (double)corr_wrap_m * (double)(corr_wrap_m + 1) * tree_school_ns_per_fma() * wrap_scale;
+                    }
+                    if (fused_total < current_total) {
                         fft_n = p2;
                         build_wrap_m = p2_bwm;
                         corr_wrap_m = p2_cwm;
