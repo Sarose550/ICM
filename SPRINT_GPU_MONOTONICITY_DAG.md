@@ -19,8 +19,10 @@ graph TD
   A[A_MONOTONICITY_AUDIT] --> E[E_HW_VERIFY_BSELECT_GAP]
   B[B_CALIB_UNIT_TRACE] --> E
   E --> F[F_RECALIBRATE_BSELECT_GAP]
+  F --> I[I_DIAGNOSE_THIRD_MECHANISM]
   F --> G[G_BUILD_GPU_VALIDATION_HARNESS]
-  G --> H[H_RUN_THRESHOLD_SEARCH]
+  I --> H[H_RUN_THRESHOLD_SEARCH]
+  G --> H
 ```
 
 ## Lanes
@@ -82,7 +84,7 @@ graph TD
   fix as achievable with existing tooling (`calibrate_gpu_best_b`'s
   narrow-around resume mode), ~3-16 min of B200 time for ~8 new points.
 
-### [ ] E_HW_VERIFY_BSELECT_GAP
+### [x] E_HW_VERIFY_BSELECT_GAP
 
 - **Model:** `supervisor`
 - **Depends:** A_MONOTONICITY_AUDIT, B_CALIB_UNIT_TRACE
@@ -97,8 +99,16 @@ graph TD
   outcome, not a failure.
 - **Kill deadline:** budget alongside F below in one rental if confirmed.
 - **Binding law:** HANDOFF.md's B-selection gap section.
+- **Status:** DONE (2026-07-26, third B200 rental, contract `45932804`,
+  user-approved). Real inversion confirmed on BOTH curves (not just
+  simulated): k=n curve n=1,100,000 (1183.3ms) slower than n=1,285,000
+  (1141.4ms); k=100 curve n=1,100,000 (181.3ms) slower than n=1,285,000
+  (121.3ms). Root cause confirmed compound: B-selection nearest-neighbor
+  cliff + a tree-depth power-of-2 boundary crossing (L=16->17) at the
+  same point, both confirmed via `ICM_GPU_DEBUG_PLAN=1`. See HANDOFF.md
+  "Third B200 rental" section for full detail.
 
-### [ ] F_RECALIBRATE_BSELECT_GAP
+### [x] F_RECALIBRATE_BSELECT_GAP
 
 - **Model:** `supervisor`
 - **Depends:** E_HW_VERIFY_BSELECT_GAP (only if E confirms a real
@@ -115,6 +125,28 @@ graph TD
   estimate).
 - **Binding law:** do NOT hand-edit B values to force monotonicity --
   only real added calibration measurements are acceptable.
+- **Status:** DONE for the two gaps tested, but NOT a full guarantee of
+  monotonicity everywhere (2026-07-26). n=1,048,576-1,572,864 gap: 3 new
+  anchors (n=1,150,000/1,285,000/1,420,000) added via real
+  `calibrate_gpu_best_b --narrow-around` measurement (best_B=48-80, not
+  the naive 32-or-96+ nearest-neighbor cliff), 32->44 points, rebuilt,
+  `bench_gpu_fused verify` 36/0, re-measured: both curves now fully
+  monotonic across this gap. A SECOND gap at n=524,288-1,048,576 (same
+  mechanism, one B step down) was found while spot-checking and also
+  fixed (3 more anchors, 44->47 points, verify still 36/0) -- but a
+  re-measurement afterward found ONE inversion still remaining there
+  (n=1,000,000 vs n=1,048,576, same B/L/nblocks yet ~24% timing gap) that
+  is NOT the B-selection cliff and is NOT yet understood -- see HANDOFF.md
+  "Third B200 rental" section, item 2. **Also found and fixed A REAL BUG
+  in `tools/calibrate_block_size.py`** (the orchestrator meant to make
+  this reproducible for future devices/users): Step 2/3 unconditionally
+  discarded the ENTIRE existing calibration table on every run, which
+  would have silently reverted both fixes above the next time anyone ran
+  it. Fixed with a merge instead of overwrite (`read_existing_table()` +
+  seed-then-merge), verified locally via a round-trip test against the
+  real committed header (no GPU needed for this part). CSVs and ad-hoc
+  probe tools from this session kept at `scripts/b200_session_20260726/`
+  for provenance.
 
 ### [x] G_BUILD_GPU_VALIDATION_HARNESS
 
@@ -132,11 +164,36 @@ graph TD
 - **Kill deadline:** 30 min.
 - **Binding law:** HANDOFF.md Next Steps item 3.
 
+### [ ] I_DIAGNOSE_THIRD_MECHANISM
+
+- **Model:** `supervisor`
+- **Depends:** F_RECALIBRATE_BSELECT_GAP
+- **Allowed files:** `src/gpu/gpu_plan.cu` only if a real fix is found and
+  confirmed on hardware (read-only investigation otherwise)
+- **Exit criteria:** explain why n=1,000,000 and n=1,048,576 (identical
+  B=32, L=16, nblocks rounds to the same 32768) differ in wall-clock time
+  by ~24% (632ms vs 512ms) on the k=n curve. Start with
+  `ICM_GPU_DEBUG_PLAN=1` diffing the two plans' per-level `fft_n`/`bwm`/
+  `cwm`/tier choices line by line -- the same technique that found and
+  fixed the wrap-penalty tier-lock-in bug and the B-selection cliffs
+  earlier this session. If a genuine cost-model bug, fix and
+  hardware-verify (`bench_gpu_fused verify` 36/0 + re-measure the
+  specific pair) before marking done.
+- **Kill deadline:** ~20-30 min B200 time for diagnosis; more if a fix is
+  found and needs verification.
+- **Binding law:** do NOT force monotonicity by hand-picking a worse
+  config -- same rule as F.
+- **Also do while budget allows:** a broader systematic sweep (not just
+  spot checks) across the whole `gbselect_n` range via
+  `scripts/gpu_dispatch_validate.cu` (node G, already written/reviewed)
+  before trusting monotonicity generally -- this session found 3 distinct
+  mechanisms by testing only 2 gaps, so more are plausible elsewhere.
+
 ### [ ] H_RUN_THRESHOLD_SEARCH
 
 - **Model:** `supervisor`
-- **Depends:** E_HW_VERIFY_BSELECT_GAP, F_RECALIBRATE_BSELECT_GAP (if
-  triggered), G_BUILD_GPU_VALIDATION_HARNESS
+- **Depends:** E_HW_VERIFY_BSELECT_GAP, F_RECALIBRATE_BSELECT_GAP,
+  I_DIAGNOSE_THIRD_MECHANISM, G_BUILD_GPU_VALIDATION_HARNESS
 - **Allowed files:** none (execution only)
 - **Exit criteria:** `scripts/threshold_search_gpu.cu` run for real,
   producing the actual 1-second-threshold numbers for both `k=n` and

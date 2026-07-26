@@ -300,6 +300,50 @@ def inject_table(config_path: str, device_meta: dict,
           f"({prefix}_n/{prefix}_k/{prefix}_B)")
 
 
+def read_existing_table(config_path: str, device_meta: dict) -> list[tuple[int, int, int]]:
+    """
+    Parse the current {prefix}_n[]/{prefix}_k[]/{prefix}_B[] arrays out of
+    an already-calibrated config header. Returns [] if the header doesn't
+    exist yet or the arrays aren't found (fresh device, nothing to merge).
+
+    This exists so a re-run of this orchestrator MERGES with whatever is
+    already calibrated instead of silently discarding it: Step 2's base
+    sweep only covers gen_calib_skeleton.py's 7-smooth n grid, which does
+    NOT include hand-added gap-fill anchors (e.g. the non-7-smooth
+    n=1,150,000/1,285,000/1,420,000 points added to close a real
+    hardware-verified B-selection cliff, see HANDOFF.md) — those points
+    would vanish on the next full orchestrator run if this function's
+    result weren't seeded into live_table before Step 2/3 inject.
+    """
+    prefix = device_meta["array_prefix"]
+    n_macro = device_meta["n_macro"]
+
+    if not os.path.isfile(config_path):
+        return []
+
+    with open(config_path, "r") as f:
+        text = f.read()
+
+    def _extract(array_name: str) -> list[int]:
+        pattern = rf'static const int {array_name}\[{n_macro}\]\s*=\s*\{{'
+        m = re.search(pattern, text)
+        if not m:
+            return []
+        brace_start = m.end() - 1
+        brace_end = _find_matching_brace(text, brace_start)
+        body = text[brace_start + 1:brace_end]
+        return [int(tok) for tok in re.findall(r'-?\d+', body)]
+
+    n_vals = _extract(f"{prefix}_n")
+    k_vals = _extract(f"{prefix}_k")
+    b_vals = _extract(f"{prefix}_B")
+
+    if not (len(n_vals) == len(k_vals) == len(b_vals)) or not n_vals:
+        return []
+
+    return list(zip(n_vals, k_vals, b_vals))
+
+
 def _find_matching_brace(text: str, open_pos: int) -> int:
     """Given position of '{', return position of matching '}'."""
     depth = 0
@@ -435,6 +479,18 @@ def main() -> None:
     print(f"  Gap threshold:      {gap_threshold} ({gap_threshold*100:.1f}%)")
     print()
 
+    # ── Step 0: Read whatever is already calibrated, so this run MERGES
+    #    instead of clobbering it. Without this, any point not on the
+    #    fresh 7-smooth skeleton (e.g. a hand-added gap-fill anchor from
+    #    a prior narrow-around calibration) would silently vanish the
+    #    moment Step 3 injects only the base_table below. ─────────────
+    existing_table = read_existing_table(meta["config_header"], meta)
+    live_table: dict[tuple[int, int], int] = {(n, k): b for n, k, b in existing_table}
+    if live_table:
+        print(f"── Step 0: Loaded {len(live_table)} pre-existing calibrated "
+              f"points from {meta['config_header']} (will be preserved) ──")
+        print()
+
     # ── Step 1: Generate skeleton + bands ──────────────────────────────
     print("── Step 1: Generate skeleton ──")
     skeleton_points, bands = run_skeleton_generator(
@@ -460,15 +516,19 @@ def main() -> None:
     os.unlink(skel_csv_path)
     os.unlink(base_csv_path)
 
-    # Build the live table as a dict (n,k) -> best_B for fast lookup
-    live_table: dict[tuple[int, int], int] = {}
+    # Merge the fresh base sweep on top of whatever was already calibrated
+    # (fresh measurements win on exact (n,k) overlap; everything else,
+    # including non-skeleton gap-fill anchors, is preserved).
     for n, k, b in base_table:
         live_table[(n, k)] = b
 
-    # ── Step 3: Inject base table ──────────────────────────────────────
-    print("── Step 3: Inject base table into config header ──")
+    # ── Step 3: Inject merged table ──────────────────────────────────────
+    print("── Step 3: Inject merged table into config header ──")
     inject_table(meta["config_header"], meta,
-                 [(n, k, live_table[(n, k)]) for n, k, _ in base_table])
+                 [(n, k, b) for (n, k), b in live_table.items()])
+    print(f"  Merged table: {len(live_table)} points "
+          f"({len(existing_table)} preserved + {len(base_table)} from this sweep, "
+          f"overlap counted once)")
     print()
 
     # ── Step 4: Per-band adaptive loop ─────────────────────────────────

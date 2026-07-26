@@ -36,17 +36,18 @@ they were retroactively logged onto a board afterward, but don't repeat
 the lapse. Every `Model: deepseek` node, however small, goes on a board.)
 
 **Current live board: `SPRINT_GPU_MONOTONICITY_DAG.md`.** Read it first --
-it has the up-to-date node graph. As of this writing: nodes A, B, G are
-done; **E (hardware-verify the B-selection calibration gap) is the next
-action**, followed by F (recalibrate, only if E confirms a real
-inversion), then H (finally run the threshold search). All three remaining
-nodes need a real B200 rental -- **do not rent without an explicit
-user go-ahead**, this was emphasized repeatedly this session after money
-was spent on a rental that then surfaced a new problem. See "Next action,
-on the next B200 rental" near the end of the "Non-monotonicity" section
-below for the exact ordered checklist, and the vast.ai balance snapshot
-there (~$3.93 as of this writing -- re-verify against the real balance,
-don't trust a stale number).
+it has the up-to-date node graph. As of this writing: nodes A, B, E, G
+are done; F is partially done (two real B-selection gaps fixed and
+hardware-verified, but a THIRD, distinct, not-yet-understood
+non-monotonicity mechanism was found and left open); **I (diagnose the
+third mechanism) is the next action**, then H (finally run the threshold
+search, gated on I). All remaining work needs a real B200 rental -- **do
+not rent without an explicit user go-ahead**, this was emphasized
+repeatedly this session. See "Next action, on the next B200 rental" near
+the end of the "Non-monotonicity" section below for the exact findings
+and next steps, and the vast.ai balance snapshot there (~$1.40 as of this
+writing -- re-verify against the real balance, don't trust a stale
+number).
 
 **Historical, already fully resolved (do not re-derive, kept only for
 provenance)**: an earlier cleanup/audit pass (`SPRINT_CLEANUP_AUDIT_DAG.md`,
@@ -363,26 +364,121 @@ not count as a valid comparison) any mismatch with an explicit printed
 reason, and returns "skipped" for a point if every alternative was
 rejected this way, instead of silently reporting "optimal."
 
-**Next action, on the next B200 rental** (this session's second rental is
-destroyed; exact vast.ai invoice total this session: $1.376+$0.013 (first
-rental, GPU+storage) + $1.262+$0.011 (second rental) = **$2.662 spent**
-against the original ~$6.59 available (~$1.59 pre-existing + $5.00 added
-this session) -- **~$3.93 actually remains**, not the ~$4.19 estimated
-earlier in this document; verify against the real vast.ai balance before
-committing to a rental scope regardless, this number is a snapshot):
-(1) verify the B-selection
-cliff causes a real hardware timing inversion near n≈1.05M-1.57M on the
-`k=n` and/or `k=100` curves (a few targeted `remeasure`-style points,
-not a full sweep), (2) if confirmed, generate new skeleton anchor points
-in that gap and re-run the existing B-selection calibration tool (narrow-
-around mode) to close it, (3) spot-check the newly-identified affected
-cells from the fix already applied (`n=65,536`-`524,288, k=128`) if not
-already covered, (4) run `scripts/gpu_dispatch_validate.cu` (written,
-reviewed, ready -- see above) before trusting monotonicity broadly, (5)
-only then run `scripts/threshold_search_gpu.cu` for the actual threshold
-numbers. Live tracking for this whole arc is now on
-`SPRINT_GPU_MONOTONICITY_DAG.md` (nodes E/F/H still open, all
-hardware-gated -- do not rent without explicit user go-ahead).
+**Third B200 rental (2026-07-26), E + F done, NOT F-complete -- a THIRD
+non-monotonicity mechanism found, still open, blocks the threshold
+search.** User explicitly approved this rental (contract `45932804`,
+Ohio, $5.8885/hr on-demand B200). Deployed via the standard recipe,
+`bench_gpu_fused verify` passed 36/0 both before and after every change
+below (no regression at any point).
+
+*E confirmed, on real hardware*: both curves showed a genuine wall-clock
+inversion in the n≈1.05M-1.57M gap, not just a simulated one. `k=n`
+curve: n=1,100,000 (B=32, nearest-neighbor cliff) measured **1183.3ms**,
+slower than n=1,285,000 (B=112, past the cliff) at **1141.4ms** --
+smaller n running slower. `k=100` curve: n=1,100,000 measured **181.3ms**
+vs n=1,285,000's **121.3ms**, same inversion. Root cause confirmed to be
+compound: the B-selection nearest-neighbor cliff (B=32 held flat all the
+way to the geometric midpoint ~1,285,000) PLUS crossing a tree-depth
+power-of-2 boundary at the same point (nblocks 32768->34375 forces
+L=16->17, an extra full tree level) -- both independently confirmed via
+`ICM_GPU_DEBUG_PLAN=1` output, not simulation.
+
+*F applied and hardware-verified for this gap*: real calibration via
+`tools/calibrate_gpu_best_b.cu --narrow-around` (existing tooling, no new
+tools needed, ~2 minutes for 12 points) at three new anchors
+(n=1,150,000/1,285,000/1,420,000, k=n/8,n/4,n/2,n each) found real
+best-B values of 48-80 in this range (NOT the naive 32-or-96+ the
+nearest-neighbor cliff was applying) -- spliced into
+`gbselect_*` in `devices/b200/gpu_fft_config.h` (32 -> 44 points),
+rebuilt, re-verified 36/0, re-measured the exact same 10 gap points:
+**both curves now fully monotonic** (k=n: 511.5 -> 765.9 -> 776.0 ->
+917.7 -> 1132.8ms; k=100: 104.9 -> 120.3 -> 126.5 -> 132.1 -> 137.6ms,
+strictly increasing with n both times). Raw CSVs kept at
+`scripts/b200_session_20260726/gap_best_b_b200.csv`.
+
+*User caught a real gap before the threshold search was run*: asked
+whether the calibration gap check was thorough enough, and whether
+`tools/calibrate_block_size.py` (the orchestrator meant to make this
+"one command per device" for a future user) actually works. Checking
+this surfaced TWO more real problems, both addressed:
+
+1. **A second, independently-confirmed B-selection cliff at
+   n≈524,288-1,048,576** (the `B=64`-to-`B=32` boundary one step down from
+   the gap already fixed) -- same nearest-neighbor mechanism, same real
+   hardware inversion on the `k=n` curve (524288: 220.5ms, 650000:
+   506.2ms, 741455: 496.6ms, 850000: 662.5ms, 1000000: 632.3ms, 1048576:
+   511.9ms -- multiple dips, not monotonic). Three new anchors
+   (n=650,000/800,000/950,000, k=n only, ~24 seconds of B200 time) found
+   real best-B values of 64-80; spliced in (44 -> 47 points), rebuilt,
+   re-verified 36/0. Re-measurement after the fix: 220.6 -> 336.7 ->
+   496.5 -> 498.0 -> **632.2 -> 511.9ms -- still one inversion left**
+   (n=1,000,000 slower than n=1,048,576 despite both landing on the
+   identical B=32/L=16/nblocks-rounds-to-32768 configuration). CSV at
+   `scripts/b200_session_20260726/gap2_best_b_b200.csv`.
+
+2. **A THIRD, distinct, NOT-YET-UNDERSTOOD non-monotonicity mechanism,
+   confirmed real, still open.** n=1,000,000 and n=1,048,576 measured
+   identical B (32), identical tree depth (L=16), identical nblocks
+   rounding target (32768) via `ICM_GPU_DEBUG_PLAN=1` -- yet n=1,000,000
+   (632.2ms) is ~24% SLOWER than the larger n=1,048,576 (511.9ms). This
+   is NOT the B-selection cliff (both points already share the same B)
+   and is NOT the wrap-penalty tier-lock-in bug already fixed this
+   session (that fix is already built into this binary and verified
+   36/0). Leading hypothesis, NOT verified: the two n values differ in
+   which per-level FFT sizes `best_fft_config_joint_gpu()` picks (via
+   `k_pad`/smooth-number effects on the exact leaf/build convolution
+   lengths at each of the 16 tree levels), i.e. a THIRD instance of the
+   same general class of problem (per-level FFT/tier choice not
+   comparing itself against the actual best alternative), not the two
+   already found and fixed. **Not investigated further this session --
+   ran out of budget.** Do NOT run the threshold search until this is
+   understood; a binary search across n cannot distinguish a real
+   1000ms-crossing from a fluke inversion like this one.
+
+3. **`tools/calibrate_block_size.py` had a real, unexploited but serious
+   bug: Step 2/3 of the orchestrator UNCONDITIONALLY discarded the entire
+   existing calibration table**, replacing it with only the fresh
+   7-smooth skeleton sweep's points on every run -- any hand-added
+   gap-fill anchor (all the points above; none of 650000/800000/950000/
+   1150000/1285000/1420000 are 7-smooth) would silently vanish the next
+   time anyone ran this "one command per device" tool, re-opening every
+   cliff just fixed. **Fixed** (no GPU needed, pure text-processing,
+   verified with a local round-trip test against the real committed
+   header before touching production code): added
+   `read_existing_table()`, seeded as Step 0, base-table sweep results
+   now merge on top of it instead of replacing it wholesale. Verified
+   locally: parsed all 47 real committed points including every gap
+   anchor, simulated a sweep that only touches one unrelated point, and
+   confirmed after merge+inject all 47 points survive with only the
+   touched one changed. This was a real correctness bug in a tool
+   documented as the standard porting path, not a hypothetical.
+
+**Session spend**: destroyed the instance once the third mechanism was
+found and budget got tight rather than let it idle -- ~$1.40 credit
+remains (verify against live balance, this is a snapshot). Zero
+regressions introduced anywhere (`bench_gpu_fused verify` 36/0 at every
+checkpoint this session).
+
+**Next action, on the next B200 rental** (do not rent without explicit
+user go-ahead): (1) understand and fix the third mechanism above
+(n=1,000,000 vs n=1,048,576, same B/L/nblocks, real ~24% timing gap --
+start with `ICM_GPU_DEBUG_PLAN=1` diffing the two plans' per-level
+`fft_n`/`bwm`/`cwm`/tier choices line by line, the same technique that
+found the first two bugs), (2) do at least one more broad sweep for
+other undiscovered cliffs before trusting monotonicity generally --
+the pattern this session (found 3 distinct mechanisms by testing 2
+gaps) strongly suggests there may be more, a systematic check across
+the WHOLE `gbselect_n` range (not just spot checks) is now warranted,
+best done via `scripts/gpu_dispatch_validate.cu` (written, reviewed,
+ready, see above) rather than more manual spot probes, (3) only once
+(1) and (2) both hold, run `scripts/threshold_search_gpu.cu` for the
+actual threshold numbers -- running it before then would produce a
+number that looks authoritative but isn't. Live tracking for this whole
+arc is now on `SPRINT_GPU_MONOTONICITY_DAG.md` (node E done and
+confirmed on hardware; F partially done -- two of an unknown number of
+gaps fixed, a third distinct bug found and left open; G done; H still
+blocked, now on the third mechanism instead of the original B-selection
+gap).
 
 ## Architecture: what's actually load-bearing (read before touching cost-model code)
 
