@@ -526,7 +526,20 @@ void build_tree_geometry(int n_leaves, int leaf_degree, int k_pad,
     }
     for (int ell = 1; ell < L; ++ell) {
         int cps = psz[ell - 1];
-        if (psz[ell] == 2 * cps && cps >= 2) below_sat[ell] = 1;
+        /* below_sat[ell] means the CHILD level (ell-1) has effective
+         * polynomial degree cps/2, not cps-1 -- i.e. the child was itself
+         * built while psz was still doubling (not yet capped by k_pad).
+         * That is a property of the child's own construction (does
+         * psz[ell-1] double from its own child, psz[ell-2]?), not of
+         * whether the parent also happens to double from the child.
+         * Checking psz[ell] == 2*cps (the parent's doubling status) is
+         * an overly strict proxy: it misses exactly the level where
+         * k_pad's cap first kicks in (psz[ell-1] still doubled cleanly,
+         * but psz[ell] gets capped below 2*cps), even though the child's
+         * effective-degree-cps/2 property still holds there. */
+        int child_doubled = (ell >= 2) ? (psz[ell - 1] == 2 * psz[ell - 2])
+                                        : (psz[0] == 2 * leaf_degree);
+        if (child_doubled && cps >= 2) below_sat[ell] = 1;
     }
 }
 
@@ -628,7 +641,16 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         int p_eff = is_below ? (cps / 2 + 1) : cps;
         int out_needed = g_needed[ell - 1];
         int g_eff_needed = out_needed + p_eff - 1;
-        int g_eff_max = is_below ? (cps + cps / 2) : pgsz;
+        /* Clamp: with the generalized below_sat trigger above, the
+         * boundary level (where k_pad's cap first kicks in) can have
+         * psz[ell] as low as cps+1, below the unclamped cps+cps/2 --
+         * without this clamp g_eff could exceed the allocated parent
+         * g-array size (pgsz), an out-of-bounds read in the correlate
+         * kernels. Under the OLD strict-equality trigger this never
+         * mattered (psz[ell] was always exactly 2*cps >= cps+cps/2), so
+         * this clamp is a no-op there and only bites at the newly-fired
+         * boundary level. */
+        int g_eff_max = is_below ? std::min(cps + cps / 2, pgsz) : pgsz;
         int g_eff = std::min(g_eff_needed, g_eff_max);
 
         int conv_build = is_below ? (2 * (cps / 2) + 1) : (2 * cps - 1);
@@ -889,7 +911,16 @@ bool build_plan_metadata(GpuPlan *plan) {
         int p_eff = is_below ? (cps / 2 + 1) : cps;
         int out_needed = plan->g_needed[ell - 1];
         int g_eff_needed = out_needed + p_eff - 1;
-        int g_eff_max = is_below ? (cps + cps / 2) : pgsz;
+        /* Clamp: with the generalized below_sat trigger above, the
+         * boundary level (where k_pad's cap first kicks in) can have
+         * psz[ell] as low as cps+1, below the unclamped cps+cps/2 --
+         * without this clamp g_eff could exceed the allocated parent
+         * g-array size (pgsz), an out-of-bounds read in the correlate
+         * kernels. Under the OLD strict-equality trigger this never
+         * mattered (psz[ell] was always exactly 2*cps >= cps+cps/2), so
+         * this clamp is a no-op there and only bites at the newly-fired
+         * boundary level. */
+        int g_eff_max = is_below ? std::min(cps + cps / 2, pgsz) : pgsz;
         int g_eff = std::min(g_eff_needed, g_eff_max);
         int conv_build = is_below ? (2 * (cps / 2) + 1) : (2 * cps - 1);
         int conv_corr = g_eff + p_eff - 1;
