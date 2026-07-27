@@ -23,17 +23,68 @@ nothing stale, hand-waved, or silently broken.
 
 ## START HERE
 
-Continue using the `supervisor-dag` skill/pattern for this work: a live
-strike board, DeepSeek Deck workers for the mechanical/investigative
-lifting, supervisor review of every diff before it lands, real hardware
-verification before anything is called done. That pattern is how every
-finding below got found, fixed, and verified across several rounds
-without losing track of state -- keep doing it that way, don't drop to
-ad-hoc work. (One real lapse this session: three single-node DeepSeek
-dispatches were done via direct `deck spawn` without a board file, purely
-out of habit, before the user caught it and asked for it to stop --
-they were retroactively logged onto a board afterward, but don't repeat
-the lapse. Every `Model: deepseek` node, however small, goes on a board.)
+**Before doing anything else, load the `supervisor-dag` skill (and the
+`deck` skill it depends on) in full.** Continue using that pattern for
+this work: a live strike board, DeepSeek Deck workers for the mechanical/
+investigative lifting, supervisor review of every diff before it lands,
+real hardware verification before anything is called done. That pattern
+is how every finding below got found, fixed, and verified across several
+rounds without losing track of state -- keep doing it that way, don't
+drop to ad-hoc work. (One real lapse earlier this session: three
+single-node DeepSeek dispatches were done via direct `deck spawn` without
+a board file, purely out of habit, before the user caught it and asked
+for it to stop -- they were retroactively logged onto a board
+afterward, but don't repeat the lapse. Every `Model: deepseek` node,
+however small, goes on a board.)
+
+**New doctrine this handoff, requested explicitly by the user: don't
+passively wait on a dispatched worker.** The previous session armed
+silent watchers and then just waited for each DeepSeek worker to reach
+a terminal state, even when a worker's turn count and token usage made
+clear it had gone in an unproductive direction (see the ragged-tree
+regression hunt below -- two ~50-turn, multi-million-token DeepSeek
+diagnosis rounds were let run to completion before their (inconclusive)
+results were read). Going forward: check in on a running worker's
+progress periodically (`deck log <id>` or `deck ps`), and if it's
+clearly off-course, thrashing, or re-deriving something already known,
+use `deck send <id> <message>` to interrupt and redirect it immediately
+with a corrective message -- do not wait for it to burn its full turn
+budget first. This is a supplement to the skill's own watcher guidance,
+not a replacement for it.
+
+**First step of the new DAG for this handoff, requested explicitly by
+the user: an external-research node before any more live GPU debugging.**
+The ragged-tree regression below defeated two full rounds of DeepSeek
+static analysis and several hours of the supervisor's own hardware
+experimentation, all working purely from first-principles reasoning
+about the codebase. Before spending any more tokens or GPU budget
+re-deriving things internally, dispatch a research node (`Model:
+deepseek`, using `WebSearch`/`WebFetch` -- confirm the DeepSeek Deck
+workers actually have web access before assuming it, per the deck
+skill's `--allow-network` note) to mine the outside world for pointers
+specific to this exact failure signature: **a semantically dead
+branch (a boundary/guard condition confirmed via hardware
+instrumentation to never execute) that still corrupts the results of
+live, unrelated computation once inserted into a CUDA kernel that
+performs a cooperative, multi-thread FFT via NVIDIA cuFFTDx templates
+(`FFT_N`/`FPB` template parameters, `execute()` calls operating on
+per-thread register arrays and `extern __shared__` memory).** Look for:
+NVIDIA's own cuFFTDx documentation and known-issues/errata (register
+pressure limits, `cudaFuncSetAttribute`/`cudaFuncAttributeMaxDynamicSharedMemorySize`
+interactions, template instantiation pitfalls), general CUDA/HPC
+literature on how adding a branch (even one that's never taken at
+runtime) can still change compiler-generated PTX/SASS enough to break
+cooperative/warp-synchronous code that was correct before, and whether
+any of the Claude Code skills already installed for this kind of work
+(`cuda-expert`, `cuda-guide`, `cuda-performance-optimizer`, the general
+`cpp` skill's CUDA sections) have relevant guidance worth reading
+directly rather than re-deriving. Report back concrete, citable leads
+(not vague reassurance) before deciding whether to try `cuobjdump -sass`
+comparison, a per-file binary-search revert, or falling back to the
+design doc's smaller-blast-radius Option A -- all three are still open,
+per node K's status below. This research step costs no GPU time and
+should run before anything else in the new DAG; treat it as node R0,
+upstream of resuming the actual bug hunt.
 
 **Current live board: `SPRINT_GPU_MONOTONICITY_DAG.md`.** Read it first --
 it has the up-to-date node graph. As of this writing: nodes A, B, E, F,
