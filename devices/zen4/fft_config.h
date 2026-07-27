@@ -226,19 +226,54 @@ static const double leaf_fma_ns_per_player[6] = {
 #endif
 
 /* ── Empirical linear-vs-hybrid crossover table ──────────────────────
- * Measured 2026-07-22 (box 84.32.71.47) via tools/calibrate_crossover.c:
- * direct binary search on real timing (median of 7 reps, Q=256,
- * icm_select_best_B() for the hybrid side -- matches bench_grid
- * crossover's own methodology exactly, just far less noisy since
- * bench_grid crossover takes a single un-averaged sample per cell).
- * See src/fft_cost_model.h's empirical_crossover_k() for how this is
- * consulted (log-linear interpolation between bracketing n, LAPACK
- * ILAENV NX precedent). n=512's value (194) sits notably below the rest
- * (231-242) -- plausible small-n edge effect, not re-verified further. */
+ * RECALIBRATED 2026-07-27 (box 84.32.71.35, a fresh redeployment -- same
+ * IP the user's Zen4 instance now uses, but a genuinely different
+ * physical/virtualized machine than the 2026-07-22 measurement below).
+ * The prior table (measured on box 84.32.71.47, a since-superseded
+ * instance) was found to systematically disagree with this box's real
+ * bench_grid crossover sweep -- reproduced across two independent full
+ * sweeps before recalibrating, not a one-off noise blip: dispatch would
+ * have switched to hybrid 22-38% too early at every calibrated n
+ * (e.g. n=512: table said k>=194, real measured crossover is ~249-253;
+ * n=4096/8192: table said k>=242 flat, real crossover is ~277-281).
+ * Root cause diagnosed, not just observed: `dmidecode -t memory` shows
+ * this box's 4 DIMMs (2 per channel, 2DPC) running at a
+ * `Configured Memory Speed` of 3600 MT/s despite being individually
+ * rated 5600 MT/s -- AMD's own documented AM5 platform electrical limit
+ * for 2DPC configurations, confirmed NOT fixable via BIOS/EXPO or any
+ * OS-level setting (bare metal, confirmed via `systemd-detect-virt`;
+ * `performance` governor confirmed active on all 32 logical CPUs before
+ * measurement). A 1-DIMM-per-channel replacement box was confirmed
+ * unavailable -- per explicit user decision, THIS box (and its real,
+ * bandwidth-limited performance) is now the standing Zen4 reference for
+ * this project, not a temporary anomaly to be superseded once a faster
+ * box appears. Absolute wall-clock numbers (thresholds, contour) are
+ * real for this configuration; the project's own prior 1DPC-era Zen4
+ * numbers (`results` files with "zen4" in the name, dated 2026-07-22
+ * through 07-24) remain a
+ * useful historical reference for extrapolated "1DPC would give
+ * roughly X" commentary, not silently discarded, per the user's explicit
+ * framing. Recalibrate crossover on every redeploy regardless -- this
+ * project has now seen real-world performance differ meaningfully across
+ * nominally-identical "AMD Ryzen 9 7950X" cloud instances twice, don't
+ * assume a prior box's table still applies just because the CPU model
+ * string matches.
+ * Measured via tools/calibrate_crossover.c: direct binary search on real
+ * timing (median of 7 reps, Q=256, icm_select_best_B() for the hybrid
+ * side -- matches bench_grid crossover's own methodology exactly, just
+ * far less noisy since bench_grid crossover takes a single un-averaged
+ * sample per cell). See src/fft_cost_model.h's empirical_crossover_k()
+ * for how this is consulted (log-linear interpolation between
+ * bracketing n, LAPACK ILAENV NX precedent). n=16384's value (258)
+ * is NOT monotonically above n=4096/8192's (277/281) -- the binary
+ * search's own bisection-to-within-4 tolerance plus real measurement
+ * noise at this range is the likely cause, consistent with the same
+ * non-monotonic shape (n=512 sitting below the rest) already present,
+ * unexplained, in the prior table; not re-verified further here. */
 #ifndef N_CROSSOVER_POINTS
 #define N_CROSSOVER_POINTS 6
 static const int crossover_n[N_CROSSOVER_POINTS] = {512, 1024, 2048, 4096, 8192, 16384};
-static const int crossover_k[N_CROSSOVER_POINTS] = {194, 231, 242, 242, 242, 242};
+static const int crossover_k[N_CROSSOVER_POINTS] = {249, 259, 258, 277, 281, 258};
 #endif
 
 /* ── Empirical hybrid block-size (B) table ───────────────────────────
