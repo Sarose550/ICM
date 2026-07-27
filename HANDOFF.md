@@ -701,11 +701,56 @@ The real, working dev copy is at `~/Documents/deepseek-deck/bin/deck`
 actually matters). Always invoke that path directly when a node needs
 `--allow-network`.
 
-**Zen4 rental.** As of this writing, still completely out of stock on
-vast.ai (checked repeatedly across multiple sessions), no clean
-hourly-billed alternative found (Cherry Servers: right billing model,
-0 in stock everywhere; Hetzner: has the hardware, monthly billing only).
-Check vast.ai stock again before assuming it's still unavailable.
+**Zen4 rental.** UPDATE (this handoff): the user now has a Zen4 instance
+available directly (not sourced from vast.ai stock, which was
+completely out of stock across multiple prior sessions -- Cherry
+Servers had the right billing model but 0 stock everywhere, Hetzner has
+the hardware but only monthly billing). **Credentials are not in this
+repo or this document -- ask the user directly for them when the CPU QA
+node below is ready to run.** Do not assume vast.ai stock status has
+changed; this is the user's own instance, a separate thing.
+
+**New parallel work item this handoff, requested explicitly by the
+user: CPU-side QA on the now-available Zen4 box, run in parallel with
+the GPU ragged-tree regression hunt and node L above, not blocked by
+either.** The user's belief, to be CONFIRMED not assumed: the CPU side
+(three engines, cost-model dispatch, the empirically-measured crossover
+and B-selection tables, `bench_grid`) was already in a good, verified
+state as of the last Zen4 session (see "Zen4 needs
+`OMP_NUM_THREADS=16`" note below and the porting procedure right after
+this paragraph) -- and the CPU binary-search contour/threshold sweep
+tooling (`bench_grid threshold`, `tools/contour_1s.c --contour`) should
+work cleanly out of the box, the same way the GPU threshold search was
+designed to (`scripts/threshold_search_gpu.cu`, still blocked on the GPU
+side, see node H). Concretely, once the credentials are in hand:
+1. Port `fftw_wisdom.dat` and rebuild per the exact procedure below (do
+   NOT recalibrate from scratch).
+2. `./bench_grid verify` and `./bench_grid crossover` -- confirm both
+   still pass/agree, exactly like the GPU side's `bench_gpu_fused
+   verify` gate. This is the actual "confirm the previous CPU state is
+   still good" check the user asked for -- do not just assume it from
+   memory, run it for real.
+3. Run the actual sweep tools (`./bench_grid threshold` for the 1-second
+   boundary via binary search, `make contour_1s && ./contour_1s --contour`
+   for the fuller contour, both serial and `OMP_NUM_THREADS=16` parallel
+   per the existing "M3 Pro validation" / "Zen 4 validation" procedures
+   in `CLAUDE.md`) and compare the output against what's already in
+   `RESULTS.md`/`results/*zen4*` -- flag anything that's changed or
+   regressed since the last real Zen4 run, don't just re-confirm the
+   happy path.
+4. Cross-check `RESULTS.md` and the paper (`~/Documents/ICM_paper/icm_paper.tex`)
+   against each other and against the fresh Zen4 output to identify
+   which CPU-side plots/tables/numbers the paper is still missing or has
+   stale (this repo's own Next Steps item 5 already flags the paper as
+   known-stale relative to `RESULTS.md`, deliberately deferred until the
+   GPU numbers land -- this CPU QA pass is scoped to CONFIRMING and
+   generating the CPU-side data/plots now, not to doing the full
+   regen-and-resync, which still waits on the GPU side per existing
+   Next Steps ordering). Report back a concrete list: which CPU plots
+   exist and are current, which are stale, which are simply missing.
+This whole item is independent of the GPU ragged-tree bug and node L --
+run it as its own parallel lane on the new sprint board, not gated on
+anything GPU-related.
 
 **When a Zen4 box is available again**: do NOT re-run the adaptive
 B-selection calibration (already correct, already committed, 1944
@@ -864,9 +909,16 @@ Ordered by priority; start at the top.
    run's B-optimality result meaningless (see "Autonomous session"
    above). The tool is now trustworthy; its second run is what surfaced
    the B-selection gap above n=1,572,864 that node L needs to close.
-4. **Zen4**: still blocked on stock. Check vast.ai again; if available,
-   follow the exact procedure in "Critical operational notes" above (port
-   wisdom, don't recalibrate, `OMP_NUM_THREADS=16` explicit).
+4. **Zen4**: no longer blocked -- the user has an instance available
+   directly (ask for credentials when ready, not stored in this repo).
+   **New parallel work item this handoff**: run as its own lane on the
+   next sprint board, independent of the GPU ragged-tree regression
+   hunt and node L. Full scope in "Critical operational notes" above
+   under "New parallel work item this handoff" -- port wisdom (don't
+   recalibrate), rebuild, `bench_grid verify`/`crossover` to confirm the
+   previously-good CPU state actually still holds (don't just assume
+   it), run the real threshold/contour sweeps, and report which
+   CPU-side paper plots are current/stale/missing.
 5. **Regenerate `RESULTS.md` and re-sync the paper** once steps 2-4 land
    (or once it's clear Zen4 will stay blocked for a while and the user
    wants to proceed without it): every number, table, and plot in
