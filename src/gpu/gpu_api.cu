@@ -353,7 +353,7 @@ int icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                 int threads_block = ((plan->B + 32) / 32) * 32;
                 if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
                 size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-                k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
+                k_block_build<<<leaf_build_blocks(plan), threads_block, shmem_block, plan->stream_aux>>>(
                     plan->d_a_sorted[curr], plan->n, plan->B,
                     plan->nblocks, plan->N_tree, plan->fft_stride[0],
                     leaf_bufs[buf_idx], bp_bufs[buf_idx]);
@@ -387,7 +387,7 @@ int icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                     int threads_block = ((plan->B + 32) / 32) * 32;
                     if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
                     size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-                    k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
+                    k_block_build<<<leaf_build_blocks(plan), threads_block, shmem_block, plan->stream_aux>>>(
                         plan->d_a_sorted[next], plan->n, plan->B,
                         plan->nblocks, plan->N_tree, plan->fft_stride[0],
                         leaf_bufs[next_buf], bp_bufs[next_buf]);

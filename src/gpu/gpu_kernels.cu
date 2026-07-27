@@ -142,12 +142,26 @@ __device__ inline void cufftdx_store_real_c2r(const typename C2R_FFT::value_type
 
 /* ── C2C fused kernels ─────────────────────────────────────────── */
 
-template<int FFT_N, int FPB = 1>
+/* QPLANE selects between two provably distinct compilations:
+ *
+ *   QPLANE == false -> after template substitution the body is textually
+ *                      identical to the pre-ragged kernel (the plane offset
+ *                      is discarded by `if constexpr`), so ptxas sees the
+ *                      same function it always did and cannot reallocate
+ *                      registers underneath cuFFTDx's cooperative FFT.
+ *   QPLANE == true  -> one extra straight-line pointer offset (no branch,
+ *                      no atomics, dead before any cuFFTDx register array
+ *                      goes live), used only for ragged Q-batched levels.
+ *
+ * The Q-plane strides are ALWAYS the allocated nn[]-based strides; only the
+ * parent count shrinks.  That is what keeps Q-batch addressing exact. */
+template<int FFT_N, int FPB = 1, bool QPLANE = false>
 __launch_bounds__(cufftdx_fft_fwd_t<FFT_N, FPB>::max_threads_per_block)
 __global__ static void k_cufftdx_build_parent(const double *child, int cps,
                                               double *parent, int pps,
                                               int nparents, double inv_fft_n,
-                                              int child_stride, int parent_stride) {
+                                              int child_stride, int parent_stride,
+                                              size_t q_parent_plane, size_t q_child_plane) {
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N, FPB>;
     using FFTInv = cufftdx_fft_inv_t<FFT_N, FPB>;
     using complex_t = typename FFTFwd::value_type;
@@ -158,6 +172,10 @@ __global__ static void k_cufftdx_build_parent(const double *child, int cps,
     complex_t b[FFTFwd::storage_size];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
+    if constexpr (QPLANE) {
+        child += (size_t)blockIdx.y * q_child_plane;
+        parent += (size_t)blockIdx.y * q_parent_plane;
+    }
     const double *L = child + (size_t)(2 * p) * (size_t)child_stride;
     const double *R = child + (size_t)(2 * p + 1) * (size_t)child_stride;
     double *out = parent + (size_t)p * (size_t)parent_stride;
@@ -171,14 +189,15 @@ __global__ static void k_cufftdx_build_parent(const double *child, int cps,
     cufftdx_store_real<FFTInv>(a, out, pps, inv_fft_n);
 }
 
-template<int FFT_N, int FPB = 1>
+template<int FFT_N, int FPB = 1, bool QPLANE = false>
 __launch_bounds__(cufftdx_fft_fwd_t<FFT_N, FPB>::max_threads_per_block)
 __global__ static void k_cufftdx_corr_pair_parent(const double *g_parent, int parent_gsz, int len_g,
                                                   const double *child_poly, int cps, int len_P,
                                                   double *g_child, int child_gsz, int len_out,
                                                   int nparents, double inv_fft_n,
                                                   int g_parent_stride, int poly_child_stride,
-                                                  int g_child_stride) {
+                                                  int g_child_stride,
+                                                  size_t q_parent_plane, size_t q_child_plane) {
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N, FPB>;
     using FFTInv = cufftdx_fft_inv_t<FFT_N, FPB>;
     using complex_t = typename FFTFwd::value_type;
@@ -190,6 +209,11 @@ __global__ static void k_cufftdx_corr_pair_parent(const double *g_parent, int pa
     complex_t gspec_saved[FFTFwd::elements_per_thread];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
+    if constexpr (QPLANE) {
+        g_parent += (size_t)blockIdx.y * q_parent_plane;
+        child_poly += (size_t)blockIdx.y * q_child_plane;
+        g_child += (size_t)blockIdx.y * q_child_plane;
+    }
     const double *gp = g_parent + (size_t)p * (size_t)g_parent_stride;
     const double *PL = child_poly + (size_t)(2 * p) * (size_t)poly_child_stride;
     const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)poly_child_stride;
@@ -218,33 +242,110 @@ __global__ static void k_cufftdx_corr_pair_parent(const double *g_parent, int pa
     cufftdx_store_real<FFTInv>(gbuf, outR, len_out, inv_fft_n);
 }
 
-template<int FFT_N>
-static bool launch_cufftdx_build_t(const double *child, int cps,
-                                   double *parent, int pps, int nparents,
-                                   double inv_fft_n, cudaStream_t stream,
-                                   int child_stride, int parent_stride) {
+template<int FFT_N, bool QPLANE>
+static bool launch_cufftdx_build_qp(const double *child, int cps,
+                                    double *parent, int pps, int nparents,
+                                    double inv_fft_n, cudaStream_t stream,
+                                    int child_stride, int parent_stride,
+                                    int qplanes, size_t q_parent_plane, size_t q_child_plane) {
     constexpr int FPB2 = 2;
     using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
     using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
     size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
-    if (nparents >= 4 && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent<FFT_N, FPB2>,
+    /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
+     * every block full: a half-retired block would leave its surviving FFT
+     * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
+     * per-plane count is even by construction (n_work is rounded up), so the
+     * second test is a guard, not a restriction.  At qplanes == 1 this is
+     * exactly the historical `nparents >= 4`. */
+    bool fpb2_ok = ((long long)nparents * qplanes >= 4)
+                   && (qplanes == 1 || nparents % FPB2 == 0);
+    if (fpb2_ok && shmem2 <= 200 * 1024) {
+        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent<FFT_N, FPB2, QPLANE>,
                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
                                           (int)shmem2))) {
-            int grid = (nparents + FPB2 - 1) / FPB2;
-            k_cufftdx_build_parent<FFT_N, FPB2><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
-                child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride);
+            dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
+            k_cufftdx_build_parent<FFT_N, FPB2, QPLANE><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
+                child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride,
+                q_parent_plane, q_child_plane);
             if (CUDA_OK(cudaGetLastError())) return true;
         }
     }
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
     using FFTInv = cufftdx_fft_inv_t<FFT_N>;
     size_t shmem = std::max((size_t)FFTFwd::shared_memory_size, (size_t)FFTInv::shared_memory_size);
-    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent<FFT_N>,
+    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent<FFT_N, 1, QPLANE>,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize,
                                       (int)shmem))) return false;
-    k_cufftdx_build_parent<FFT_N><<<nparents, FFTFwd::block_dim, shmem, stream>>>(
-        child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride);
+    dim3 grid1((unsigned)nparents, (unsigned)qplanes);
+    k_cufftdx_build_parent<FFT_N, 1, QPLANE><<<grid1, FFTFwd::block_dim, shmem, stream>>>(
+        child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride,
+        q_parent_plane, q_child_plane);
+    return CUDA_OK(cudaGetLastError());
+}
+
+template<int FFT_N>
+static bool launch_cufftdx_build_t(const double *child, int cps,
+                                   double *parent, int pps, int nparents,
+                                   double inv_fft_n, cudaStream_t stream,
+                                   int child_stride, int parent_stride,
+                                   int qplanes, size_t q_parent_plane, size_t q_child_plane) {
+    if (qplanes > 1) {
+        return launch_cufftdx_build_qp<FFT_N, true>(
+            child, cps, parent, pps, nparents, inv_fft_n, stream,
+            child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+    }
+    return launch_cufftdx_build_qp<FFT_N, false>(
+        child, cps, parent, pps, nparents, inv_fft_n, stream,
+        child_stride, parent_stride, 1, 0, 0);
+}
+
+template<int FFT_N, bool QPLANE>
+static bool launch_cufftdx_corr_qp(const double *g_parent, int parent_gsz, int len_g,
+                                   const double *child_poly, int cps, int len_P,
+                                   double *g_child, int child_gsz, int len_out, int nparents,
+                                   double inv_fft_n, cudaStream_t stream,
+                                   int g_parent_stride, int poly_child_stride,
+                                   int g_child_stride,
+                                   int qplanes, size_t q_parent_plane, size_t q_child_plane) {
+    constexpr int FPB2 = 2;
+    using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
+    using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
+    size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
+    /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
+     * every block full: a half-retired block would leave its surviving FFT
+     * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
+     * per-plane count is even by construction (n_work is rounded up), so the
+     * second test is a guard, not a restriction.  At qplanes == 1 this is
+     * exactly the historical `nparents >= 4`. */
+    bool fpb2_ok = ((long long)nparents * qplanes >= 4)
+                   && (qplanes == 1 || nparents % FPB2 == 0);
+    if (fpb2_ok && shmem2 <= 200 * 1024) {
+        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent<FFT_N, FPB2, QPLANE>,
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          (int)shmem2))) {
+            dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
+            k_cufftdx_corr_pair_parent<FFT_N, FPB2, QPLANE><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
+                g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                g_child, child_gsz, len_out, nparents, inv_fft_n,
+                g_parent_stride, poly_child_stride, g_child_stride,
+                q_parent_plane, q_child_plane);
+            if (CUDA_OK(cudaGetLastError())) return true;
+        }
+    }
+    using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
+    using FFTInv = cufftdx_fft_inv_t<FFT_N>;
+    size_t shmem = std::max((size_t)FFTFwd::shared_memory_size, (size_t)FFTInv::shared_memory_size);
+    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent<FFT_N, 1, QPLANE>,
+                                      cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                      (int)shmem))) return false;
+    dim3 grid1((unsigned)nparents, (unsigned)qplanes);
+    k_cufftdx_corr_pair_parent<FFT_N, 1, QPLANE><<<grid1, FFTFwd::block_dim, shmem, stream>>>(
+        g_parent, parent_gsz, len_g,
+        child_poly, cps, len_P,
+        g_child, child_gsz, len_out, nparents, inv_fft_n,
+        g_parent_stride, poly_child_stride, g_child_stride,
+        q_parent_plane, q_child_plane);
     return CUDA_OK(cudaGetLastError());
 }
 
@@ -254,47 +355,33 @@ static bool launch_cufftdx_corr_t(const double *g_parent, int parent_gsz, int le
                                   double *g_child, int child_gsz, int len_out, int nparents,
                                   double inv_fft_n, cudaStream_t stream,
                                   int g_parent_stride, int poly_child_stride,
-                                  int g_child_stride) {
-    constexpr int FPB2 = 2;
-    using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
-    using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
-    size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
-    if (nparents >= 4 && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent<FFT_N, FPB2>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                          (int)shmem2))) {
-            int grid = (nparents + FPB2 - 1) / FPB2;
-            k_cufftdx_corr_pair_parent<FFT_N, FPB2><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
-                g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                g_child, child_gsz, len_out, nparents, inv_fft_n,
-                g_parent_stride, poly_child_stride, g_child_stride);
-            if (CUDA_OK(cudaGetLastError())) return true;
-        }
+                                  int g_child_stride,
+                                  int qplanes, size_t q_parent_plane, size_t q_child_plane) {
+    if (qplanes > 1) {
+        return launch_cufftdx_corr_qp<FFT_N, true>(
+            g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+            g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+            g_parent_stride, poly_child_stride, g_child_stride,
+            qplanes, q_parent_plane, q_child_plane);
     }
-    using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
-    using FFTInv = cufftdx_fft_inv_t<FFT_N>;
-    size_t shmem = std::max((size_t)FFTFwd::shared_memory_size, (size_t)FFTInv::shared_memory_size);
-    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent<FFT_N>,
-                                      cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                      (int)shmem))) return false;
-    k_cufftdx_corr_pair_parent<FFT_N><<<nparents, FFTFwd::block_dim, shmem, stream>>>(
-        g_parent, parent_gsz, len_g,
-        child_poly, cps, len_P,
-        g_child, child_gsz, len_out, nparents, inv_fft_n,
-        g_parent_stride, poly_child_stride, g_child_stride);
-    return CUDA_OK(cudaGetLastError());
+    return launch_cufftdx_corr_qp<FFT_N, false>(
+        g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+        g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+        g_parent_stride, poly_child_stride, g_child_stride,
+        1, 0, 0);
 }
 #endif /* ICM_HAVE_CUFFTDX */
 
 /* ── R2C/C2R fused kernels ─────────────────────────────────────── */
 #if ICM_HAVE_CUFFTDX_R2C
 
-template<int FFT_N, int FPB = 1>
+template<int FFT_N, int FPB = 1, bool QPLANE = false>
 __launch_bounds__(cufftdx_r2c_t<FFT_N, FPB>::max_threads_per_block)
 __global__ static void k_cufftdx_build_parent_r2c(const double *child, int cps,
                                                     double *parent, int pps,
                                                     int nparents, double inv_fft_n,
-                                                    int child_stride, int parent_stride) {
+                                                    int child_stride, int parent_stride,
+                                                    size_t q_parent_plane, size_t q_child_plane) {
     using R2C = cufftdx_r2c_t<FFT_N, FPB>;
     using C2R = cufftdx_c2r_t<FFT_N, FPB>;
     using complex_t = typename R2C::value_type;
@@ -304,6 +391,10 @@ __global__ static void k_cufftdx_build_parent_r2c(const double *child, int cps,
     complex_t b[R2C::storage_size];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
+    if constexpr (QPLANE) {
+        child += (size_t)blockIdx.y * q_child_plane;
+        parent += (size_t)blockIdx.y * q_parent_plane;
+    }
     const double *L = child + (size_t)(2 * p) * (size_t)child_stride;
     const double *R_ptr = child + (size_t)(2 * p + 1) * (size_t)child_stride;
     double *out = parent + (size_t)p * (size_t)parent_stride;
@@ -325,7 +416,7 @@ __global__ static void k_cufftdx_build_parent_r2c(const double *child, int cps,
     cufftdx_store_real_c2r<C2R>(a, out, pps, inv_fft_n);
 }
 
-template<int FFT_N, int FPB = 1>
+template<int FFT_N, int FPB = 1, bool QPLANE = false>
 __launch_bounds__(cufftdx_r2c_t<FFT_N, FPB>::max_threads_per_block)
 __global__ static void k_cufftdx_corr_pair_parent_r2c(
         const double *g_parent, int parent_gsz, int len_g,
@@ -333,7 +424,8 @@ __global__ static void k_cufftdx_corr_pair_parent_r2c(
         double *g_child, int child_gsz, int len_out,
         int nparents, double inv_fft_n,
         int g_parent_stride, int poly_child_stride,
-        int g_child_stride) {
+        int g_child_stride,
+        size_t q_parent_plane, size_t q_child_plane) {
     using R2C = cufftdx_r2c_t<FFT_N, FPB>;
     using C2R = cufftdx_c2r_t<FFT_N, FPB>;
     using complex_t = typename R2C::value_type;
@@ -344,6 +436,11 @@ __global__ static void k_cufftdx_corr_pair_parent_r2c(
     complex_t gspec_saved[R2C::elements_per_thread];
     extern __shared__ __align__(alignof(double2)) complex_t shared_mem[];
 
+    if constexpr (QPLANE) {
+        g_parent += (size_t)blockIdx.y * q_parent_plane;
+        child_poly += (size_t)blockIdx.y * q_child_plane;
+        g_child += (size_t)blockIdx.y * q_child_plane;
+    }
     const double *gp = g_parent + (size_t)p * (size_t)g_parent_stride;
     const double *PL = child_poly + (size_t)(2 * p) * (size_t)poly_child_stride;
     const double *PR = child_poly + (size_t)(2 * p + 1) * (size_t)poly_child_stride;
@@ -378,33 +475,111 @@ __global__ static void k_cufftdx_corr_pair_parent_r2c(
     cufftdx_store_real_c2r<C2R>(gbuf, outR, len_out, inv_fft_n);
 }
 
-template<int FFT_N>
-static bool launch_cufftdx_build_r2c_t(const double *child, int cps,
+template<int FFT_N, bool QPLANE>
+static bool launch_cufftdx_build_r2c_qp(const double *child, int cps,
                                         double *parent, int pps, int nparents,
                                         double inv_fft_n, cudaStream_t stream,
-                                        int child_stride, int parent_stride) {
+                                        int child_stride, int parent_stride,
+                                        int qplanes, size_t q_parent_plane, size_t q_child_plane) {
     constexpr int FPB2 = 2;
     using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
     using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
     size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
-    if (nparents >= 4 && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N, FPB2>,
+    /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
+     * every block full: a half-retired block would leave its surviving FFT
+     * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
+     * per-plane count is even by construction (n_work is rounded up), so the
+     * second test is a guard, not a restriction.  At qplanes == 1 this is
+     * exactly the historical `nparents >= 4`. */
+    bool fpb2_ok = ((long long)nparents * qplanes >= 4)
+                   && (qplanes == 1 || nparents % FPB2 == 0);
+    if (fpb2_ok && shmem2 <= 200 * 1024) {
+        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N, FPB2, QPLANE>,
                                           cudaFuncAttributeMaxDynamicSharedMemorySize,
                                           (int)shmem2))) {
-            int grid = (nparents + FPB2 - 1) / FPB2;
-            k_cufftdx_build_parent_r2c<FFT_N, FPB2><<<grid, R2C2::block_dim, shmem2, stream>>>(
-                child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride);
+            dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
+            k_cufftdx_build_parent_r2c<FFT_N, FPB2, QPLANE><<<grid, R2C2::block_dim, shmem2, stream>>>(
+                child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride,
+                q_parent_plane, q_child_plane);
             if (CUDA_OK(cudaGetLastError())) return true;
         }
     }
     using R2C = cufftdx_r2c_t<FFT_N>;
     using C2R = cufftdx_c2r_t<FFT_N>;
     size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
-    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N>,
+    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N, 1, QPLANE>,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize,
                                       (int)shmem))) return false;
-    k_cufftdx_build_parent_r2c<FFT_N><<<nparents, R2C::block_dim, shmem, stream>>>(
-        child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride);
+    dim3 grid1((unsigned)nparents, (unsigned)qplanes);
+    k_cufftdx_build_parent_r2c<FFT_N, 1, QPLANE><<<grid1, R2C::block_dim, shmem, stream>>>(
+        child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride,
+        q_parent_plane, q_child_plane);
+    return CUDA_OK(cudaGetLastError());
+}
+
+template<int FFT_N>
+static bool launch_cufftdx_build_r2c_t(const double *child, int cps,
+                                        double *parent, int pps, int nparents,
+                                        double inv_fft_n, cudaStream_t stream,
+                                        int child_stride, int parent_stride,
+                                        int qplanes, size_t q_parent_plane, size_t q_child_plane) {
+    if (qplanes > 1) {
+        return launch_cufftdx_build_r2c_qp<FFT_N, true>(
+            child, cps, parent, pps, nparents, inv_fft_n, stream,
+            child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+    }
+    return launch_cufftdx_build_r2c_qp<FFT_N, false>(
+        child, cps, parent, pps, nparents, inv_fft_n, stream,
+        child_stride, parent_stride, 1, 0, 0);
+}
+
+template<int FFT_N, bool QPLANE>
+static bool launch_cufftdx_corr_r2c_qp(const double *g_parent, int parent_gsz, int len_g,
+                                       const double *child_poly, int cps, int len_P,
+                                       double *g_child, int child_gsz, int len_out, int nparents,
+                                       double inv_fft_n, cudaStream_t stream,
+                                       int g_parent_stride, int poly_child_stride,
+                                       int g_child_stride,
+                                       int qplanes, size_t q_parent_plane, size_t q_child_plane) {
+    constexpr int FPB2 = 2;
+    using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
+    using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
+    size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
+    /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
+     * every block full: a half-retired block would leave its surviving FFT
+     * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
+     * per-plane count is even by construction (n_work is rounded up), so the
+     * second test is a guard, not a restriction.  At qplanes == 1 this is
+     * exactly the historical `nparents >= 4`. */
+    bool fpb2_ok = ((long long)nparents * qplanes >= 4)
+                   && (qplanes == 1 || nparents % FPB2 == 0);
+    if (fpb2_ok && shmem2 <= 200 * 1024) {
+        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2, QPLANE>,
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          (int)shmem2))) {
+            dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
+            k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2, QPLANE><<<grid, R2C2::block_dim, shmem2, stream>>>(
+                g_parent, parent_gsz, len_g,
+                child_poly, cps, len_P,
+                g_child, child_gsz, len_out, nparents, inv_fft_n,
+                g_parent_stride, poly_child_stride, g_child_stride,
+                q_parent_plane, q_child_plane);
+            if (CUDA_OK(cudaGetLastError())) return true;
+        }
+    }
+    using R2C = cufftdx_r2c_t<FFT_N>;
+    using C2R = cufftdx_c2r_t<FFT_N>;
+    size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
+    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N, 1, QPLANE>,
+                                      cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                      (int)shmem))) return false;
+    dim3 grid1((unsigned)nparents, (unsigned)qplanes);
+    k_cufftdx_corr_pair_parent_r2c<FFT_N, 1, QPLANE><<<grid1, R2C::block_dim, shmem, stream>>>(
+        g_parent, parent_gsz, len_g,
+        child_poly, cps, len_P,
+        g_child, child_gsz, len_out, nparents, inv_fft_n,
+        g_parent_stride, poly_child_stride, g_child_stride,
+        q_parent_plane, q_child_plane);
     return CUDA_OK(cudaGetLastError());
 }
 
@@ -414,36 +589,20 @@ static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, in
                                        double *g_child, int child_gsz, int len_out, int nparents,
                                        double inv_fft_n, cudaStream_t stream,
                                        int g_parent_stride, int poly_child_stride,
-                                       int g_child_stride) {
-    constexpr int FPB2 = 2;
-    using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
-    using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
-    size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
-    if (nparents >= 4 && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                          (int)shmem2))) {
-            int grid = (nparents + FPB2 - 1) / FPB2;
-            k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2><<<grid, R2C2::block_dim, shmem2, stream>>>(
-                g_parent, parent_gsz, len_g,
-                child_poly, cps, len_P,
-                g_child, child_gsz, len_out, nparents, inv_fft_n,
-                g_parent_stride, poly_child_stride, g_child_stride);
-            if (CUDA_OK(cudaGetLastError())) return true;
-        }
+                                       int g_child_stride,
+                                       int qplanes, size_t q_parent_plane, size_t q_child_plane) {
+    if (qplanes > 1) {
+        return launch_cufftdx_corr_r2c_qp<FFT_N, true>(
+            g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+            g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+            g_parent_stride, poly_child_stride, g_child_stride,
+            qplanes, q_parent_plane, q_child_plane);
     }
-    using R2C = cufftdx_r2c_t<FFT_N>;
-    using C2R = cufftdx_c2r_t<FFT_N>;
-    size_t shmem = std::max((size_t)R2C::shared_memory_size, (size_t)C2R::shared_memory_size);
-    if (!CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N>,
-                                      cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                      (int)shmem))) return false;
-    k_cufftdx_corr_pair_parent_r2c<FFT_N><<<nparents, R2C::block_dim, shmem, stream>>>(
-        g_parent, parent_gsz, len_g,
-        child_poly, cps, len_P,
-        g_child, child_gsz, len_out, nparents, inv_fft_n,
-        g_parent_stride, poly_child_stride, g_child_stride);
-    return CUDA_OK(cudaGetLastError());
+    return launch_cufftdx_corr_r2c_qp<FFT_N, false>(
+        g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+        g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+        g_parent_stride, poly_child_stride, g_child_stride,
+        1, 0, 0);
 }
 
 #endif /* ICM_HAVE_CUFFTDX_R2C */
@@ -472,24 +631,26 @@ bool launch_cufftdx_build_dispatch(int fft_n,
                                    const double *child, int cps,
                                    double *parent, int pps, int nparents,
                                    double inv_fft_n, cudaStream_t stream,
-                                   int child_stride, int parent_stride) {
+                                   int child_stride, int parent_stride,
+                                   int qplanes, size_t q_parent_plane, size_t q_child_plane) {
 #if ICM_HAVE_CUFFTDX
     switch (fft_n) {
-        case 64: return launch_cufftdx_build_t<64>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 128: return launch_cufftdx_build_t<128>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 256: return launch_cufftdx_build_t<256>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 512: return launch_cufftdx_build_t<512>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 1024: return launch_cufftdx_build_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 2048: return launch_cufftdx_build_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 4096: return launch_cufftdx_build_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 64: return launch_cufftdx_build_t<64>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 128: return launch_cufftdx_build_t<128>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 256: return launch_cufftdx_build_t<256>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 512: return launch_cufftdx_build_t<512>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 1024: return launch_cufftdx_build_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 2048: return launch_cufftdx_build_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 4096: return launch_cufftdx_build_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
 #if GPU_FUSED_MAX_CONV_LEN >= 8192
-        case 8192: return launch_cufftdx_build_t<8192>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 8192: return launch_cufftdx_build_t<8192>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
 #endif
         default: return false;
     }
 #else
     (void)fft_n; (void)child; (void)cps; (void)parent; (void)pps; (void)nparents; (void)inv_fft_n; (void)stream;
     (void)child_stride; (void)parent_stride;
+    (void)qplanes; (void)q_parent_plane; (void)q_child_plane;
     return false;
 #endif
 }
@@ -500,42 +661,51 @@ bool launch_cufftdx_corr_dispatch(int fft_n,
                                   double *g_child, int child_gsz, int len_out, int nparents,
                                   double inv_fft_n, cudaStream_t stream,
                                   int g_parent_stride, int poly_child_stride,
-                                  int g_child_stride) {
+                                  int g_child_stride,
+                                  int qplanes, size_t q_parent_plane, size_t q_child_plane) {
 #if ICM_HAVE_CUFFTDX
     switch (fft_n) {
         case 64:
             return launch_cufftdx_corr_t<64>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                              g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                             g_parent_stride, poly_child_stride, g_child_stride);
+                                             g_parent_stride, poly_child_stride, g_child_stride,
+                                             qplanes, q_parent_plane, q_child_plane);
         case 128:
             return launch_cufftdx_corr_t<128>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                              g_parent_stride, poly_child_stride, g_child_stride);
+                                              g_parent_stride, poly_child_stride, g_child_stride,
+                                              qplanes, q_parent_plane, q_child_plane);
         case 256:
             return launch_cufftdx_corr_t<256>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                              g_parent_stride, poly_child_stride, g_child_stride);
+                                              g_parent_stride, poly_child_stride, g_child_stride,
+                                              qplanes, q_parent_plane, q_child_plane);
         case 512:
             return launch_cufftdx_corr_t<512>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                               g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                              g_parent_stride, poly_child_stride, g_child_stride);
+                                              g_parent_stride, poly_child_stride, g_child_stride,
+                                              qplanes, q_parent_plane, q_child_plane);
         case 1024:
             return launch_cufftdx_corr_t<1024>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                               g_parent_stride, poly_child_stride, g_child_stride);
+                                               g_parent_stride, poly_child_stride, g_child_stride,
+                                               qplanes, q_parent_plane, q_child_plane);
         case 2048:
             return launch_cufftdx_corr_t<2048>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                               g_parent_stride, poly_child_stride, g_child_stride);
+                                               g_parent_stride, poly_child_stride, g_child_stride,
+                                               qplanes, q_parent_plane, q_child_plane);
         case 4096:
             return launch_cufftdx_corr_t<4096>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                               g_parent_stride, poly_child_stride, g_child_stride);
+                                               g_parent_stride, poly_child_stride, g_child_stride,
+                                               qplanes, q_parent_plane, q_child_plane);
 #if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192:
             return launch_cufftdx_corr_t<8192>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                               g_parent_stride, poly_child_stride, g_child_stride);
+                                               g_parent_stride, poly_child_stride, g_child_stride,
+                                               qplanes, q_parent_plane, q_child_plane);
 #endif
         default:
             return false;
@@ -544,6 +714,7 @@ bool launch_cufftdx_corr_dispatch(int fft_n,
     (void)fft_n; (void)g_parent; (void)parent_gsz; (void)len_g; (void)child_poly; (void)cps; (void)len_P;
     (void)g_child; (void)child_gsz; (void)len_out; (void)nparents; (void)inv_fft_n; (void)stream;
     (void)g_parent_stride; (void)poly_child_stride; (void)g_child_stride;
+    (void)qplanes; (void)q_parent_plane; (void)q_child_plane;
     return false;
 #endif
 }
@@ -552,24 +723,26 @@ bool launch_cufftdx_build_r2c_dispatch(int fft_n,
                                        const double *child, int cps,
                                        double *parent, int pps, int nparents,
                                        double inv_fft_n, cudaStream_t stream,
-                                       int child_stride, int parent_stride) {
+                                       int child_stride, int parent_stride,
+                                       int qplanes, size_t q_parent_plane, size_t q_child_plane) {
 #if ICM_HAVE_CUFFTDX_R2C
     switch (fft_n) {
-        case 64: return launch_cufftdx_build_r2c_t<64>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 128: return launch_cufftdx_build_r2c_t<128>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 256: return launch_cufftdx_build_r2c_t<256>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 512: return launch_cufftdx_build_r2c_t<512>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 1024: return launch_cufftdx_build_r2c_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 2048: return launch_cufftdx_build_r2c_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
-        case 4096: return launch_cufftdx_build_r2c_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 64: return launch_cufftdx_build_r2c_t<64>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 128: return launch_cufftdx_build_r2c_t<128>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 256: return launch_cufftdx_build_r2c_t<256>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 512: return launch_cufftdx_build_r2c_t<512>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 1024: return launch_cufftdx_build_r2c_t<1024>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 2048: return launch_cufftdx_build_r2c_t<2048>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        case 4096: return launch_cufftdx_build_r2c_t<4096>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
 #if GPU_FUSED_MAX_CONV_LEN >= 8192
-        case 8192: return launch_cufftdx_build_r2c_t<8192>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride);
+        case 8192: return launch_cufftdx_build_r2c_t<8192>(child, cps, parent, pps, nparents, inv_fft_n, stream, child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
 #endif
         default: return false;
     }
 #else
     (void)fft_n; (void)child; (void)cps; (void)parent; (void)pps; (void)nparents; (void)inv_fft_n; (void)stream;
     (void)child_stride; (void)parent_stride;
+    (void)qplanes; (void)q_parent_plane; (void)q_child_plane;
     return false;
 #endif
 }
@@ -580,42 +753,51 @@ bool launch_cufftdx_corr_r2c_dispatch(int fft_n,
                                       double *g_child, int child_gsz, int len_out, int nparents,
                                       double inv_fft_n, cudaStream_t stream,
                                       int g_parent_stride, int poly_child_stride,
-                                      int g_child_stride) {
+                                      int g_child_stride,
+                                      int qplanes, size_t q_parent_plane, size_t q_child_plane) {
 #if ICM_HAVE_CUFFTDX_R2C
     switch (fft_n) {
         case 64:
             return launch_cufftdx_corr_r2c_t<64>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                    g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                                   g_parent_stride, poly_child_stride, g_child_stride);
+                                                   g_parent_stride, poly_child_stride, g_child_stride,
+                                                   qplanes, q_parent_plane, q_child_plane);
         case 128:
             return launch_cufftdx_corr_r2c_t<128>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                                    g_parent_stride, poly_child_stride, g_child_stride);
+                                                    g_parent_stride, poly_child_stride, g_child_stride,
+                                                    qplanes, q_parent_plane, q_child_plane);
         case 256:
             return launch_cufftdx_corr_r2c_t<256>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                                    g_parent_stride, poly_child_stride, g_child_stride);
+                                                    g_parent_stride, poly_child_stride, g_child_stride,
+                                                    qplanes, q_parent_plane, q_child_plane);
         case 512:
             return launch_cufftdx_corr_r2c_t<512>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                     g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                                    g_parent_stride, poly_child_stride, g_child_stride);
+                                                    g_parent_stride, poly_child_stride, g_child_stride,
+                                                    qplanes, q_parent_plane, q_child_plane);
         case 1024:
             return launch_cufftdx_corr_r2c_t<1024>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                      g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                                     g_parent_stride, poly_child_stride, g_child_stride);
+                                                     g_parent_stride, poly_child_stride, g_child_stride,
+                                                     qplanes, q_parent_plane, q_child_plane);
         case 2048:
             return launch_cufftdx_corr_r2c_t<2048>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                      g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                                     g_parent_stride, poly_child_stride, g_child_stride);
+                                                     g_parent_stride, poly_child_stride, g_child_stride,
+                                                     qplanes, q_parent_plane, q_child_plane);
         case 4096:
             return launch_cufftdx_corr_r2c_t<4096>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                      g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                                     g_parent_stride, poly_child_stride, g_child_stride);
+                                                     g_parent_stride, poly_child_stride, g_child_stride,
+                                                     qplanes, q_parent_plane, q_child_plane);
 #if GPU_FUSED_MAX_CONV_LEN >= 8192
         case 8192:
             return launch_cufftdx_corr_r2c_t<8192>(g_parent, parent_gsz, len_g, child_poly, cps, len_P,
                                                      g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-                                                     g_parent_stride, poly_child_stride, g_child_stride);
+                                                     g_parent_stride, poly_child_stride, g_child_stride,
+                                                     qplanes, q_parent_plane, q_child_plane);
 #endif
         default:
             return false;
@@ -624,6 +806,7 @@ bool launch_cufftdx_corr_r2c_dispatch(int fft_n,
     (void)fft_n; (void)g_parent; (void)parent_gsz; (void)len_g; (void)child_poly; (void)cps; (void)len_P;
     (void)g_child; (void)child_gsz; (void)len_out; (void)nparents; (void)inv_fft_n; (void)stream;
     (void)g_parent_stride; (void)poly_child_stride; (void)g_child_stride;
+    (void)qplanes; (void)q_parent_plane; (void)q_child_plane;
     return false;
 #endif
 }
@@ -683,6 +866,31 @@ __global__ void k_set_leaves_b1_qbatch(double * const *a_ptrs,
 __global__ void k_zero(double *x, size_t n) {
     size_t i = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     if (i < n) x[i] = 0.0;
+}
+
+/* Fill the phantom (padding) node slots [first_pad, nn_slots) of one tree
+ * level with the identity polynomial [1, 0, 0, ...], for every Q-plane.
+ *
+ * Padding a tree to a power of two only works because a phantom node holds
+ * the convolution identity: conv(P, delta) = P, so a parent with one real
+ * child reproduces that child, and a phantom parent stays a phantom.  The
+ * leaf kernels have always written that value into phantom leaves; this
+ * kernel establishes the same invariant at every level ONCE, so the level
+ * runners are free to stop recomputing phantom nodes on every call. */
+__global__ void k_pad_identity(double *level_base, int first_pad, int nn_slots,
+                               int slot_stride, int qplanes) {
+    int pad_slots = nn_slots - first_pad;
+    if (pad_slots <= 0) return;
+    size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
+    size_t total = (size_t)qplanes * (size_t)pad_slots * (size_t)slot_stride;
+    if (idx >= total) return;
+    int m = (int)(idx % (size_t)slot_stride);
+    size_t slot = idx / (size_t)slot_stride;
+    int q = (int)(slot / (size_t)pad_slots);
+    int j = (int)(slot % (size_t)pad_slots);
+    size_t off = (size_t)q * (size_t)nn_slots * (size_t)slot_stride
+               + (size_t)(first_pad + j) * (size_t)slot_stride;
+    level_base[off + (size_t)m] = (m == 0) ? 1.0 : 0.0;
 }
 
 __global__ void k_set_root_g(double *g_root, int root_gsz, const double *payout, int k) {
@@ -791,10 +999,13 @@ __global__ void k_block_build(const double *a_sorted, int n, int B,
 
 __global__ void k_schoolbook_build(const double *child, int cps,
                                    double *parent, int pps, int nparents,
-                                   int child_stride, int parent_stride) {
+                                   int child_stride, int parent_stride,
+                                   size_t q_parent_plane, size_t q_child_plane) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     size_t total = (size_t)nparents * (size_t)parent_stride;
     if (idx >= total) return;
+    child += (size_t)blockIdx.y * q_child_plane;
+    parent += (size_t)blockIdx.y * q_parent_plane;
     int p = (int)(idx / (size_t)parent_stride);
     int m = (int)(idx % (size_t)parent_stride);
     if (m >= pps) {
@@ -814,9 +1025,12 @@ __global__ void k_schoolbook_build(const double *child, int cps,
 
 __global__ void k_schoolbook_build_smem_parent(const double *child, int cps,
                                                double *parent, int pps, int nparents,
-                                               int child_stride, int parent_stride) {
+                                               int child_stride, int parent_stride,
+                                               size_t q_parent_plane, size_t q_child_plane) {
     int p = blockIdx.x;
     if (p >= nparents) return;
+    child += (size_t)blockIdx.y * q_child_plane;
+    parent += (size_t)blockIdx.y * q_parent_plane;
     extern __shared__ double sh[];
     double *Lsh = sh;
     double *Rsh = sh + cps;
@@ -844,7 +1058,8 @@ __global__ void k_schoolbook_build_smem_parent(const double *child, int cps,
 
 __global__ void k_schoolbook_build_warp_batch(const double *child, int cps,
                                               double *parent, int pps, int nparents,
-                                              int child_stride, int parent_stride) {
+                                              int child_stride, int parent_stride,
+                                              size_t q_parent_plane, size_t q_child_plane) {
     constexpr int WARP = 32;
     int lane = threadIdx.x & (WARP - 1);
     int warp = threadIdx.x / WARP;
@@ -852,6 +1067,8 @@ __global__ void k_schoolbook_build_warp_batch(const double *child, int cps,
     int p = blockIdx.x * warps_per_block + warp;
     if (p >= nparents) return;
 
+    child += (size_t)blockIdx.y * q_child_plane;
+    parent += (size_t)blockIdx.y * q_parent_plane;
     extern __shared__ double sh[];
     double *warp_sh = sh + (size_t)warp * (size_t)(2 * cps);
     double *Lsh = warp_sh;
@@ -920,9 +1137,12 @@ __global__ void k_scatter_from_fft(const double *src, int fft_n,
 __global__ void k_wrap_build(double *parent, int pps, int nparents,
                              const double *child, int cps, int conv_len,
                              int fft_n, int wrap_m,
-                             int parent_stride, int child_stride) {
+                             int parent_stride, int child_stride,
+                             size_t q_parent_plane, size_t q_child_plane) {
     int p = blockIdx.x;
     if (p >= nparents) return;
+    child += (size_t)blockIdx.y * q_child_plane;
+    parent += (size_t)blockIdx.y * q_parent_plane;
     double *out = parent + (size_t)p * (size_t)parent_stride;
     const double *L = child + (size_t)(2 * p) * (size_t)child_stride;
     const double *R = child + (size_t)(2 * p + 1) * (size_t)child_stride;
@@ -977,10 +1197,14 @@ __global__ void k_wrap_corr_pair(double *g_child, int child_gsz, int nparents,
                                  int len_out,
                                  int fft_n, int wrap_m,
                                  int child_g_stride, int parent_g_stride,
-                                 int child_poly_stride) {
+                                 int child_poly_stride,
+                                 size_t q_parent_plane, size_t q_child_plane) {
     int p = blockIdx.x;
     if (p >= nparents) return;
 
+    g_parent += (size_t)blockIdx.y * q_parent_plane;
+    child_poly += (size_t)blockIdx.y * q_child_plane;
+    g_child += (size_t)blockIdx.y * q_child_plane;
     double *outL = g_child + (size_t)(2 * p) * (size_t)child_g_stride;
     double *outR = g_child + (size_t)(2 * p + 1) * (size_t)child_g_stride;
     const double *gp = g_parent + (size_t)p * (size_t)parent_g_stride;
@@ -1029,10 +1253,14 @@ __global__ void k_schoolbook_corr_pair(const double *g_parent, int parent_gsz,
                                        int len_g,
                                        const double *child_poly, int cps, int len_P,
                                        double *g_child, int child_gsz, int len_out, int nparents,
-                                       int parent_g_stride, int child_poly_stride, int child_g_stride) {
+                                       int parent_g_stride, int child_poly_stride, int child_g_stride,
+                                       size_t q_parent_plane, size_t q_child_plane) {
     size_t idx = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;
     size_t total = (size_t)nparents * (size_t)len_out;
     if (idx >= total) return;
+    g_parent += (size_t)blockIdx.y * q_parent_plane;
+    child_poly += (size_t)blockIdx.y * q_child_plane;
+    g_child += (size_t)blockIdx.y * q_child_plane;
     int p = (int)(idx / (size_t)len_out);
     int m = (int)(idx % (size_t)len_out);
     const double *gp = g_parent + (size_t)p * (size_t)parent_g_stride;
@@ -1056,10 +1284,14 @@ __global__ void k_schoolbook_corr_pair_smem_parent(const double *g_parent, int p
                                                    double *g_child, int child_gsz,
                                                    int len_out, int nparents,
                                                    int parent_g_stride, int child_poly_stride,
-                                                   int child_g_stride) {
+                                                   int child_g_stride,
+                                                   size_t q_parent_plane, size_t q_child_plane) {
     int p = blockIdx.x;
     if (p >= nparents) return;
 
+    g_parent += (size_t)blockIdx.y * q_parent_plane;
+    child_poly += (size_t)blockIdx.y * q_child_plane;
+    g_child += (size_t)blockIdx.y * q_child_plane;
     extern __shared__ double sh[];
     double *gp_sh = sh;
     double *pl_sh = gp_sh + len_g;
@@ -1098,7 +1330,8 @@ __global__ void k_schoolbook_corr_pair_warp_batch(const double *g_parent, int pa
                                                   double *g_child, int child_gsz,
                                                   int len_out, int nparents,
                                                   int parent_g_stride, int child_poly_stride,
-                                                  int child_g_stride) {
+                                                  int child_g_stride,
+                                                  size_t q_parent_plane, size_t q_child_plane) {
     constexpr int WARP = 32;
     int lane = threadIdx.x & (WARP - 1);
     int warp = threadIdx.x / WARP;
@@ -1106,6 +1339,9 @@ __global__ void k_schoolbook_corr_pair_warp_batch(const double *g_parent, int pa
     int p = blockIdx.x * warps_per_block + warp;
     if (p >= nparents) return;
 
+    g_parent += (size_t)blockIdx.y * q_parent_plane;
+    child_poly += (size_t)blockIdx.y * q_child_plane;
+    g_child += (size_t)blockIdx.y * q_child_plane;
     int per_warp = len_g + 2 * len_P;
     extern __shared__ double sh[];
     double *warp_sh = sh + (size_t)warp * (size_t)per_warp;
@@ -1342,14 +1578,15 @@ __global__ void k_icm_single_kernel(
 
 __global__ void k_block_build_qbatch(
         const double * const *a_ptrs, int n, int B,
-        int nblocks, int N_tree, int q_batch,
+        int nblocks, int N_tree, int q_batch, int blocks_per_q,
         int leaf_psz, double *leaves, size_t leaf_stride,
         double *block_prods, size_t bp_stride) {
     int global_b = blockIdx.x;
-    int total_blocks = q_batch * N_tree;
+    int total_blocks = q_batch * blocks_per_q;
     if (global_b >= total_blocks) return;
-    int qi = global_b / N_tree;
-    int b = global_b % N_tree;
+    int qi = global_b / blocks_per_q;
+    int b = global_b % blocks_per_q;
+    (void)N_tree;
     int t = threadIdx.x;
 
     double *leaf = leaves + (size_t)qi * leaf_stride + (size_t)b * (size_t)leaf_psz;
