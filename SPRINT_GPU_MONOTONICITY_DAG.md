@@ -23,12 +23,28 @@ graph TD
   I --> J0[J0_MEASUREMENT_AB_KPAD_CONFOUND]
   J0 --> J1[J1_DESIGN_BELOW_SAT_FIX]
   J1 --> K1[K1_IMPLEMENT_BELOW_SAT_FIX]
-  J0 -.deferred.-> J[J_DESIGN_RAGGED_TREE_GPU_FIX]
-  J -.deferred.-> K[K_IMPLEMENT_RAGGED_TREE_GPU_FIX]
+  J0 --> J[J_DESIGN_RAGGED_TREE_GPU_FIX]
+  J --> M[M_IMPLEMENT_RAGGED_TREE_PATCH]
+  J --> N[N_PREMORTEM_RAGGED_TREE_FIX]
+  M --> K[K_IMPLEMENT_RAGGED_TREE_GPU_FIX]
+  N --> K
   F --> G[G_BUILD_GPU_VALIDATION_HARNESS]
-  K1 --> H[H_RUN_THRESHOLD_SEARCH]
-  G --> H
+  G --> O[O_PREP_L_CALIBRATION_SKELETON]
+  G -.-> L[L_EXTEND_BSELECT_ABOVE_1572864]
+  O -.recommended.-> L
+  K --> Q[Q_REVALIDATE_FOCUSED_SWEEP]
+  L --> Q
+  Q --> H[H_RUN_THRESHOLD_SEARCH]
 ```
+
+**Parallel wave now dispatching** (all `Model: deepseek`, no GPU cost, no
+interdependency between them -- M/N both read the SAME frozen design doc
+independently, O reads G's already-committed findings): M, N, O run
+concurrently. K then depends on BOTH M and N (supervisor applies M's
+diff only after grading it against N's independent checklist). L can
+proceed once G's findings exist, with O's skeleton as a (recommended,
+non-blocking) efficiency booster. Q is the single re-validation gate
+before H.
 
 ## Lanes
 
@@ -39,15 +55,22 @@ graph TD
 | hw-verify   | E_HW_VERIFY_BSELECT_GAP                | supervisor     |
 | calibration | F_RECALIBRATE_BSELECT_GAP              | supervisor     |
 | tooling     | G_BUILD_GPU_VALIDATION_HARNESS         | deepseek       |
+| below_sat   | I, J0, J1, K1 (all done)               | mixed          |
+| ragged-tree | J (done), M, N (parallel wave), K      | mixed          |
+| bselect-ext | O (parallel wave), L                   | mixed          |
+| gate        | Q_REVALIDATE_FOCUSED_SWEEP             | supervisor     |
 | land        | H_RUN_THRESHOLD_SEARCH                 | supervisor     |
 
 ## Conflicts
 
 | Resource                                       | Rule                                          | Nodes touching |
 |--------------------------------------------------|--------------------------------------------------|-----------------|
-| B200 instance (real money, one at a time)        | Serialized, supervisor-only rental decisions     | E, F, H         |
-| `devices/b200/gpu_fft_config.h`                  | Supervisor only, after real hardware confirmation | F               |
+| B200 instance (real money, one at a time)        | Serialized, supervisor-only rental decisions     | E, F, H, K, L, Q |
+| `devices/b200/gpu_fft_config.h`                  | Supervisor only, after real hardware confirmation | F, L           |
 | New GPU validation harness tool (path TBD)       | G only                                            | G               |
+| `src/gpu/gpu_plan.cu`, `gpu_exec.cu`, `gpu_kernels.cu`, `gpu_internal.h` | M only for the M/N/O wave (deny-locked); supervisor applies after grading against N | M, K |
+| `scripts/gpu_ragged_tree_fix_premortem.md`       | N only (new file)                                | N               |
+| `scripts/l_bselect_extension_prep.md` / skeleton CSV | O only (new files)                           | O               |
 
 ## Nodes
 
@@ -420,23 +443,95 @@ graph TD
   address the actual mechanism (real GPU compute wasted on non-existent
   data), not the appearance of it.
 
-### [ ] K_IMPLEMENT_RAGGED_TREE_GPU_FIX (deferred, not abandoned)
+### [ ] M_IMPLEMENT_RAGGED_TREE_PATCH
+
+- **Model:** `deepseek`
+- **Depends:** J_DESIGN_RAGGED_TREE_GPU_FIX
+- **Allowed files:** `src/gpu/gpu_plan.cu`, `src/gpu/gpu_exec.cu`,
+  `src/gpu/gpu_kernels.cu`, `src/gpu/gpu_internal.h` (edit directly, per
+  J's Option B scope). Read-only context: `scripts/gpu_ragged_tree_fix_plan.md`
+  (the design doc to implement), `HANDOFF.md`.
+- **Exit criteria:** implement Option B from
+  `scripts/gpu_ragged_tree_fix_plan.md` exactly: (1) plan-time -- change
+  cuFFT/cuFFTDx/VkFFT plan batch sizes from `qb*nn[ell]` to
+  `qb*n_real[ell]` wherever plans are created (`allocate_level_buffers()`
+  and any sibling call sites); (2) execution-time -- change all 5
+  identified call sites in `gpu_exec.cu` (`nparents = plan->nn[ell]`) to
+  use `plan->n_real[ell]` for launch-configuration/batch sizing; (3) the
+  identity-spectrum boundary fix in `k_pairwise_mul` and
+  `k_paired_corr_freq` (`gpu_kernels.cu`) for the one case per level where
+  a parent has only one real child -- pre-fill that boundary slot's
+  spectrum with `{1,0,0,...}` per the design doc's exact recommendation,
+  do not improvise a different approach. **Must explicitly preserve the
+  already-landed `below_sat` fix in `gpu_plan.cu`** (generalized trigger
+  in `build_tree_geometry()` + `g_eff_max` clamp in both
+  `estimate_candidate_cost()` and `build_plan_metadata()`) untouched and
+  compatible -- read it first, do not revert or conflict with it. Leave
+  the result as a real, uncommitted working-tree diff (edit the files
+  directly, do not just describe changes in prose) for supervisor review.
+- **Kill deadline:** 60 min.
+- **Binding law:** correctness-critical numerical code -- getting
+  polynomial coefficient handling wrong produces silently WRONG equity
+  values, not just wrong timings. Do NOT `git commit`, `git push`, or run
+  `git apply` (bare), `git checkout --`, `git stash`, `git reset`, or
+  `git restore` on anything. Ground every change in the design doc and
+  the actual current source, not assumption.
+
+### [ ] N_PREMORTEM_RAGGED_TREE_FIX
+
+- **Model:** `deepseek`
+- **Depends:** J_DESIGN_RAGGED_TREE_GPU_FIX (independent of M -- both
+  start from the same frozen design doc and current source, run in
+  parallel, do not depend on each other)
+- **Allowed files:** read-only over `scripts/gpu_ragged_tree_fix_plan.md`,
+  `src/gpu/gpu_plan.cu`, `src/gpu/gpu_exec.cu`, `src/gpu/gpu_kernels.cu`,
+  `src/gpu/gpu_internal.h` (the same baseline M starts from -- read the
+  current committed state, not M's in-progress edits). Write-allowed: a
+  single new file, `scripts/gpu_ragged_tree_fix_premortem.md`.
+- **Exit criteria:** without writing any code, produce a precise, numbered
+  checklist of the most likely ways a naive implementation of Option B
+  goes wrong. Cover at minimum: (1) the identity-spectrum boundary trick
+  -- is the FFT of `[1,0,0,...]` really all-ones for this codebase's R2C
+  convention? what if `fft_n` differs between the build and correlate
+  paths? could the "which slot is the lone child" indexing be off by one?
+  (2) cuFFT/VkFFT plan batch-size changes -- does shrinking the batch at
+  plan-creation time require matching changes to workspace-size
+  calibration/allocation elsewhere? could a mismatch between the plan's
+  batch and the actual data size cause a silent out-of-bounds read or a
+  cuFFT API error instead of a clean failure? (3) whether shrinking launch
+  configs to `n_real` could under-allocate or under-launch relative to
+  some OTHER buffer still sized to `nn[ell]` elsewhere in the code; (4)
+  any interaction with the just-landed `below_sat` fix (does its
+  `g_eff_max` clamp logic need to consider `n_real` vs `nn` anywhere it
+  currently doesn't?). Deliver as a concrete checklist the supervisor can
+  grade an actual diff against, not prose.
+- **Kill deadline:** 40 min.
+- **Binding law:** pure critique/analysis, produce no code. Ground every
+  concern in the actual current source, not speculation untethered from
+  the real files.
+
+### [ ] K_IMPLEMENT_RAGGED_TREE_GPU_FIX
 
 - **Model:** `supervisor`
-- **Depends:** J_DESIGN_RAGGED_TREE_GPU_FIX
+- **Depends:** M_IMPLEMENT_RAGGED_TREE_PATCH, N_PREMORTEM_RAGGED_TREE_FIX
 - **Allowed files:** `src/gpu/gpu_kernels.cu`, `src/gpu/gpu_exec.cu`,
-  `src/gpu/gpu_plan.cu` (whichever J's chosen option actually touches)
-- **Exit criteria:** implement J's recommended option, hardware-verify on
-  the next approved B200 rental: `bench_gpu_fused verify` 36/0 (no
-  regression), then re-measure n=1,000,000 vs n=1,048,576 (and ideally a
-  couple more ragged/non-ragged pairs) to confirm the gap closes for a
-  real, attributable reason, not by accident.
+  `src/gpu/gpu_plan.cu`, `src/gpu/gpu_internal.h`
+- **Exit criteria:** supervisor reviews M's diff line-by-line against
+  both the design doc AND N's independent checklist (not just M's own
+  "done" framing) before applying anything. Fix any gaps N's checklist
+  surfaces that M's diff doesn't handle. Only then rent, build,
+  hardware-verify: `bench_gpu_fused verify` 36/0 (no regression -- same
+  correctness-critical rigor as K1), a small-scale correctness check
+  (GPU vs CPU reference, safely within calibration range, same pattern as
+  `scripts/verify_below_sat_fix.cu`), and a timing check at FIXED small k
+  comparing a ragged n (e.g. n=1,000,000) against a clean power-of-two n
+  (e.g. n=1,048,576) to confirm the ~1-2% padding-waste gap actually
+  closes.
 - **Kill deadline:** budget-dependent, plan with the user before renting.
 - **Binding law:** do NOT rent without explicit user go-ahead (standing
-  rule this whole sprint).
-- **Status:** deferred behind K1 (see J0) -- real ~1-2% win, small
-  relative to the below_sat bug, worth doing once K1 lands and there's
-  budget left.
+  rule this whole sprint). If M's diff or N's checklist raises any doubt
+  about correctness, stop and resolve it before spending GPU time, not
+  after.
 
 ### [x] K1_IMPLEMENT_BELOW_SAT_FIX
 
@@ -514,31 +609,66 @@ graph TD
 ### [ ] H_RUN_THRESHOLD_SEARCH
 
 - **Model:** `supervisor`
-- **Depends:** E_HW_VERIFY_BSELECT_GAP, F_RECALIBRATE_BSELECT_GAP,
-  K1_IMPLEMENT_BELOW_SAT_FIX, G_BUILD_GPU_VALIDATION_HARNESS,
-  **new: L_EXTEND_BSELECT_ABOVE_1572864** (see below -- G's second run
-  found a real, significant B-selection gap above n=1,572,864 that would
-  make any large-n threshold number reflect known-suboptimal dispatch,
-  not achievable performance)
+- **Depends:** Q_REVALIDATE_FOCUSED_SWEEP (which transitively requires
+  E/F/G/K/L/K1 -- see graph above)
 - **Allowed files:** none (execution only)
 - **Exit criteria:** `scripts/threshold_search_gpu.cu` run for real,
   producing the actual 1-second-threshold numbers for both `k=n` and
   `k=100` curves, only once monotonicity is hardware-confirmed (not just
   simulated) along both curves AND the B-selection table covers the
-  n-range the search will actually probe.
+  n-range the search will actually probe AND the ragged-tree fix has
+  landed (not just deferred) -- the whole point of this investigation
+  arc is a number that's both correct-in-order and close to achievable
+  performance, not merely non-inverted.
 - **Kill deadline:** ~10 min B200 time.
-- **Binding law:** do not run before E/F/G/L land -- this was the whole
-  point of this investigation arc. Monotonicity alone (confirmed, zero
-  inversions) is necessary but not sufficient -- a technically-monotonic
-  but badly-suboptimal-at-large-n curve would produce a real but
-  misleading threshold number.
-- **Status:** NOT STARTED. Session ran out of budget before reaching
-  this node -- see L below, which must land first.
+- **Binding law:** do not run before Q lands. Monotonicity alone is
+  necessary but not sufficient -- a technically-monotonic but
+  badly-suboptimal curve would produce a real but misleading threshold
+  number, which is exactly what motivated adding node Q.
+- **Status:** NOT STARTED. Blocked on the full M/N/K, O/L, Q chain.
+
+### [ ] O_PREP_L_CALIBRATION_SKELETON
+
+- **Model:** `deepseek`
+- **Depends:** G_BUILD_GPU_VALIDATION_HARNESS (runs in parallel with M/N
+  -- independent, no shared files)
+- **Allowed files:** read-only over `tools/gen_calib_skeleton.py`,
+  `tools/calibrate_gpu_best_b.cu`, `devices/b200/gpu_fft_config.h` (to
+  see the exact existing `gbselect_*` anchor format/pattern), the two
+  CSVs from this session's earlier E/F work (not committed, but present
+  on disk at `scripts/b200_session_20260726/gap_best_b_b200.csv` and
+  `gap2_best_b_b200.csv`, if still present locally -- if not found,
+  infer the format directly from the committed `gbselect_*` arrays),
+  `SPRINT_GPU_MONOTONICITY_DAG.md` (for G's exact flagged n-values).
+  Write-allowed: new files under `scripts/` (e.g.
+  `scripts/l_skeleton_large_n.csv` and `scripts/l_bselect_extension_prep.md`).
+- **Exit criteria:** produce (1) a skeleton CSV of `(n,k)` points for
+  n=2,097,152/4,194,304/8,388,608/16,777,216, following the SAME `k = n/8,
+  n/4, n/2, n` pattern already used for every other anchor in the
+  committed `gbselect_*` table (confirm this pattern by reading the
+  existing entries, don't assume) -- fewer k-values for n=16,777,216 is
+  fine given it's primarily an OOM-boundary probe per earlier session
+  notes, use judgment and say why; (2) the exact `--narrow-around`
+  candidate list to pass, informed by this session's real Phase-1 data
+  already showing best B trending to 128 at these sizes (narrow around
+  e.g. 96,112,128,144 -- tight and fast, matching E/F's approach, not a
+  full candidate sweep); (3) the exact copy-paste-ready shell commands
+  (build recipe + calibrate command) using this session's
+  ALREADY-CORRECTED patterns -- `find ... -maxdepth 5 -path
+  '*dist-packages/nvidia/mathdx/include'` (not a `python*/dist-packages`
+  glob, which breaks C block comments if it ever appears inside one; not
+  `-maxdepth 4`, which is one level too shallow for this box's actual
+  path depth, both mistakes made and fixed earlier this session).
+- **Kill deadline:** 30 min.
+- **Binding law:** ground the skeleton exactly in the existing
+  `gbselect_*` table format by reading it, not guessing.
 
 ### [ ] L_EXTEND_BSELECT_ABOVE_1572864
 
 - **Model:** `supervisor`
-- **Depends:** G_BUILD_GPU_VALIDATION_HARNESS
+- **Depends:** G_BUILD_GPU_VALIDATION_HARNESS (O_PREP_L_CALIBRATION_SKELETON
+  recommended but not blocking -- L can proceed by composing the
+  skeleton/commands live if O isn't done in time, just less efficiently)
 - **Allowed files:** `devices/b200/gpu_fft_config.h` (`gbselect_*` section
   only, same constraint as F)
 - **Exit criteria:** add real calibration anchors above n=1,572,864
@@ -546,14 +676,31 @@ graph TD
   points G's second run already flagged) via
   `tools/calibrate_gpu_best_b.cu --narrow-around` (same proven technique
   as E/F), splice into `gbselect_*`, rebuild, `bench_gpu_fused verify`
-  36/0, then re-run a FOCUSED slice of `gpu_dispatch_validate` at just
-  those n values (not the full ~40-point grid, to save budget) to
-  confirm the gap is closed -- targets: n=2,097,152 (currently missed
-  101.1% at k=n), n=4,194,304 (currently missed 97.9% at k=n),
-  n=8,388,608 (currently missed 92.7% at k=n).
+  36/0. Do NOT re-run the full `gpu_dispatch_validate` sweep here -- that
+  confirmation happens once, jointly with K, in node Q below.
 - **Kill deadline:** should be cheap, ~10-15 min B200 time based on E/F's
   precedent (a handful of narrow-around points took seconds to tens of
-  seconds each).
+  seconds each), faster still if O's prep lands first.
 - **Binding law:** same as F -- do NOT hand-edit B values, only real
   added calibration measurements are acceptable. Do not rent without
   explicit user go-ahead in a normal session.
+
+### [ ] Q_REVALIDATE_FOCUSED_SWEEP
+
+- **Model:** `supervisor`
+- **Depends:** K_IMPLEMENT_RAGGED_TREE_GPU_FIX, L_EXTEND_BSELECT_ABOVE_1572864
+- **Allowed files:** none (execution only)
+- **Exit criteria:** a single focused (not full-grid) re-run of
+  `gpu_dispatch_validate` covering exactly what K and L touched plus the
+  points already flagged as previously-bad: the ragged/non-ragged pairs
+  from K's own verification, n=2,097,152/4,194,304/8,388,608/16,777,216
+  (L's new anchors) at k=n and k=100, and a spot-check of the
+  n=1,048,576-1,572,864 and n=524,288-1,048,576 gaps (E/F) to confirm no
+  regression. Confirms both fixes hold together with no new issues
+  before trusting any number that comes out of H.
+- **Kill deadline:** ~10 min B200 time (small custom grid via
+  `gpu_dispatch_validate`'s `argv` n/k override, not the full default
+  grid).
+- **Binding law:** this is the single re-validation gate -- do not skip
+  it and go straight to H even if K and L each individually verified
+  cleanly, since the point is confirming they hold TOGETHER.
