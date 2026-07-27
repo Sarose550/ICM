@@ -509,6 +509,25 @@ before H.
 - **Binding law:** pure critique/analysis, produce no code. Ground every
   concern in the actual current source, not speculation untethered from
   the real files.
+- **Status:** DONE (2026-07-27). Exceptionally thorough -- 20+ specific,
+  file/line-grounded checklist items covering the identity-spectrum
+  trick, cuFFT/VkFFT batch-size consistency, under-allocation risk, and
+  interaction with the below_sat fix (all still fully valid, keep for
+  grading M's diff). **Item 0 raised a severe alarm requiring immediate
+  verification**: a claim that the CURRENT, ALREADY-SHIPPED code (before
+  any of this session's ragged-tree work) produces WRONG equity values,
+  not just wasted compute, whenever a tree level's real child count is
+  odd -- reasoning: `k_pairwise_mul`/`k_paired_corr_freq`
+  (`gpu_kernels.cu`) unconditionally multiply/correlate against a
+  "phantom" right child with no boundary check; if that phantom data is
+  zero, the result is a wrongly-zeroed parent instead of the correct
+  identity pass-through. Supervisor independently confirmed the cited
+  kernel code matches this description exactly (no boundary check
+  present). **This was then verified against real hardware and REFUTED
+  as an active bug** (see K's status below) -- a false alarm from static
+  analysis alone, but a valuable one: it forced empirical verification
+  before resuming other work, and its other 20+ items remain fully valid
+  and were used to grade M's diff.
 
 ### [ ] K_IMPLEMENT_RAGGED_TREE_GPU_FIX
 
@@ -532,6 +551,33 @@ before H.
   rule this whole sprint). If M's diff or N's checklist raises any doubt
   about correctness, stop and resolve it before spending GPU time, not
   after.
+- **Status:** IN PROGRESS (2026-07-27). M ran to its 50-turn limit before
+  finishing -- real progress (plan-time batch-size changes in
+  `gpu_plan.cu`, execution-time `nn`->`n_real` changes across all 12+
+  call sites in `gpu_exec.cu`), but the highest-risk piece (the
+  identity-spectrum boundary fix in `gpu_kernels.cu`) was never started.
+  N's item 0 raised a false-alarm-but-worth-checking claim that the
+  ORIGINAL (unmodified) code already produces wrong equity values for
+  ragged trees -- **directly tested on real B200 hardware (seventh
+  rental this session, contract `45964239`) against the clean git HEAD
+  baseline** (M's partial changes stashed for the duration, popped back
+  after): 4 deliberately-ragged small cases (n=480 B=32 nblocks=15 odd;
+  n=480 B=30 nblocks=16 power-of-two control; n=1000 B=16 nblocks=63;
+  n=1000 B=8 nblocks=125), GPU output vs CPU reference, confirmed via
+  `ICM_GPU_DEBUG_PLAN=1` to genuinely exercise the FUSED/cuFFTDx tier
+  (`tier=2`) N was concerned about, not just schoolbook. **All 4 PASS**
+  at ~1e-15 relative error -- **no pre-existing correctness bug**, N's
+  structural concern doesn't manifest in practice (likely: an empty/
+  padding block's polynomial is the empty product = identity, not zero,
+  by construction at the leaf level, though this wasn't independently
+  confirmed by reading further -- the empirical result is sufficient).
+  Cost: ~$0.24. M's original task (shrink launches to `n_real` + add the
+  identity-spectrum fix for the ONE lone-child boundary case that
+  results once padding computation is genuinely removed) remains fully
+  valid and necessary -- this finding clears the original code, not M's
+  planned fix. **Next: resume M via `deck send` to complete the
+  `gpu_kernels.cu` portion**, then proceed with the review-then-verify
+  plan above.
 
 ### [x] K1_IMPLEMENT_BELOW_SAT_FIX
 
