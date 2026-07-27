@@ -168,6 +168,59 @@ graph TD
   to run this sprint.
 - **Kill deadline:** 30 min.
 - **Binding law:** HANDOFF.md Next Steps item 3.
+- **Status:** RUN, twice (2026-07-26). First run (contract `45958264`)
+  completed cleanly in ~9 minutes but produced a MEANINGLESS Phase 1
+  (B-optimality) result: a real bug found in the tool itself --
+  `icm_gpu_plan_summary()` returns 1 on success/0 on failure (confirmed
+  against `gpu_api.cu`), but `measure_at_b()`'s check was inverted
+  (`== 0` instead of `!= 0`), so `dispatched_B` was never actually
+  updated from its initial value of 0. That silently broke
+  `nearby_alternatives()` (candidates collapsed to nothing), making
+  every single B-optimality check hit the vacuous "no valid alternatives
+  to test" path -- confirmed directly: all 41 points showed "dispatched
+  B=0" and 41/41 "no valid alternatives", not real comparisons. **Fixed**
+  (one-line condition fix, `scripts/gpu_dispatch_validate.cu`, committed).
+  Phase 2 (n-monotonicity) was NOT affected by this bug (doesn't depend
+  on B-alternatives) and its result from this first run is real and
+  authoritative: **zero inversions** across all three curves (k=n, k=100,
+  k=128) spanning n=4,096 to n=16,777,216 -- confirms the threshold
+  search's monotonicity precondition genuinely holds. Full output at
+  `scripts/b200_session_20260726/gpu_dispatch_validate_run1_vacuous.txt`.
+
+  Second run (contract `45959048`), with the fix applied, found a
+  **real, significant, new issue**: with genuine B-alternatives now being
+  measured, several points at n >= 1,048,576 showed the dispatched B
+  measurably slower than a real alternative -- up to **101.1% missed
+  improvement at n=2,097,152 (k=n)** and **97.9% at n=4,194,304 (k=n)**
+  and **92.7% at n=8,388,608 (k=n)** (i.e. the dispatched config takes
+  roughly DOUBLE the achievable time). Root cause, inferred from the
+  pattern (not yet independently confirmed via direct table inspection
+  this session, flag for the next session to verify): the `gbselect_*`
+  B-selection calibration table's anchors top out at n=1,572,864 (per
+  earlier this session's work closing the 1,048,576-1,572,864 gap) --
+  there is NO calibration at all above that anchor, so nearest-neighbor
+  lookup for n=2,097,152/4,194,304/8,388,608/16,777,216 just reuses
+  whatever B was calibrated at n=1,572,864 (B=112), which the real
+  alternative measurements show is NOT optimal at these larger, never-
+  calibrated sizes (real best B trends toward 128 or lower). This is the
+  SAME class of bug as the two B-selection gaps already found and fixed
+  this session (E/F), just beyond the table's upper end instead of
+  between anchors -- **the fix is the same proven technique** (add real
+  calibration anchors via `calibrate_gpu_best_b --narrow-around` at
+  n=2,097,152/4,194,304/8,388,608/16,777,216, splice into `gbselect_*`,
+  rebuild, re-verify), not yet done. This does NOT affect monotonicity
+  (Phase 2's k=n sweep from this same run, before being cut off at
+  n=1,572,864, still showed zero inversions) -- it is a real, separate
+  "leaving performance on the table" issue, not a correctness or
+  ordering issue. Run was killed mid-Phase-2-rerun when the session's
+  B200 budget ran out ($0.31 remaining) -- partial output salvaged
+  before destroying the instance, at
+  `scripts/b200_session_20260726/gpu_dispatch_validate_partial_run2.txt`.
+  **Next session: extend the B-selection table above n=1,572,864 before
+  trusting any large-n absolute-performance numbers** (RESULTS.md, the
+  paper, or the threshold search) -- the numbers would be real
+  (correctly measuring whatever gets dispatched) but would reflect this
+  known-suboptimal dispatch rather than achievable performance.
 
 ### [x] I_DIAGNOSE_THIRD_MECHANISM
 
@@ -462,12 +515,45 @@ graph TD
 
 - **Model:** `supervisor`
 - **Depends:** E_HW_VERIFY_BSELECT_GAP, F_RECALIBRATE_BSELECT_GAP,
-  K1_IMPLEMENT_BELOW_SAT_FIX, G_BUILD_GPU_VALIDATION_HARNESS
+  K1_IMPLEMENT_BELOW_SAT_FIX, G_BUILD_GPU_VALIDATION_HARNESS,
+  **new: L_EXTEND_BSELECT_ABOVE_1572864** (see below -- G's second run
+  found a real, significant B-selection gap above n=1,572,864 that would
+  make any large-n threshold number reflect known-suboptimal dispatch,
+  not achievable performance)
 - **Allowed files:** none (execution only)
 - **Exit criteria:** `scripts/threshold_search_gpu.cu` run for real,
   producing the actual 1-second-threshold numbers for both `k=n` and
   `k=100` curves, only once monotonicity is hardware-confirmed (not just
-  simulated) along both curves.
+  simulated) along both curves AND the B-selection table covers the
+  n-range the search will actually probe.
 - **Kill deadline:** ~10 min B200 time.
-- **Binding law:** do not run before E/F/G land -- this was the whole
-  point of this investigation arc.
+- **Binding law:** do not run before E/F/G/L land -- this was the whole
+  point of this investigation arc. Monotonicity alone (confirmed, zero
+  inversions) is necessary but not sufficient -- a technically-monotonic
+  but badly-suboptimal-at-large-n curve would produce a real but
+  misleading threshold number.
+- **Status:** NOT STARTED. Session ran out of budget before reaching
+  this node -- see L below, which must land first.
+
+### [ ] L_EXTEND_BSELECT_ABOVE_1572864
+
+- **Model:** `supervisor`
+- **Depends:** G_BUILD_GPU_VALIDATION_HARNESS
+- **Allowed files:** `devices/b200/gpu_fft_config.h` (`gbselect_*` section
+  only, same constraint as F)
+- **Exit criteria:** add real calibration anchors above n=1,572,864
+  (suggest n=2,097,152, 4,194,304, 8,388,608, 16,777,216, matching the
+  points G's second run already flagged) via
+  `tools/calibrate_gpu_best_b.cu --narrow-around` (same proven technique
+  as E/F), splice into `gbselect_*`, rebuild, `bench_gpu_fused verify`
+  36/0, then re-run a FOCUSED slice of `gpu_dispatch_validate` at just
+  those n values (not the full ~40-point grid, to save budget) to
+  confirm the gap is closed -- targets: n=2,097,152 (currently missed
+  101.1% at k=n), n=4,194,304 (currently missed 97.9% at k=n),
+  n=8,388,608 (currently missed 92.7% at k=n).
+- **Kill deadline:** should be cheap, ~10-15 min B200 time based on E/F's
+  precedent (a handful of narrow-around points took seconds to tens of
+  seconds each).
+- **Binding law:** same as F -- do NOT hand-edit B values, only real
+  added calibration measurements are acceptable. Do not rent without
+  explicit user go-ahead in a normal session.

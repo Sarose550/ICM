@@ -195,9 +195,19 @@ static double measure_at_b(int n, int k, int B, int *out_actual_B) {
         return NAN;
     }
 
-    /* Extract actual B used */
+    /* Extract actual B used. icm_gpu_plan_summary() returns 1 on success,
+     * 0 on failure (see gpu_api.cu) -- the original "== 0" check here was
+     * inverted, so *out_actual_B was only ever written on the failure
+     * path (never taken in practice), leaving dispatched_B stuck at its
+     * caller-side initial value of 0 for every measurement. That silently
+     * broke nearby_alternatives() (find_b_index(0) never matches, so
+     * half/double both collapsed to 0 and got filtered as duplicates),
+     * making every B-optimality check vacuously "optimal" with zero real
+     * alternatives ever measured -- confirmed by an actual B200 run
+     * (2026-07-26) showing "dispatched B=0" on all 41 grid points and
+     * "no valid alternatives to test" on every single one. */
     IcmGpuPlanSummary summary{};
-    if (icm_gpu_plan_summary(plan, &summary) == 0 && out_actual_B)
+    if (icm_gpu_plan_summary(plan, &summary) != 0 && out_actual_B)
         *out_actual_B = summary.B;
 
     /* Warmup */
