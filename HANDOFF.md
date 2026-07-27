@@ -37,22 +37,30 @@ the lapse. Every `Model: deepseek` node, however small, goes on a board.)
 
 **Current live board: `SPRINT_GPU_MONOTONICITY_DAG.md`.** Read it first --
 it has the up-to-date node graph. As of this writing: nodes A, B, E, F,
-G, I, J1, K1 are all done and hardware-verified. **L (extend the
-B-selection calibration table above n=1,572,864) is the next action**,
-then H (finally run the threshold search, gated on L now, not just
-E/F/K1/G as originally planned -- G's second run found a new, real
-B-selection gap above the table's largest anchor that must close first
-or the threshold number would reflect known-suboptimal dispatch, not
-achievable performance). J/K (the smaller ragged-tree padding-waste fix,
-~1-2% effect, real but not blocking) remain deferred, not abandoned.
-All remaining work needs a real B200 rental -- **do not rent without an
-explicit user go-ahead**, this was emphasized repeatedly this session,
-including after a real mistake (see "Autonomous session" below).
+G, I, J0, J1, K1, N, O are done and hardware-verified (or, for N/O,
+DeepSeek deliverables reviewed and accepted). **M/K (the ragged-tree
+padding-waste fix) is BLOCKED on an unresolved correctness regression --
+read node K_IMPLEMENT_RAGGED_TREE_GPU_FIX's status in full before
+touching this again**, a lot of hardware-verified diagnostic work
+already ruled out several plausible causes and re-testing them wastes
+budget. The broken diff sits uncommitted in the working tree
+(`src/gpu/gpu_plan.cu`, `gpu_exec.cu`, `gpu_kernels.cu`,
+`gpu_internal.h`, `gpu_api.cu`) -- do not commit or apply it, but do not
+discard it either, it's real diagnostic-marked progress. **L (extend the
+B-selection calibration table above n=1,572,864) is independent and
+ready to run whenever budget allows** -- its prep work (node O) is done,
+committed, copy-paste ready at `scripts/l_bselect_extension_prep.md`.
+H (threshold search) is gated on BOTH L and a resolved K, per the
+board's Q re-validation gate. All remaining hardware work needs a real
+B200 rental -- **do not rent without an explicit user go-ahead**, this
+was emphasized repeatedly this session, including after a real mistake
+early on and a long, ultimately-inconclusive debugging arc later (see
+"Autonomous session" below for both).
 See "Autonomous session (2026-07-26/27)" near the end of the
 "Non-monotonicity" section below for the exact findings and next steps,
-and the vast.ai balance snapshot there (~$0.31 as of this writing --
+and the vast.ai balance snapshot there (~$1.54 as of this writing --
 re-verify against the real balance, don't trust a stale number; the
-user has said they'll add more credit).
+user has added credit multiple times this session on request).
 
 **Historical, already fully resolved (do not re-derive, kept only for
 provenance)**: an earlier cleanup/audit pass (`SPRINT_CLEANUP_AUDIT_DAG.md`,
@@ -541,24 +549,51 @@ board node `L_EXTEND_BSELECT_ABOVE_1572864`. This run was killed mid-way
 when the budget ran out again ($0.31 remaining); partial output salvaged
 before destroying the instance.
 
+**The ragged-tree fix (M/K) was fully implemented, reviewed, and
+hardware-tested -- and found to cause a severe, unresolved correctness
+regression, unrelated to ragged trees at all.** Full account on the
+board (`SPRINT_GPU_MONOTONICITY_DAG.md`, node
+`K_IMPLEMENT_RAGGED_TREE_GPU_FIX`) -- read it in full before touching
+this again, since a lot of hardware-verified elimination work already
+happened and re-testing the same hypotheses wastes budget. Short
+version: `bench_gpu_fused verify` goes from 36/0 to 12/24 (fail) the
+moment M's diff is applied, failing on cases where the new
+ragged-tree boundary logic is PROVABLY dead code (confirmed both
+mathematically and via a hardware instrumentation counter showing 0
+boundary-guard hits) -- so the bug is in how the diff restructured the
+normal, non-ragged code path, not in the new logic itself. Four
+plausible causes were tested directly on hardware and ruled out
+(the boundary guard itself, Q-batch index flattening, cuFFTDx
+same-block races via `compute-sanitizer --tool racecheck`, cross-stream
+Q-pipelining races, and the cuFFTDx FPB2 block variant) -- the actual
+root cause is still unknown. The diff sits uncommitted in the working
+tree (do not commit, do not discard) with a safe diagnostic counter
+(`g_debug_boundary_hits` in `gpu_kernels.cu`) left in place for whoever
+continues it. Recommended next steps are on the board: SASS
+disassembly comparison, or a per-file binary-search revert, or
+falling back to design doc Option A (smaller blast radius) instead of
+Option B.
+
 **Next action, on the next B200 rental** (do not rent without explicit
-user go-ahead; the user has said they will add credit): (1)
-`L_EXTEND_BSELECT_ABOVE_1572864` -- add real calibration anchors above
-n=1,572,864 (suggest 2,097,152/4,194,304/8,388,608/16,777,216, the exact
-points already flagged), same technique as E/F, should be cheap (~10-15
-min based on precedent), (2) once L lands, run
+user go-ahead; the user has added credit multiple times this session
+on request, ~$1.54 remaining as of this writing): (1)
+`L_EXTEND_BSELECT_ABOVE_1572864` -- independent of the ragged-tree mess
+above, ready to run, prep work already done at
+`scripts/l_bselect_extension_prep.md` (exact skeleton, exact
+narrow-around candidates, exact copy-paste commands) -- add real
+calibration anchors above n=1,572,864, same technique as E/F, should be
+cheap (~10-15 min based on precedent); (2) once L lands, run
 `scripts/threshold_search_gpu.cu` for the actual, now-trustworthy
-threshold numbers (board node H), (3) optionally, if budget allows, land
-the deferred ragged-tree padding-waste fix (board nodes J/K, ~1-2% win,
-design doc ready at `scripts/gpu_ragged_tree_fix_plan.md`). Before
-renting again: read `scripts/verify_below_sat_fix.cu`'s header comment
-for the now-standing pattern (small-scale correctness, large-scale
-GPU-only timing, explicit timeouts on every paid command, reason about
-complexity before running anything new) -- this is not optional, it is
-what this session's real mistake bought. Live tracking for this whole
-arc is now on `SPRINT_GPU_MONOTONICITY_DAG.md` (nodes A/B/E/F/G/I/J1/K1
-all done and hardware-verified; J/K deferred; L is the next action; H
-blocked on L).
+threshold numbers (board node H) -- note H's dependency graph now also
+requires K (the ragged-tree fix) to be resolved first, per node Q's
+re-validation gate, so H is blocked until the regression above is
+fixed, not just until L lands; (3) separately, if there's appetite,
+continue the ragged-tree regression hunt per the board's recommended
+next steps. Before renting again: read `scripts/verify_below_sat_fix.cu`'s
+header comment for the now-standing pattern (small-scale correctness,
+large-scale GPU-only timing, explicit timeouts on every paid command,
+reason about complexity before running anything new) -- this is not
+optional, it is what this session's real mistakes bought, twice.
 
 ## Architecture: what's actually load-bearing (read before touching cost-model code)
 
