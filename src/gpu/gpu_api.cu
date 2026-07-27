@@ -718,11 +718,11 @@ int icm_gpu_measure_fused_pair_ns(int fft_n, int batch, int quick,
     if (!CUDA_OK(cudaEventCreate(&e0))) goto fail;
     if (!CUDA_OK(cudaEventCreate(&e1))) goto fail;
     for (int i = 0; i < warmup; ++i)
-        if (!launch_cufftdx_build_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps)) goto fail;
+        if (!launch_cufftdx_build_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps, 1, 0, 0)) goto fail;
     cudaStreamSynchronize(stream);
     for (int i = 0; i < reps; ++i) {
         cudaEventRecord(e0, stream);
-        if (!launch_cufftdx_build_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps)) goto fail;
+        if (!launch_cufftdx_build_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps, 1, 0, 0)) goto fail;
         cudaEventRecord(e1, stream); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
         bsamp.push_back((double)ms * 1e6);
@@ -730,13 +730,13 @@ int icm_gpu_measure_fused_pair_ns(int fft_n, int batch, int quick,
     for (int i = 0; i < warmup; ++i)
         if (!launch_cufftdx_corr_dispatch(fft_n, d_g_parent, fft_n, len_g, d_child_poly, cps, len_P,
                                           d_g_child, fft_n, len_out, nparents, 1.0/(double)fft_n, stream,
-                                          fft_n, cps, fft_n)) goto fail;
+                                          fft_n, cps, fft_n, 1, 0, 0)) goto fail;
     cudaStreamSynchronize(stream);
     for (int i = 0; i < reps; ++i) {
         cudaEventRecord(e0, stream);
         if (!launch_cufftdx_corr_dispatch(fft_n, d_g_parent, fft_n, len_g, d_child_poly, cps, len_P,
                                           d_g_child, fft_n, len_out, nparents, 1.0/(double)fft_n, stream,
-                                          fft_n, cps, fft_n)) goto fail;
+                                          fft_n, cps, fft_n, 1, 0, 0)) goto fail;
         cudaEventRecord(e1, stream); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
         csamp.push_back((double)ms * 1e6);
@@ -796,11 +796,11 @@ int icm_gpu_measure_fused_r2c_pair_ns(int fft_n, int batch, int quick,
     if (!CUDA_OK(cudaEventCreate(&e0))) goto r2c_fail;
     if (!CUDA_OK(cudaEventCreate(&e1))) goto r2c_fail;
     for (int i = 0; i < warmup; ++i)
-        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps)) goto r2c_fail;
+        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps, 1, 0, 0)) goto r2c_fail;
     cudaStreamSynchronize(stream);
     for (int i = 0; i < reps; ++i) {
         cudaEventRecord(e0, stream);
-        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps)) goto r2c_fail;
+        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps, 1, 0, 0)) goto r2c_fail;
         cudaEventRecord(e1, stream); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
         bsamp.push_back((double)ms * 1e6);
@@ -808,13 +808,13 @@ int icm_gpu_measure_fused_r2c_pair_ns(int fft_n, int batch, int quick,
     for (int i = 0; i < warmup; ++i)
         if (!launch_cufftdx_corr_r2c_dispatch(fft_n, d_g_parent, fft_n, len_g, d_child_poly, cps, len_P,
                                                d_g_child, fft_n, len_out, nparents, 1.0/(double)fft_n, stream,
-                                               fft_n, cps, fft_n)) goto r2c_fail;
+                                               fft_n, cps, fft_n, 1, 0, 0)) goto r2c_fail;
     cudaStreamSynchronize(stream);
     for (int i = 0; i < reps; ++i) {
         cudaEventRecord(e0, stream);
         if (!launch_cufftdx_corr_r2c_dispatch(fft_n, d_g_parent, fft_n, len_g, d_child_poly, cps, len_P,
                                                d_g_child, fft_n, len_out, nparents, 1.0/(double)fft_n, stream,
-                                               fft_n, cps, fft_n)) goto r2c_fail;
+                                               fft_n, cps, fft_n, 1, 0, 0)) goto r2c_fail;
         cudaEventRecord(e1, stream); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
         csamp.push_back((double)ms * 1e6);
