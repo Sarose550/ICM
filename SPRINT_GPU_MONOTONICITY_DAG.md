@@ -551,33 +551,157 @@ before H.
   rule this whole sprint). If M's diff or N's checklist raises any doubt
   about correctness, stop and resolve it before spending GPU time, not
   after.
-- **Status:** IN PROGRESS (2026-07-27). M ran to its 50-turn limit before
-  finishing -- real progress (plan-time batch-size changes in
-  `gpu_plan.cu`, execution-time `nn`->`n_real` changes across all 12+
-  call sites in `gpu_exec.cu`), but the highest-risk piece (the
-  identity-spectrum boundary fix in `gpu_kernels.cu`) was never started.
-  N's item 0 raised a false-alarm-but-worth-checking claim that the
-  ORIGINAL (unmodified) code already produces wrong equity values for
-  ragged trees -- **directly tested on real B200 hardware (seventh
-  rental this session, contract `45964239`) against the clean git HEAD
-  baseline** (M's partial changes stashed for the duration, popped back
-  after): 4 deliberately-ragged small cases (n=480 B=32 nblocks=15 odd;
-  n=480 B=30 nblocks=16 power-of-two control; n=1000 B=16 nblocks=63;
-  n=1000 B=8 nblocks=125), GPU output vs CPU reference, confirmed via
-  `ICM_GPU_DEBUG_PLAN=1` to genuinely exercise the FUSED/cuFFTDx tier
-  (`tier=2`) N was concerned about, not just schoolbook. **All 4 PASS**
-  at ~1e-15 relative error -- **no pre-existing correctness bug**, N's
-  structural concern doesn't manifest in practice (likely: an empty/
-  padding block's polynomial is the empty product = identity, not zero,
-  by construction at the leaf level, though this wasn't independently
-  confirmed by reading further -- the empirical result is sufficient).
-  Cost: ~$0.24. M's original task (shrink launches to `n_real` + add the
-  identity-spectrum fix for the ONE lone-child boundary case that
-  results once padding computation is genuinely removed) remains fully
-  valid and necessary -- this finding clears the original code, not M's
-  planned fix. **Next: resume M via `deck send` to complete the
-  `gpu_kernels.cu` portion**, then proceed with the review-then-verify
-  plan above.
+- **Status:** BLOCKED on an unresolved correctness regression
+  (2026-07-27). Full account below; do not resume without reading it in
+  full -- several plausible-looking fixes have already been tried and
+  ruled out with real hardware evidence, re-trying them wastes budget.
+
+  **Pre-existing-bug alarm, checked and cleared.** N's item 0 raised a
+  false-alarm-but-worth-checking claim that the ORIGINAL (unmodified)
+  code already produces wrong equity values for ragged trees --
+  directly tested on real B200 hardware (seventh rental, contract
+  `45964239`) against the clean git HEAD baseline (M's partial changes
+  stashed for the duration, popped back after): 4 deliberately-ragged
+  small cases (n=480 B=32 nblocks=15 odd; n=480 B=30 nblocks=16
+  power-of-two control; n=1000 B=16 nblocks=63; n=1000 B=8 nblocks=125),
+  GPU output vs CPU reference, confirmed via `ICM_GPU_DEBUG_PLAN=1` to
+  genuinely exercise the FUSED/cuFFTDx tier N was concerned about, not
+  just schoolbook. All 4 PASS at ~1e-15 relative error -- no pre-existing
+  correctness bug. Cost: ~$0.24.
+
+  **M resumed twice more (deck send) to completion.** Final diff:
+  `gpu_plan.cu` (38 lines), `gpu_exec.cu` (124 lines), `gpu_kernels.cu`
+  (319 lines, the identity-spectrum boundary fix across all kernel
+  paths: cuFFTDx C2C/R2C build+corr, schoolbook build+corr, plain
+  cuFFT/VkFFT via `k_pairwise_mul`/`k_paired_corr_freq`), `gpu_internal.h`
+  (40 lines, signature updates). 178 total turns, ~26.6M DeepSeek tokens.
+  M's own self-check against N's 20+-item checklist: all items PASS.
+
+  **Supervisor's own independent line-by-line review** (not just
+  trusting M's self-check) found the logic sound -- identity spectrum
+  `{1.0,0.0}` at every bin, `>=` not `>` for the boundary test, `n_real
+  [ell-1]` (child level) never confused with `n_real[ell]` (parent
+  level), and specifically investigated and RESOLVED one real concern
+  raised during review: whether phantom-slot writes in the schoolbook
+  boundary case could be out-of-bounds -- confirmed safe because
+  `d_poly_levels`/`d_g_levels` deliberately stayed sized to the padded
+  `nn[ell]` width while only the FFT-compute buffers (spec/scratch/cache)
+  shrank to `n_real[ell]`.
+
+  **First hardware build (eighth rental, contract `45965783`) failed to
+  compile**: `src/gpu/gpu_api.cu` (outside M's allowed-files scope) has
+  8 direct calls to the renamed dispatch functions
+  (`icm_gpu_measure_fused_pair_ns`/`_r2c_pair_ns`, pure calibration
+  microbenchmarks with no real tree, every child real) that were never
+  updated. **Fixed directly by the supervisor** (not delegated -- simple,
+  well-understood, low-risk): passed `2 * nparents` as `n_real_child`
+  at all 8 sites, since these synthetic benchmarks have no phantom
+  children at all. Confirmed no other real call sites exist elsewhere in
+  the actually-compiled codebase (`src/icm_gpu.cu` also has stale calls
+  but is the documented, never-compiled legacy file; `tools/calibrate_gpu.cu`
+  has its own unrelated `static` local kernel, not a caller of the
+  shared one).
+
+  **Build succeeded, but `bench_gpu_fused verify` catastrophically
+  failed**: 12/36 pass (n=64,256 only), 24/36 FAIL starting at n=1024
+  with relative errors from 1.0 up to 662 (vs <1e-8 required). **This is
+  NOT a ragged-tree-specific bug** -- n=1024/4096/16384/65536 with B=64
+  are ALL exact power-of-two block counts at every tree level
+  (confirmed via debug output: nparents=8,4,2,1, matching `n_real[ell]`
+  exactly), meaning the boundary-guard condition
+  `2*p+1 >= n_real_child` is mathematically unsatisfiable for any p at
+  any level in this failing test matrix -- the new logic is provably
+  dead code here, yet the "normal" path it was inserted into somehow
+  broke. Reverting the 5 touched files to clean git HEAD on the same
+  instance restored 36/0 immediately, conclusively confirming the
+  regression is caused by this diff and nothing environmental.
+
+  **Two DeepSeek-assisted diagnosis rounds, both inconclusive on root
+  cause but each ruling out real hypotheses:**
+  - Round 1 (worker `3f6d3d`): concluded (with only ~60% confidence) a
+    "compiler artifact" from restructuring the cuFFTDx kernels around
+    the new early-return branch -- an unfalsifiable-without-SASS-
+    inspection hypothesis, correctly flagged as low-confidence by the
+    worker itself.
+  - Round 2 (worker `421cc0`), given the hardware finding that forcing
+    `ICM_GPU_Q_BATCH=1` does NOT fix it (ruling out Q-batch index
+    flattening as sole cause) and that the corruption is a moderate,
+    consistent ~10-24% OVERcounting (not zeros/garbage -- ruling out
+    "reads uninitialized memory" and "a branch discards real data"):
+    exhaustively re-verified every buffer-size change, `plev_off`
+    usage (found: not used on the GPU path at all), FFT-cache
+    read/write consistency, and `__restrict__` aliasing -- found nothing,
+    but independently found a REAL, separate, previously-unknown bug:
+    in the `_qb` (Q-batched) functions, `n_real_child` is passed as
+    `plan->n_real[ell-1]` (per-Q-point) while the kernel's flattened `p`
+    ranges over `qb * n_real[ell]` (all Q-points) -- a genuine bug for
+    `qb > 1` that needs fixing regardless, but does NOT explain the
+    q_batch=1 failure that's actually blocking verify.
+
+  **Supervisor's own hardware experiments, definitively ruling out three
+  more hypotheses** (ninth rental, contract `45969931`):
+  1. **Instrumented the boundary guard directly** with an
+     `atomicAdd`-based hit counter (`g_debug_boundary_hits`, still in
+     the working tree, harmless if left in). Result: **0 hits** for the
+     exact failing n=1024 case -- empirically, not just mathematically,
+     confirms the new logic never executes. This is conclusive: the bug
+     is 100% in the "normal" path.
+  2. Ran `compute-sanitizer --tool memcheck`: **the corruption
+     disappeared** (`sum_gpu` became exactly correct, matching
+     `sum_cpu`, 0 errors reported) -- initially looked like a race
+     condition masked by instrumentation timing. But `--tool racecheck`
+     found 0 hazards AND did NOT fix the corruption (same wrong sum as
+     uninstrumented), and disabling Q-pipelining (`enable_q_pipeline=0`)
+     produced the IDENTICAL wrong sum (623596.5975, byte-for-byte) as
+     with it enabled -- ruling out both a same-block shared-memory race
+     and a cross-stream (`stream_aux`/`stream_compute`) pipelining race.
+     The memcheck-only fix remains unexplained but is not itself
+     actionable (memcheck's overhead is not something production code
+     can rely on).
+  3. **Forced the cuFFTDx FPB2 (2-parents-per-block) path off entirely**
+     (temporarily, `if (false && ...)` at both `launch_cufftdx_build_r2c_t`
+     and `launch_cufftdx_corr_r2c_t` in `gpu_kernels.cu`, reverted after
+     the test -- confirmed reverted, `git diff` on this file now matches
+     the post-M state with only the boundary-guard and debug-counter
+     additions). Result: **identical wrong sum** (623596.5975) using
+     FPB1 exclusively -- rules out the FPB2 cooperative-block variant as
+     the cause; whatever's wrong is present in both.
+
+  **Net result**: four real hypotheses ruled out with hardware evidence
+  (boundary-guard logic itself, Q-batch flattening as sole cause,
+  same-block shared-memory races, cross-stream pipelining races, FPB2
+  variant). The actual root cause remains unknown. Session budget ran
+  down to ~$1.54 across this investigation; stopped deliberately rather
+  than continue guessing on paid hardware. **The debug boundary-hit
+  counter (`g_debug_boundary_hits` and its two accessor functions in
+  `gpu_kernels.cu`) is left in place, uncommitted, for the next session
+  -- it is safe, low-overhead, and was proven useful.**
+
+  **This entire diff (M's ragged-tree patch, ~520 lines across 4 files,
+  plus the 8-line `gpu_api.cu` fix, plus the debug counter) remains
+  UNCOMMITTED in the working tree.** It must NOT be applied/merged/
+  committed until this regression is found and fixed -- doing so would
+  break `bench_gpu_fused verify` for the vast majority of real (n,k)
+  points. The `below_sat` fix (K1, committed, hardware-verified) is
+  completely unaffected and remains solid.
+
+  **Recommended next steps, in order**: (1) `cuobjdump -sass` comparison
+  of the compiled cuFFTDx kernel instantiations between the buggy diff
+  and clean HEAD, focusing on the FFT_N/FPB values actually used at
+  n=1024 (per debug output: fft_n=256,512,1024,2048 across the 4
+  levels) -- this is the one concrete lead from round-1 diagnosis that
+  hasn't been tested; (2) binary-search the diff itself by reverting
+  files one at a time (e.g. keep `gpu_kernels.cu`'s boundary logic but
+  revert `gpu_plan.cu`'s buffer-size changes to `nn`-based, rebuild,
+  retest -- if that fixes it, the bug is specifically in a buffer-size/
+  allocation interaction despite the numeric-equality argument above;
+  repeat for each file independently) -- this is more expensive
+  (multiple rebuild+test cycles) but doesn't require SASS expertise;
+  (3) if desperate, revert the WHOLE diff and re-implement Option B from
+  scratch with a fundamentally different, more conservative shape (e.g.
+  Option A from the original design doc -- in-kernel guards only,
+  keeping cuFFT/VkFFT batch sizes unchanged -- smaller blast radius,
+  easier to isolate if it also breaks something).
 
 ### [x] K1_IMPLEMENT_BELOW_SAT_FIX
 
