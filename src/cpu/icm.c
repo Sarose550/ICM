@@ -2356,22 +2356,6 @@ static int select_best_B(int n, int k);
  * to be defined above (from fft_config.h). */
 #include "cost_model.h"
 
-/* Map candidate block size B to lookup-table index 0-5.
- * Candidate set is {8, 16, 24, 32, 48, 64} — fixed, 6 entries.
- * Linear scan is fine; only called from select_engine_ex/select_best_B
- * (O(1) per call, 6 candidates max). */
-static int B_to_table_index(int B) {
-    switch (B) {
-        case 8:  return 0;
-        case 16: return 1;
-        case 24: return 2;
-        case 32: return 3;
-        case 48: return 4;
-        case 64: return 5;
-        default: return 0; /* fallback: shouldn't happen with valid candidates */
-    }
-}
-
 /* Engine dispatch: linear vs hybrid, for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.
  * n_targets: number of target players for subset queries (0 or n = all players).

@@ -16,6 +16,21 @@
 #include <pthread.h>
 #endif
 #include "icm.c"
+
+/* Map candidate block size B to the leaf/block lookup-table index 0-5.
+ * Candidate set is {8, 16, 24, 32, 48, 64}. This lives here rather than in
+ * icm.c because the library itself no longer uses it -- only this probe does. */
+static int B_to_table_index(int B) {
+    switch (B) {
+        case 8:  return 0;
+        case 16: return 1;
+        case 24: return 2;
+        case 32: return 3;
+        case 48: return 4;
+        case 64: return 5;
+        default: return 0;
+    }
+}
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
