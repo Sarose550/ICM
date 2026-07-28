@@ -20,7 +20,7 @@
 #include "icm_gpu.h"
 
 /* Access internal plan structure for level details */
-#include "gpu/gpu_internal.h"
+#include "gpu_internal.h"
 using namespace icm_gpu_detail;
 
 static void make_stacks(int n, std::vector<double> &S) {

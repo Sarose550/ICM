@@ -2349,6 +2349,16 @@ static const unsigned long long gpu_calib_c2r_ws_bytes[GPU_N_CALIBRATED_SIZES] =
 
 #define GPU_HAS_CUFFT_WS_CALIB 1
 
+/* ns per output point for the LINEAR cost extrapolation used past the
+ * calibrated FFT ceiling (max(gpu_calib_sizes)). Deliberately an
+ * under-estimate of real FFT cost: it biases the tier choice toward FFT,
+ * whose error is a constant factor, and away from schoolbook, whose error
+ * is O(conv_len^2). gpu_plan.cu static_asserts that this stays small enough
+ * relative to GPU_SCHOOL_FMA_NS for that bias to hold. */
+#ifndef GPU_UNCALIB_NS_PER_POINT
+#define GPU_UNCALIB_NS_PER_POINT 0.9
+#endif
+
 #define GPU_SCHOOL_FMA_NS 0.00016743
 #define GPU_FFT_OVERHEAD_NS 18.20535726
 #define GPU_HBM_BANDWIDTH 3272.18663103

@@ -75,6 +75,14 @@ void build_smooth_table(int max_n, std::vector<int> &smooth) {
     smooth.erase(std::unique(smooth.begin(), smooth.end()), smooth.end());
 }
 
+/* Fallback for device configs predating GPU_UNCALIB_NS_PER_POINT. A device's
+ * gpu_fft_config.h should define it; this keeps an older config building, and
+ * the static_assert above pick_tier_for_fft_len() still validates whatever
+ * value ends up in effect. */
+#ifndef GPU_UNCALIB_NS_PER_POINT
+#define GPU_UNCALIB_NS_PER_POINT 0.9
+#endif
+
 /* ── Calibration lookups ───────────────────────────────────────── */
 
 int first_calib_ge(int n) {
@@ -125,10 +133,36 @@ static size_t lookup_cufft_ws_bytes(int, bool) {
 double estimate_cufft_pipeline_ns(int fft_n) {
     int idx = find_calib_index(fft_n);
     if (idx >= 0) return gpu_calib_cufft_ns[idx] + GPU_FFT_OVERHEAD_NS;
-    /* Calibration table should cover all sizes used in practice.
-     * If we reach here, the table needs extending via calibrate_gpu. */
-    fprintf(stderr, "WARNING: uncalibrated FFT size %d — extend calibration table\n", fft_n);
-    return (double)fft_n * 0.9 + GPU_FFT_OVERHEAD_NS;
+
+    /* Past the calibrated ceiling (max(gpu_calib_sizes), 67108864 on B200).
+     * Fall back to a LINEAR extrapolation -- deliberately linear, not the
+     * O(n log n) an FFT actually costs. Two reasons, both about staying on
+     * the safe side of a decision rather than being accurate:
+     *
+     *   1. It UNDER-estimates real FFT cost at these sizes, which biases
+     *      pick_tier_for_fft_len() toward FFT over schoolbook. Choosing FFT
+     *      when schoolbook was marginally better costs a constant factor;
+     *      choosing schoolbook is O(conv_len^2) and unbounded. See the
+     *      invariant asserted above pick_tier_for_fft_len().
+     *   2. There is no honest per-size number to report here, so a
+     *      cheap monotone estimate is preferable to a precise-looking one
+     *      that is equally unvalidated.
+     *
+     * Warn once, not per call: fastest_fft_ge_gpu() calls this in a loop and
+     * plan creation runs per level, so a per-call warning floods stderr
+     * during a long sweep. */
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        fprintf(stderr,
+                "WARNING: FFT size %d exceeds the calibrated range (max %d). "
+                "Cost estimates past the ceiling are extrapolated, so tier and "
+                "size choices there are correct but not optimal. Extend the "
+                "table with calibrate_gpu to remove this. "
+                "(further occurrences suppressed)\n",
+                fft_n, gpu_calib_sizes[GPU_N_CALIBRATED_SIZES - 1]);
+    }
+    return (double)fft_n * GPU_UNCALIB_NS_PER_POINT + GPU_FFT_OVERHEAD_NS;
 }
 
 /* Batch-aware cuFFT per-pipeline cost.
@@ -277,9 +311,9 @@ void best_fft_config_gpu(int conv_len, int len_P, double correction_scale,
         }
     }
     /* Also consider the smallest smooth FFT >= conv_len (wrap_m = 0).
-     * This matters when conv_len exceeds the largest calibrated size —
-     * the O(n log n) extrapolation cost without any wrap correction can
-     * beat a calibrated size that requires large wrap. */
+     * This matters when conv_len exceeds the largest calibrated size — the
+     * extrapolated cost without any wrap correction can beat a calibrated
+     * size that requires large wrap. */
     if (best_m > 0) {
         int nowrap = fastest_fft_ge_gpu(conv_len);
         double nowrap_cost = estimate_cufft_pipeline_ns(nowrap);
@@ -388,6 +422,29 @@ int fused_max_conv_len_runtime() {
         int x = atoi(env);
         if (x >= 0) v = x;
     }
+    /* The static_assert above pick_tier_for_fft_len() pins the compile-time
+     * value; this env override can defeat it at runtime. Lowering the fused
+     * ceiling below the schoolbook/cuFFT crossover would let schoolbook win
+     * past the calibrated FFT ceiling, where its cost is O(conv_len^2) and
+     * unbounded. Clamp rather than obey -- this knob exists for tier
+     * experiments, not for changing the safety floor. */
+    /* Exact positive root of c^2*F - c*U - OV = 0, the conv_len above which
+     * cuFFT beats schoolbook under the past-ceiling extrapolation. */
+    const double F = (double)GPU_SCHOOL_FMA_NS;
+    const double U = (double)GPU_UNCALIB_NS_PER_POINT;
+    const double OV = (double)GPU_FFT_OVERHEAD_NS;
+    int floor_v = (int)((U + std::sqrt(U * U + 4.0 * F * OV)) / (2.0 * F)) + 1;
+    if (v < floor_v) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            fprintf(stderr,
+                    "WARNING: ICM_GPU_FUSED_MAX_CONV_LEN=%d is below the "
+                    "calibration-boundary safety floor %d; clamping. See "
+                    "pick_tier_for_fft_len() in gpu_plan.cu.\n", v, floor_v);
+        }
+        v = floor_v;
+    }
     return v;
 }
 
@@ -431,6 +488,51 @@ double leaf_extract_ns_per_fma_model() {
 }
 
 /* ── Tier selection ────────────────────────────────────────────── */
+
+/* ── Calibration-boundary safety invariant ──────────────────────────
+ *
+ * The CPU side had a real bug here (fixed in commit f2ad24e): past the
+ * calibrated ceiling both sides of its schoolbook-vs-FFT comparison were
+ * meaningless, and schoolbook -- O(len^2) -- always won, silently. The GPU
+ * does NOT share that bug, but only because of an arithmetic coincidence
+ * that nothing was enforcing. This assert enforces it.
+ *
+ * Below, schoolbook is only ever *considered* when
+ * conv_len > fused_max_conv_len_runtime(). Past the calibrated ceiling the
+ * cuFFT side is the linear extrapolation from estimate_cufft_pipeline_ns(),
+ * so the comparison reduces to:
+ *
+ *     conv_len^2 * GPU_SCHOOL_FMA_NS
+ *         vs   conv_len * GPU_UNCALIB_NS_PER_POINT + GPU_FFT_OVERHEAD_NS
+ *
+ * The left side is quadratic and the right side linear, so if cuFFT wins at
+ * the SMALLEST conv_len where schoolbook is even considered, it wins at every
+ * larger one. That smallest value is GPU_FUSED_MAX_CONV_LEN, so asserting the
+ * inequality there is exact and needs no square root.
+ *
+ * On B200 the crossover sits at conv_len ~= 5396, comfortably below
+ * GPU_FUSED_MAX_CONV_LEN (8192) -- so schoolbook can never win past the
+ * ceiling, and FFT is always chosen there. That is the same end state the
+ * CPU fix had to be engineered to produce.
+ *
+ * (Do not simplify this to GPU_UNCALIB_NS_PER_POINT / GPU_SCHOOL_FMA_NS.
+ * Dropping GPU_FFT_OVERHEAD_NS moves the crossover from 5396 to 5375 and
+ * admits a band of conv_len where schoolbook really does win -- caught by
+ * the standalone check when this was first written.)
+ *
+ * The danger is that this holds by numeric accident. Recalibrating
+ * GPU_SCHOOL_FMA_NS downward, or lowering GPU_FUSED_MAX_CONV_LEN, would
+ * silently reintroduce the CPU's failure mode on the GPU. Fail the build
+ * instead. */
+static_assert((double)GPU_FUSED_MAX_CONV_LEN * (double)GPU_FUSED_MAX_CONV_LEN
+                  * (double)GPU_SCHOOL_FMA_NS
+                  > (double)GPU_FUSED_MAX_CONV_LEN * (double)GPU_UNCALIB_NS_PER_POINT
+                      + (double)GPU_FFT_OVERHEAD_NS,
+              "Calibration-boundary safety broken: schoolbook could now win past "
+              "the calibrated FFT ceiling, where its O(conv_len^2) cost is "
+              "unbounded. Either GPU_SCHOOL_FMA_NS was recalibrated too low or "
+              "GPU_FUSED_MAX_CONV_LEN was lowered. See the comment above "
+              "pick_tier_for_fft_len().");
 
 int pick_tier_for_fft_len(int fft_n, int conv_len) {
     double cufft = estimate_cufft_pipeline_ns(fft_n);

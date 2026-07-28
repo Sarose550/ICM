@@ -22,7 +22,7 @@
 
 #include "icm.h"
 #include "icm_gpu.h"
-#include "gpu/gpu_internal.h"
+#include "gpu_internal.h"
 
 using namespace icm_gpu_detail;
 

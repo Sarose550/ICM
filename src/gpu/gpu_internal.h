@@ -9,8 +9,12 @@
 #define ICM_GPU_INTERNAL_H
 
 /* ── External headers ─────────────────────────────────────────── */
-#include "../icm_gpu.h"
-#include "../icm.h"
+/* Unqualified: icm_gpu.h sits beside this header in src/gpu/, and icm.h is
+ * reached via -Isrc/cpu. Matches how every other consumer includes them.
+ * Do not reintroduce "../" paths -- they broke when src/ was split into
+ * src/cpu/ and src/gpu/, and nothing catches it without a CUDA toolchain. */
+#include "icm_gpu.h"
+#include "icm.h"
 
 #include <cuda_runtime.h>
 #include <cufft.h>
