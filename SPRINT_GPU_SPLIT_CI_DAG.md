@@ -55,7 +55,13 @@ and made an earlier local run non-reproducible).
 
 ---
 
-### [ ] C1 — CI: per-device matrix, 1-2 minute target
+### [x] C1 — CI: per-device matrix, 1-2 minute target
+
+**DONE**, commit `bc8a552`. CI green at **1m07s** (was 8m10s). Matrix over
+m3_pro/zen4/generic; `ICM_VERIFY_MAX_N` caps CI at n=16384 while local runs
+are unchanged; no tolerance touched. Worker hit its turn cap before
+reporting, so this was supervisor-reviewed and timing-measured directly
+(70s -> 26s locally, all 7 check types still covered).
 
 **Model:** deepseek. **Depends:** none. Runs concurrently with all of Lane B/C.
 **Allowed files:** `.github/workflows/ci.yml`, `bench/bench.c` (only if a new
@@ -88,7 +94,9 @@ tolerances untouched; CI green.
 
 ---
 
-### [ ] G0 — Delete VkFFT dead code
+### [x] G0 — Delete VkFFT dead code
+
+**DONE**, commit `6f8a3f4`, 504 lines. Verified PURE CODE MOTION.
 
 **Model:** supervisor. **Depends:** none. **Blocks:** G1, G2, G3.
 **Allowed files:** `src/gpu/**`, `Makefile`.
@@ -117,7 +125,9 @@ ifdefs tangled through `allocate_level_buffers`) and shrinks G1 to a clean
 
 ---
 
-### [ ] G1 — Extract `gpu_fft_plans.cu` (~150 ln post-G0)
+### [x] G1 — Extract `gpu_fft_plans.cu` (~150 ln post-G0)
+
+**DONE**, commit `900058c`. Verified PURE CODE MOTION.
 
 **Model:** supervisor. **Depends:** G0.
 **Moves:** `cufft_batch_would_overflow_32bit`, `create_cufft_plan`,
@@ -130,7 +140,9 @@ from `gpu_exec.cu`, so this boundary is proven in production.
 
 ---
 
-### [ ] G2 — Extract `gpu_cost_model.cu` (~800 ln, 23 fns)
+### [x] G2 — Extract `gpu_cost_model.cu` (~800 ln, 23 fns)
+
+**DONE**, commit `1115628`. Verified PURE CODE MOTION.
 
 **Model:** supervisor. **Depends:** G1.
 **Moves:** `estimate_cufft_pipeline_ns` through `best_k_pad_gpu`, plus
@@ -145,7 +157,9 @@ Carries the calibration-boundary `static_assert` from `fc7b1b6` with it.
 
 ---
 
-### [ ] G3 — Extract `gpu_memory.cu` (~500 ln)
+### [x] G3 — Extract `gpu_memory.cu` (~500 ln)
+
+**DONE**, commit `7d93eac`. Verified PURE CODE MOTION.
 
 **Model:** supervisor. **Depends:** G1, G2.
 **Moves:** `maybe_init_mem_pool`, `allocate_level_buffers`,
@@ -188,6 +202,51 @@ the audit flagged as unverifiable without hardware — it is the entire reason
 
 **Exit criteria:** builds under `sm_100`; `bench_gpu_fused verify` 36/0;
 plan + sample_plans byte-identical to baseline.
+
+---
+
+### [ ] S1 — De-slop pass over new code (STANDING RULE, not a one-off)
+
+**Model:** deepseek. **Depends:** H1 (do not edit `src/gpu/**` while the
+hardware gate is verifying those exact files).
+**Allowed files:** `src/gpu/**`, `src/cpu/icm.c`,
+`src/cpu/fft_cost_model.h`, `devices/generic/fft_config.h`,
+`tools/verify_code_motion.py`, `tools/test_uncalibrated_fallback.c`.
+
+**The standing rule:** any time new code lands, a de-slop pass follows. This
+is not cleanup-once, it is part of the definition of done.
+
+**What de-slop means here (from the user, verbatim intent):**
+- **No em-dashes or en-dashes.** Replace with commas, colons, or a rewrite.
+  Current count in this session's code: 63 (`icm.c` 39,
+  `gpu_cost_model.cu` 11, `gpu_fft_plans.cu` 3, `gpu_plan.cu` 2, others 1-4).
+- **Cut superfluous comments** that restate what the code already says.
+  A comment earns its place only by explaining something the code cannot:
+  why a constant has that value, why an ordering matters, what breaks if you
+  change it.
+- Remove vestigial/AI-tell phrasing generally.
+
+**What must NOT be cut — these are load-bearing and were expensive to learn:**
+- The calibration-boundary rationale in `icm.c`'s `tree_ctx_create_ex2`
+  (why schoolbook below conv_len 128, with the measured accuracy numbers).
+- The `static_assert` comment above `pick_tier_for_fft_len` in
+  `gpu_cost_model.cu` (why the invariant exists, why the overhead term must
+  stay in it).
+- `GPU_UNCALIB_NS_PER_POINT`'s rationale (why a deliberate under-estimate).
+- `gpu_memory.cu`'s header warning about its failure mode.
+- The "do not reintroduce `../` includes" note in `gpu_internal.h`.
+Trim their *prose*, keep their *content*.
+
+**Explicitly NOT in scope:** the paper. It was de-slopped this session
+(0 em-dashes, no AI-tell phrasing) and does not need a second pass. In
+particular **the old higher-bandwidth Zen4 numbers stay** — the user wants
+them as a deliberate talking point, they are not stale data to purge.
+
+**Exit criteria:** zero em/en-dashes in the allowed files; every load-bearing
+comment above still present in substance; `./bench_grid verify` ALL TESTS
+PASSED; the code-motion contract still reports PURE against the pre-de-slop
+commit for `src/gpu/**` (comment-only edits must not move or alter code).
+**Kill deadline:** 30 turns.
 
 ---
 
