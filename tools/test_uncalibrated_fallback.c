@@ -1,12 +1,12 @@
 /*
- * test_uncalibrated_fallback.c — Verify graceful behaviour when built
+ * test_uncalibrated_fallback.c: Verify graceful behaviour when built
  * against devices/generic/ (no calibration data at all).
  *
  * The failure this guards against: past the calibrated ceiling, the
  * schoolbook-vs-FFT cost comparison consults tables that do not cover the
  * requested size. Before the calibration-boundary work, both sides of that
  * comparison were meaningless there and schoolbook always won, so a query
- * past the ceiling silently degraded to O(len^2) multiplication — correct
+ * past the ceiling silently degraded to O(len^2) multiplication: correct
  * results, arbitrarily slowly, with no warning. These tests pin the
  * replacement behaviour.
  *

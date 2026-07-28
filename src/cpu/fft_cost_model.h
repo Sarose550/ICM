@@ -1,5 +1,5 @@
 /*
- * fft_cost_model.h — Shared FFT cost-model decision logic.
+ * fft_cost_model.h: Shared FFT cost-model decision logic.
  *
  * best_fft_config() and best_fft_config_joint() are defined ONCE here
  * and shared across all CPU device targets.  They consume the per-device

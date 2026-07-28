@@ -1,5 +1,5 @@
 /*
- * devices/generic/fft_config.h — Uncalibrated fallback device stub.
+ * devices/generic/fft_config.h: Uncalibrated fallback device stub.
  *
  * This provides the absolute minimum for the code to compile when no
  * device-specific calibration exists. Every constant marked "compile-only"

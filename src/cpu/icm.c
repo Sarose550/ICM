@@ -1,5 +1,5 @@
 /*
- * icm.c — ICM equity computation library implementation
+ * icm.c: ICM equity computation library implementation
  * See icm.h for the public API.
  */
 
@@ -46,7 +46,7 @@ static inline void vexp_clamp(double *y, const double *x, int n) {
 #endif
 
 /* ══════════════════════════════════════════════════════════════
-   MKL DUAL DISPATCH — runtime dlopen on Linux
+   MKL DUAL DISPATCH: runtime dlopen on Linux
    MKL's FFTW wrapper has identical output format to FFTW (no repacking).
    Plans created by MKL must be executed by MKL's fftw_execute.
    ══════════════════════════════════════════════════════════════ */
@@ -148,7 +148,7 @@ static void v1_exact(int n, const double *S, double *V1) {
 /* V2 closed form: V2(i) = Σ_{j<k, j≠i, k≠i} S_i / (S_i + S_j + S_k)
  * Uses quadratic payout p[m] = C(n-1-m, 2).
  * Each term = Pr(i eliminated first in triple {i,j,k}) under MH model.
- * O(n^3) — only feasible for small n. */
+ * O(n^3): only feasible for small n. */
 static void v2_exact(int n, const double *S, double *V2) {
     for (int i = 0; i < n; i++) {
         double v = 0;
@@ -172,7 +172,7 @@ typedef void (*EquityEngine)(int n, const double *a,
                              double *inner, void *ctx);
 
 /* ══════════════════════════════════════════════════════════════
-   FFTW WISDOM — persist MEASURE results across runs
+   FFTW WISDOM: persist MEASURE results across runs
    ══════════════════════════════════════════════════════════════ */
 
 #define WISDOM_FILE "fftw_wisdom.dat"
@@ -188,11 +188,11 @@ static void wisdom_save(void) {
 static int next_pow2(int n);
 
 /* ══════════════════════════════════════════════════════════════
-   FFTW PLAN CACHE — create once, reuse across all quad points
+   FFTW PLAN CACHE: create once, reuse across all quad points
    ══════════════════════════════════════════════════════════════ */
 
 /* ══════════════════════════════════════════════════════════════
-   FFT PLAN CACHE — FFTW + vDSP interleaved dual-dispatch.
+   FFT PLAN CACHE: FFTW + vDSP interleaved dual-dispatch.
 
    On Apple Silicon, vDSP's interleaved-complex DFT API is 5-23% faster
    than FFTW at supported sizes (f × 2^g where f ∈ {1,3,5,15}, g ≥ 4).
@@ -210,7 +210,7 @@ typedef struct {
     fftw_plan fwd_plan;   /* r2c forward (FFTW) */
     fftw_plan inv_plan;   /* c2r inverse (FFTW) */
     double *rbuf;         /* real buffer [fft_n] */
-    fftw_complex *cbuf;   /* complex buffer [fft_n/2+1] — used by BOTH backends */
+    fftw_complex *cbuf;   /* complex buffer [fft_n/2+1]: used by BOTH backends */
 #ifdef __APPLE__
     int use_vdsp;                          /* 1 if vDSP handles this size */
     vDSP_DFT_Interleaved_SetupD vdsp_fwd; /* interleaved r2c forward */
@@ -243,7 +243,7 @@ typedef struct {
 
 /* vDSP scaling strategy (eliminates 2 of 3 vDSP_vsmulD per round-trip):
  *
- *   Forward:  output = DFT × 2 (no scaling — leave the ×2 factor in cbuf)
+ *   Forward:  output = DFT × 2 (no scaling: leave the ×2 factor in cbuf)
  *   Forward2: same (cbuf2 also has ×2)
  *   Pointwise: A × B = (2×DFT_a) × (2×DFT_b) = 4 × DFT_a × DFT_b
  *   Inverse:  vDSP inverse of (4×product) = IDFT(4×product)/2 = 2 × N × conv
@@ -298,7 +298,7 @@ static inline void fft_exec_inv(FFTPlan *p) {
         int n = p->fft_n, hn = n / 2;
         /* Repack bin 0: cbuf[hn] → cbuf[0].imag for vDSP convention */
         p->cbuf[0][1] = p->cbuf[hn][0];
-        /* Execute inverse (cbuf carries ×2 or ×4 from forward+pointwise —
+        /* Execute inverse (cbuf carries ×2 or ×4 from forward+pointwise;
          * vDSP inverse divides by 2, giving the correct IDFT × {1 or 2}) */
         vDSP_DFT_Interleaved_ExecuteD(p->vdsp_inv,
             (const DSPDoubleComplex *)p->cbuf, (DSPDoubleComplex *)p->rbuf);
@@ -351,7 +351,7 @@ static FFTCache *fft_cache_create_sizes(const int *sizes, int n_sizes) {
         }
 #ifdef __APPLE__
         /* vDSP interleaved DFT: 5-51% faster than FFTW at supported sizes.
-         * Overhead per call: ~2ns (bin-0 unpack, 2 scalar copies) — negligible.
+         * Overhead per call: ~2ns (bin-0 unpack, 2 scalar copies): negligible.
          * The ×2 scaling from vDSP forward is absorbed into pointwise multiply
          * and corrected once in the inverse (single vDSP_vsmulD on real output).
          * Supported: f × 2^g where f ∈ {1,3,5,15}, g ≥ 4 (min DFT length 16). */
@@ -447,7 +447,7 @@ static FFTPlan *fft_cache_get(FFTCache *fc, int needed_n) {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   SCHOOLBOOK KERNELS — with inlined small-size fast paths
+   SCHOOLBOOK KERNELS: with inlined small-size fast paths
    ══════════════════════════════════════════════════════════════ */
 
 /* Inline multiply for size 2 (tree leaves: degree 1 × degree 1) */
@@ -504,7 +504,7 @@ static inline __attribute__((always_inline)) void correlate_school(const double 
 }
 
 /* ══════════════════════════════════════════════════════════════
-   FFT KERNELS — polynomial multiply and correlate via FFTW
+   FFT KERNELS: polynomial multiply and correlate via FFTW
    ══════════════════════════════════════════════════════════════ */
 
 /* FFT vs schoolbook is decided per-level in tree_ctx_create_ex2()
@@ -517,7 +517,7 @@ static inline int next_pow2(int n) {
     int p = 1; while (p < n) p <<= 1; return p;
 }
 
-/* FFTW is 30–50% faster at composite (7-smooth) sizes than arbitrary sizes.
+/* FFTW is 30-50% faster at composite (7-smooth) sizes than arbitrary sizes.
  * Rounding k to a smooth size rather than next_pow2 preserves this benefit. */
 
 /* Sorted array of all 7-smooth numbers.  The table is built lazily on first
@@ -642,7 +642,7 @@ static int next_fftw_size(int n) {
  * resulting conv_len, and pick the k' with the cheapest total. */
 static int best_k_pad(int k) {
     if (k <= 2) return k;
-    /* Power-of-2: already optimal — no padding needed */
+    /* Power-of-2: already optimal: no padding needed */
     if ((k & (k - 1)) == 0) return k;
 
     if (n_smooth == 0) build_fftw_size_table();
@@ -703,12 +703,10 @@ static inline __attribute__((always_inline)) void polymul_fft_cyclic(const doubl
     if (d + 1 < fft_n) memset(plan->rbuf + d + 1, 0, (fft_n - d - 1) * sizeof(double));
     fft_exec_fwd(plan);
 
-    /* FFT(b) */
     memcpy(fc->rbuf2, b, (d + 1) * sizeof(double));
     if (d + 1 < fft_n) memset(fc->rbuf2 + d + 1, 0, (fft_n - d - 1) * sizeof(double));
     fft_exec_fwd2(plan, fc);
 
-    /* Pointwise multiply */
     for (int i = 0; i < cn; i++) {
         double re = plan->cbuf[i][0] * fc->cbuf2[i][0]
                   - plan->cbuf[i][1] * fc->cbuf2[i][1];
@@ -761,21 +759,18 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     int cn = fft_n / 2 + 1;
     double inv = 1.0 / fft_n;
 
-    /* FFT(a) */
     int copy_a = (na < fft_n) ? na : fft_n;
     memcpy(plan->rbuf, a, copy_a * sizeof(double));
     if (copy_a < fft_n) memset(plan->rbuf + copy_a, 0, (fft_n - copy_a) * sizeof(double));
     fft_exec_fwd(plan);
     if (fft_a_out) memcpy(fft_a_out, plan->cbuf, cn * sizeof(fftw_complex));
 
-    /* FFT(b) */
     int copy_b = (nb < fft_n) ? nb : fft_n;
     memcpy(fc->rbuf2, b, copy_b * sizeof(double));
     if (copy_b < fft_n) memset(fc->rbuf2 + copy_b, 0, (fft_n - copy_b) * sizeof(double));
     fft_exec_fwd2(plan, fc);
     if (fft_b_out) memcpy(fft_b_out, fc->cbuf2, cn * sizeof(fftw_complex));
 
-    /* Pointwise multiply */
     for (int i = 0; i < cn; i++) {
         double re = plan->cbuf[i][0] * fc->cbuf2[i][0]
                   - plan->cbuf[i][1] * fc->cbuf2[i][1];
@@ -786,7 +781,6 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     }
     fft_exec_inv(plan);
 
-    /* Extract cyclic result */
     int fft_out = (fft_n < k) ? fft_n : k;
     for (int i = 0; i < fft_out; i++) c[i] = plan->rbuf[i] * inv;
     if (fft_out < k) memset(c + fft_out, 0, (k - fft_out) * sizeof(double));
@@ -810,7 +804,7 @@ static inline void correlate_wrap_input_correction(double *out, int len_out,
                                              const double *g, int len_g,
                                              int fft_n);
 
-/* Correlate via FFT (from scratch — FFTs both g and P):
+/* Correlate via FFT (from scratch: FFTs both g and P):
  * out[m] = sum_j P[j] * g[m+j] */
 static inline __attribute__((always_inline)) void correlate_fft(const double *g, int len_g,
                           const double *P, int len_P,
@@ -882,12 +876,12 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     int cn = fft_n / 2 + 1;
     double inv = 1.0 / fft_n;
 
-    /* FFT(g) — done ONCE */
+    /* FFT(g): done ONCE */
     memcpy(plan->rbuf, g, len_g * sizeof(double));
     if (len_g < fft_n) memset(plan->rbuf + len_g, 0, (fft_n - len_g) * sizeof(double));
     fft_exec_fwd(plan);
 
-    /* Save FFT(g) into cbuf3 — cbuf2 is used for FFT(P) below */
+    /* Save FFT(g) into cbuf3: cbuf2 is used for FFT(P) below */
     fftw_complex *g_hat = fc->cbuf3;
     memcpy(g_hat, plan->cbuf, cn * sizeof(fftw_complex));
 
@@ -951,7 +945,7 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     }
 }
 
-/* Correlate via FFT with CACHED FFT(P) — saves one forward FFT.
+/* Correlate via FFT with CACHED FFT(P): saves one forward FFT.
  * Cross-correlation: out[m] = sum_j P[j] * g[m+j]
  *                  = IFFT(FFT(g) * conj(FFT(P)))[m]
  * For real P, conj(FFT(P)) is trivially obtained from cached FFT(P).
@@ -970,12 +964,11 @@ static void correlate_fft_cached(const double *g, int len_g,
     int cn = fft_n / 2 + 1;
     double inv = 1.0 / fft_n;
 
-    /* FFT(g) */
     memcpy(plan->rbuf, g, len_g * sizeof(double));
     if (len_g < fft_n) memset(plan->rbuf + len_g, 0, (fft_n - len_g) * sizeof(double));
     fft_exec_fwd(plan);
 
-    /* Pointwise: FFT(g) * conj(FFT(P)) — cross-correlation in freq domain */
+    /* FFT(g) * conj(FFT(P)): cross-correlation in freq domain */
     for (int i = 0; i < cn; i++) {
         double pr = cached_fft_P[i][0], pi = cached_fft_P[i][1];
         double gr = plan->cbuf[i][0], gi = plan->cbuf[i][1];
@@ -1032,7 +1025,7 @@ static inline __attribute__((always_inline)) void correlate_fft_cached_pair_wrap
     double inv = 1.0 / fft_n;
     int conv_len = len_g + len_P - 1;
 
-    /* FFT(g) — done ONCE, saved to cbuf3 */
+    /* FFT(g): done ONCE, saved to cbuf3 */
     int copy_g = (len_g < fft_n) ? len_g : fft_n;
     memcpy(plan->rbuf, g, copy_g * sizeof(double));
     if (copy_g < fft_n) memset(plan->rbuf + copy_g, 0, (fft_n - copy_g) * sizeof(double));
@@ -1113,13 +1106,11 @@ static void correlate_fft_cached_wrap(const double *g, int len_g,
     double inv = 1.0 / fft_n;
     int conv_len = len_g + len_P - 1;
 
-    /* FFT(g) */
     int copy_g = (len_g < fft_n) ? len_g : fft_n;
     memcpy(plan->rbuf, g, copy_g * sizeof(double));
     if (copy_g < fft_n) memset(plan->rbuf + copy_g, 0, (fft_n - copy_g) * sizeof(double));
     fft_exec_fwd(plan);
 
-    /* Pointwise: FFT(g) * conj(FFT(P)) */
     for (int i = 0; i < cn; i++) {
         double pr = cached_fft_P[i][0], pi = cached_fft_P[i][1];
         double gr = plan->cbuf[i][0], gi = plan->cbuf[i][1];
@@ -1128,11 +1119,10 @@ static void correlate_fft_cached_wrap(const double *g, int len_g,
     }
     fft_exec_inv(plan);
 
-    /* Extract cyclic cross-correlation result */
     for (int m = 0; m < len_out; m++)
         out[m] = (m < fft_n) ? plan->rbuf[m] * inv : 0;
 
-    /* Correction 1: OUTPUT aliasing — high positions (fft_n..fft_n+wrap_m) wrap to 0..wrap_m.
+    /* Correction 1: OUTPUT aliasing: high positions (fft_n..fft_n+wrap_m) wrap to 0..wrap_m.
      * Compute true cross-correlation at those high positions, subtract from wrapped low
      * positions, and place at the correct high positions. */
     for (int i = 0; i <= wrap_m; i++) {
@@ -1284,7 +1274,7 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
              * == -1) or this level's convolution length exceeds the calibrated
              * ceiling, skip the schoolbook-vs-FFT cost comparison entirely.
              * Both calib_times_ns[] and schoolbook_mul_ns[] may be nonsensical
-             * or absent past the ceiling — there is nothing to compare.
+             * or absent past the ceiling: there is nothing to compare.
              *
              * Always choose FFT.  Pick the smallest 7-smooth FFT size at or
              * above what's needed, using the same structural search the
@@ -1346,7 +1336,7 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
 
                 if (!is_root) {
                     /* Uncalibrated: no cost model to compare joint vs independent.
-                     * Always pick a single shared FFT size (joint) — simpler, fewer
+                     * Always pick a single shared FFT size (joint): simpler, fewer
                      * plans, and without cost data there is no reason to split. */
                     int max_conv = (build_conv_len > corr_conv) ? build_conv_len : corr_conv;
                     int jfn = next_smooth_ge(max_conv);   /* covers both, wrap-free */
@@ -1580,7 +1570,7 @@ static TreeCtx *tree_ctx_clone(const TreeCtx *src) {
 
 /* ── Shared tree build + propagate (used by both tree and hybrid engines) ── */
 
-/* Build tree levels 1..L-2 (skip root — never read). Operates on tc->ws. */
+/* Build tree levels 1..L-2 (skip root: never read). Operates on tc->ws. */
 static void tree_build_levels(TreeCtx *tc) {
     int L = tc->L;
     int *psz = tc->psz;
@@ -1638,7 +1628,7 @@ static void tree_build_levels(TreeCtx *tc) {
  *
  * hot_mask: per-level hot/cold bitmaps, or NULL for full equity (all nodes hot).
  * When non-NULL, hot_mask[ell][j] == 1 iff node j at level ell is hot
- * (needs real computation — at least one target player in its subtree).
+ * (needs real computation: at least one target player in its subtree).
  * Cold nodes are zero-filled; their correlate calls are skipped entirely.
  * The hot_mask is built bottom-up from per-block target presence WITHOUT
  * reordering sort_perm, preserving the exact global stack-descending order
@@ -1712,7 +1702,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
         } else {
             /* Subset-pruned path: per-child hot/cold lookups via bitmask.
              * A child at position c is hot iff hot_mask[ell-1][c] != 0.
-             * This works for scattered targets — any block with ≥1 target
+             * This works for scattered targets: any block with ≥1 target
              * in its NATURAL sorted position is hot, regardless of where
              * it sits in the tree. No reordering needed. */
             const uint8_t *hm_child = hot_mask[ell-1];
@@ -1735,7 +1725,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                         memset(gL, 0, (size_t)cgsz * sizeof(double));
                     }
                 } else if (left_hot && right_hot) {
-                    /* Both children hot — use pair correlate. */
+                    /* Both children hot: use pair correlate. */
                     double *PL = child_base + (size_t)(2*j) * cps;
                     double *PR = child_base + (size_t)(2*j+1) * cps;
                     double *gR = g_child + (size_t)(2*j+1) * cgsz;
@@ -1785,7 +1775,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
                     }
                 } else {
-                    /* Both children cold — zero-fill both. */
+                    /* Both children cold: zero-fill both. */
                     double *gR = g_child + (size_t)(2*j+1) * cgsz;
                     memset(gL, 0, (size_t)cgsz * sizeof(double));
                     memset(gR, 0, (size_t)cgsz * sizeof(double));
@@ -1927,12 +1917,12 @@ typedef struct {
 #endif
 
 /* ══════════════════════════════════════════════════════════════
-   ADAPTIVE BQ — compile-time parameterized batched linear engine.
+   ADAPTIVE BQ: compile-time parameterized batched linear engine.
    Two versions (BQ=4 and BQ=8) compiled via template inclusion.
    Runtime dispatch based on L2 working set: n*k*BQ*8 ≤ L2_CACHE_SIZE.
    ══════════════════════════════════════════════════════════════ */
 
-/* BQ for non-batched paths (engine_linear_ctx, etc.) — always 2 */
+/* BQ for non-batched paths (engine_linear_ctx, etc.): always 2 */
 #ifndef BQ
 #define BQ 2
 #endif
@@ -2062,7 +2052,7 @@ static void engine_linear_ctx(int n, const double *a,
                 R[0] = aj * R[0];
                 inner[j] = eq;
             } else {
-                /* Suffix update only — skip dot product */
+                /* Suffix update only: skip dot product */
                 for (int m = k - 1; m >= 1; m--)
                     R[m] = aj * R[m] + bj * R[m-1];
                 R[0] = aj * R[0];
@@ -2072,7 +2062,7 @@ static void engine_linear_ctx(int n, const double *a,
 }
 
 /* ══════════════════════════════════════════════════════════════
-   BATCHED LINEAR ENGINE — adaptive BQ via template instantiation.
+   BATCHED LINEAR ENGINE: adaptive BQ via template instantiation.
    Two versions compiled: BQ=8 (3x throughput) and BQ=4 (2x throughput).
    Runtime dispatch: BQ=8 when g_store fits in L2, BQ=4 otherwise.
    Inner q-loops auto-vectorize to full-width FMAs with -O3.
@@ -2316,7 +2306,7 @@ static void engine_hybrid_ctx(int n, const double *a,
 }
 
 /* ══════════════════════════════════════════════════════════════
-   ENGINE KIND — for context cloning in parallel dispatch
+   ENGINE KIND: for context cloning in parallel dispatch
    ══════════════════════════════════════════════════════════════ */
 
 typedef enum { EK_TREE, EK_NAIVE, EK_LINEAR, EK_HYBRID } EngineKind;
@@ -2363,7 +2353,7 @@ static EngineKind detect_engine_kind(EquityEngine engine) {
     return EK_TREE; /* fallback */
 }
 
-/* Main integration wrapper — auto-detects engine kind for cloning */
+/* Main integration wrapper: auto-detects engine kind for cloning */
 static double run_engine_ctx(int n, const double *S, int Q,
                              const double *payout, int k,
                              double *equity, EquityEngine engine,
@@ -2425,7 +2415,7 @@ static int select_engine(int n, int k) {
 /* ── Hot/cold bitmap construction ──────────────────────────
  * Builds per-level hot/cold bitmaps from the ALREADY-SORTED active mask
  * (sorted_active is indexed by sort_perm, i.e. in stack-descending order).
- * NO reordering of sort_perm — the global stack-descending order from
+ * NO reordering of sort_perm: the global stack-descending order from
  * hybrid_ctx_create() is preserved exactly, which is essential for
  * numerical stability of the hybrid engine's per-block divide step.
  *
@@ -2492,13 +2482,13 @@ static double compute_equity_subset(int n, const double *S, int Q,
 
         /* Build sorted-order active mask from the UNMODIFIED sort_perm
          * (plain global stack-descending, identical to icm_equity order).
-         * NO reordering — this is the fix for the Zen4/AVX-512 stability bug. */
+         * NO reordering: this is the fix for the Zen4/AVX-512 stability bug. */
         uint8_t *sorted_active = (uint8_t *)calloc(n, sizeof(uint8_t));
         for (int i = 0; i < n; i++) sorted_active[i] = active[hc->sort_perm[i]];
         hc->active = sorted_active;
 
         /* Build per-level hot/cold bitmaps for tree-level pruning.
-         * Hot blocks are identified in their NATURAL sorted positions —
+         * Hot blocks are identified in their NATURAL sorted positions:
          * any block containing ≥1 target is hot regardless of where it
          * sits in the tree. No contiguous clustering needed. */
         hybrid_ctx_build_hot_mask(hc, sorted_active);
@@ -2615,7 +2605,7 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
     free(t_exp);
 #endif
 
-#else  /* No OpenMP — serial fallback */
+#else  /* No OpenMP: serial fallback */
     double *a_buf = (double *)malloc((size_t)BQ * n * sizeof(double));
     double *inner_buf = (double *)malloc((size_t)BQ * n * sizeof(double));
 
@@ -2709,7 +2699,7 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
 static int select_best_B(int n, int k) {
     /* Empirically-measured 2D nearest-neighbor lookup
      * (tools/calibrate_best_b.c). See src/fft_cost_model.h's
-     * empirical_best_B() — B is a discrete choice, not a continuous
+     * empirical_best_B(): B is a discrete choice, not a continuous
      * threshold, so nearest-neighbor, not interpolation.
      *
      * The calibration grid starts at n=512, k=150; for values outside

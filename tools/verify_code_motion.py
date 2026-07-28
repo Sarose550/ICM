@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-verify_code_motion.py — prove a refactor is PURE CODE MOTION.
+verify_code_motion.py: prove a refactor is PURE CODE MOTION.
 
 Written for the gpu_plan.cu split, where the whole risk is that a "move" quietly
 becomes an edit. There is no CUDA toolchain on the dev machine, so a compiler
@@ -138,17 +138,17 @@ def main():
             print(f"    {n}: {before_loc[n]} -> {after_loc[n]}")
     if lost:
         ok = False
-        print(f"\nLOST ({len(lost)}) — definitions that disappeared:")
+        print(f"\nLOST ({len(lost)}): definitions that disappeared:")
         for n in lost:
             print(f"    {n}  (was in {before_loc[n]})")
     if gained:
         ok = False
-        print(f"\nGAINED ({len(gained)}) — definitions that appeared:")
+        print(f"\nGAINED ({len(gained)}): definitions that appeared:")
         for n in gained:
             print(f"    {n}  (now in {after_loc[n]})")
     if edited:
         ok = False
-        print(f"\nEDITED ({len(edited)}) — body changed, NOT pure motion:")
+        print(f"\nEDITED ({len(edited)}): body changed, NOT pure motion:")
         for n in edited:
             print(f"    {n}  ({before_loc[n]} -> {after_loc[n]})")
 
