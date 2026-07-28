@@ -36,7 +36,6 @@ static void run_case(int n, int k, int reps) {
         return;
     }
     IcmGpuRunStats stats{};
-    /* warmup */
     icm_gpu_equity_with_plan(plan, 256, payout.data(), eq.data(), &stats);
     std::vector<double> samples;
     for (int r = 0; r < reps; ++r) {
@@ -64,7 +63,7 @@ int main() {
     run_case(8388608, 100, reps);
     run_case(16777216, 10, reps);
 
-    printf("\n=== confirming the new OOM-band finding at representative points ===\n");
+    printf("\n=== OOM-band boundary regression points ===\n");
     run_case(2097152, 256, reps);
     run_case(4194304, 512, reps);
     run_case(8388608, 128, reps);

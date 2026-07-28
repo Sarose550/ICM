@@ -12,13 +12,13 @@
  *   1. B-optimality: at each (n,k), is the dispatched B the fastest among
  *      itself and a few nearby alternatives, measured on real hardware?
  *   2. n-monotonicity: across n at fixed k, does dispatched time increase
- *      monotonically?  (Finds inversions like the two bugs found this
- *      session — the tier-lock-in wrap-correction bug and the B-selection
- *      sparse-grid non-monotonicity.)
+ *      monotonically?  Inversions indicate cost-model errors (e.g. tier
+ *      lock-in, B-selection sparse-grid artifacts, or FFT-size
+ *      mis-assignment).
  *
  * Default grid includes n values both ON and BETWEEN the calibrated
  * B-selection anchor points in devices/b200/gpu_fft_config.h, including
- * points in the n=1,048,576–1,572,864 gap that this session identified.
+ * points in the n=1,048,576–1,572,864 gap between adjacent anchors.
  *
  * Build (B200, cuFFTDx-enabled):
  *
@@ -196,16 +196,8 @@ static double measure_at_b(int n, int k, int B, int *out_actual_B) {
     }
 
     /* Extract actual B used. icm_gpu_plan_summary() returns 1 on success,
-     * 0 on failure (see gpu_api.cu) -- the original "== 0" check here was
-     * inverted, so *out_actual_B was only ever written on the failure
-     * path (never taken in practice), leaving dispatched_B stuck at its
-     * caller-side initial value of 0 for every measurement. That silently
-     * broke nearby_alternatives() (find_b_index(0) never matches, so
-     * half/double both collapsed to 0 and got filtered as duplicates),
-     * making every B-optimality check vacuously "optimal" with zero real
-     * alternatives ever measured -- confirmed by an actual B200 run
-     * (2026-07-26) showing "dispatched B=0" on all 41 grid points and
-     * "no valid alternatives to test" on every single one. */
+     * 0 on failure (see gpu_api.cu).  Note the non-standard convention:
+     * success is non-zero, unlike most C APIs where 0 indicates success. */
     IcmGpuPlanSummary summary{};
     if (icm_gpu_plan_summary(plan, &summary) != 0 && out_actual_B)
         *out_actual_B = summary.B;
@@ -394,12 +386,12 @@ static const GridPoint kDefaultGrid[] = {
     {262144, 131072},
     {524288, 524288},
     {524288, 262144},
-    {524288, 128},      /* small k at the n where k=128/k=256 inversion was found */
+    {524288, 128},      /* small k at B-selection tier boundary */
 
     /* The gap region: B=32 cliff at n=1,048,576, B=96-192 at n=1,572,864 */
     {1048576, 1048576},
     {1048576, 524288},
-    {1048576, 128},      /* k=128: previously-bad cell, now fixed */
+    {1048576, 128},      /* k=128: B=32 cliff boundary */
     {1200000, 100},       /* BETWEEN anchors, k=100 monotonicity probe */
     {1300000, 100},       /* BETWEEN anchors, ~geometric midpoint */
     {1400000, 100},       /* BETWEEN anchors */
@@ -408,13 +400,13 @@ static const GridPoint kDefaultGrid[] = {
 
     /* Large n */
     {2097152, 2097152},
-    {2097152, 128},      /* k=128: neighbor of the original bad cell */
+    {2097152, 128},      /* k=128: adjacent to B=32 cliff */
     {2097152, 256},
     {4194304, 4194304},
-    {4194304, 128},      /* k=128: the original confirmed-bad cell */
+    {4194304, 128},      /* k=128: B-selection boundary region */
     {4194304, 256},
     {8388608, 8388608},
-    {8388608, 128},      /* k=128: previously suspect cell */
+    {8388608, 128},      /* k=128: upper B-selection boundary */
     {16777216, 100},      /* large n, small k — OOM boundary probe */
 
     /* k=100 monotonicity sweep (same n as anchors, for cross-n check) */
@@ -553,7 +545,7 @@ int main(int argc, char **argv) {
             65536, 131072, 262144, 524288,
             1048576, 1572864, 2097152, 4194304, 8388608
         };
-        check_n_monotonicity("k=128 (bug-signature k)", n_sweep, 128, &inv_k128);
+        check_n_monotonicity("k=128 (B-selection boundary k)", n_sweep, 128, &inv_k128);
     }
 
     /* ── Summary ── */

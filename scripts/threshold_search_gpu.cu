@@ -33,9 +33,8 @@
  *
  *   # If VKFFT is enabled, append: -lnvrtc -lcuda
  *
- * Architecture note: -arch=sm_100 targets B200 (Blackwell).  The prior
- * scripts/heatmap_gpu_reset_every_cell.cu shipped with -arch=sm_90 (H100)
- * by mistake — double-checked against the Makefile's CUDA_ARCH default.
+ * Architecture note: -arch=sm_100 targets B200 (Blackwell).  Verify
+ * against the Makefile's CUDA_ARCH default for your target device.
  *
  * Runtime expectation: ~2–4 minutes on a B200 (roughly 20–30 candidate
  * points × 5 reps × ~2s worst-case wall time per rep).
@@ -165,7 +164,7 @@ static int binary_search_threshold(int k_mode) {
     int lo, hi;
     if (k_mode == 0) {
         lo = 262144;   /* 256K — should be well under 1s */
-        hi = 4194304;  /* 4M   — should be over 1s with new OOM fixes */
+        hi = 4194304;  /* 4M   — should be over 1s at this n */
     } else {
         lo = 1048576;   /* 1M */
         hi = 16777216;  /* 16M */

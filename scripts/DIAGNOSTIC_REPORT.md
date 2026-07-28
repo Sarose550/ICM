@@ -1,14 +1,12 @@
 # GPU Long-Sweep OOM: Static Analysis Diagnostic Report
 
-**Date:** 2026-07-26 (analysis only — no hardware access, no build/test)
 **Analyst:** Automated static code analysis of icm_gpu_plan_create/destroy
-**Context:** HANDOFF.md "GPU OOM: what's fixed and what's still open — NOT fixed"
 
 ---
 
-## 1. WHAT I ANALYZED
+## 1. ANALYSIS SCOPE
 
-I traced every allocation/deallocation path end-to-end across:
+Every allocation/deallocation path was traced end-to-end across:
 - `icm_gpu_plan_create()` (gpu_api.cu:100-218)
 - `icm_gpu_plan_destroy()` → `destroy_plan()` (gpu_exec.cu:75-112)
 - `allocate_plan_device_memory()` (gpu_plan.cu:1530-1785)
@@ -29,7 +27,7 @@ I traced every allocation/deallocation path end-to-end across:
 
 ### 2.1 Complete allocation/deallocation pairing
 
-Every allocation I could find is matched by a deallocation on every exit
+Every allocation found is matched by a deallocation on every exit
 path, including error paths:
 
 | Allocation (file:line)           | Type                  | Freed by (file:line)                    |
@@ -85,7 +83,7 @@ not part of the plan lifecycle. Clean.
 
 ### 2.3 G4 lazy-fallback (`ensure_cufft_plans_for_level`) — cleanup confirmed airtight
 
-This was the primary concern from HANDOFF.md. The function creates up to
+A potential concern was the G4 lazy-fallback path. The function creates up to
 4 cuFFT plans (`b.plan_fwd`, `b.plan_inv`, `c.plan_fwd`, `c.plan_inv`)
 in the same `build_fft[ell]` and `corr_fft[ell]` structs that
 `destroy_plan()` already iterates over and destroys via
@@ -192,9 +190,17 @@ avoids the async pool for the main arena (uses plain `cudaMalloc` when
 `alloc_device()` which also falls through to `cudaMalloc` in the
 default configuration.
 
-## 5. DIAGNOSTIC TOOL
+## 5. DIAGNOSTIC TOOL (proposed, not built)
 
-I've written `scripts/heatmap_gpu_reset_every_cell.cu` — a copy of
+**Note:** the fragmentation hypothesis below was confirmed by proceeding
+directly to the fix in section 6 (commit `386c856`, routing the arena and
+cuFFT workspace through a CUDA stream-ordered memory pool), so this
+diagnostic tool was never actually written to disk — kept here only as
+the reasoning trail for how the hypothesis could have been isolated if
+the direct fix hadn't worked. `scripts/heatmap_gpu_reset_every_cell.cu`
+does not exist in this repo.
+
+The proposed tool would have been a copy of
 `tools/heatmap_gpu.cu`'s heatmap sweep with one change:
 `cudaDeviceReset()` + `icm_gpu_init(0)` between EVERY cell (not just
 failures). This destroys and recreates the CUDA primary context each

@@ -29,7 +29,7 @@
 #                    parent (i.e. the repo root).
 #   REPO_BRANCH    Branch to check out on the remote (default: results-gpu-section).
 #   VERIFY_MIN_PASS  Minimum expected "PASS" lines from bench_gpu_fused verify
-#                    (default: 36, the known-good count from earlier this session).
+#                    (default: 36, the expected count from a known-good build).
 #   CUFFTDX_GLOB   Glob pattern for detecting the cuFFTDx include path on the
 #                  remote box (default: /usr/local/lib/python*/dist-packages/nvidia/mathdx/include).
 #   REMOTE_WORKDIR Absolute path for the repo on the remote box (default: /workspace/icm).
@@ -154,8 +154,8 @@ else
     fi
     remote "mkdir -p '$REMOTE_WORKDIR'" || die "mkdir remote workdir failed"
     echo "  rsync $REPO_SOURCE/ -> $B200_HOST:$REMOTE_WORKDIR/ (git-tracked + untracked-but-not-ignored files only)"
-    # Transfer exactly what git knows about (tracked + untracked-but-unignored,
-    # e.g. this session's not-yet-committed sprint board) -- never a raw
+    # Transfer exactly what git knows about (tracked + untracked-but-unignored
+    # files, e.g. not-yet-committed work) -- never a raw
     # directory rsync.  Local scratch dirs (venvs, old worktrees, prior
     # results) can be 100s of MB of junk that has no business on a build box.
     ( cd "$REPO_SOURCE" && git ls-files --cached --others --exclude-standard -z ) \
@@ -253,7 +253,7 @@ echo "--- run calibrate_gpu ---"
 CALIB_LOG="$LOCAL_RESULTS/stage3a_calibrate.log"
 # ICM_GPU_CALIB_WS=1 is already the default per the code (confirmed in
 # calibrate_gpu.cu: env_int_clamped("ICM_GPU_CALIB_WS", 1, 0, 1)), set it
-# explicitly for clarity per the board's request.
+# explicitly for clarity.
 remote "cd '$REMOTE_WORKDIR' && ICM_GPU_CALIB_WS=1 ./calibrate_gpu devices/b200/gpu_fft_config.h 2>&1" | tee "$CALIB_LOG" || die "calibrate_gpu failed"
 
 echo "--- calibrate_gpu wrote new header to devices/b200/gpu_fft_config.h ---"
