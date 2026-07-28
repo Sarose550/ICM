@@ -5,9 +5,9 @@ gen_calib_skeleton.py, Shared calibration skeleton + band-boundary generator.
 Parameterized by device; produces the full calibration point list and band
 boundaries per the adaptive calibration methodology.
 
-Smooth-number logic is ported EXACTLY from the codebase:
-  - CPU: build_fftw_size_table() in src/icm.c (lines ~524-536)
-  - GPU: build_smooth_table()   in src/gpu/gpu_plan.cu (lines ~50-66)
+Smooth-number logic must match the codebase exactly:
+  - CPU: build_fftw_size_table() in src/icm.c
+  - GPU: build_smooth_table()   in src/gpu/gpu_plan.cu
 
 Usage:
   python3 tools/gen_calib_skeleton.py --device m3_pro  > skeleton_m3_pro.csv

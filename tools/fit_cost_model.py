@@ -330,11 +330,10 @@ def report(params, plans, calib, pins=None):
 
 
 # Mapping from fit parameter name -> fft_config.h macro name(s).
-# BLOCK_FMA_NS/BLOCK_MEM_NS/LEAF_FMA_NS/LEAF_BLOCK_NS are now per-B
-# lookup tables — removed from this mapping (handled by bench_block_build
-# and bench_leaf_fma, not this script).
-# PAIRED_CACHED_CORR_RATIO and INDEP_PAIR_RATIO are now separate values
-# (INDEP_PAIR_RATIO is written via a separate path, not from params array).
+# This mapping covers only the summed-constant params below; BLOCK_FMA_NS/
+# BLOCK_MEM_NS/LEAF_FMA_NS/LEAF_BLOCK_NS are per-B lookup tables populated
+# separately by bench_block_build/bench_leaf_fma. PAIRED_CACHED_CORR_RATIO
+# is here; INDEP_PAIR_RATIO is written via a separate path, not this array.
 FIT_TO_MACRO = [
     ('C_wrap',       ['WRAP_FMA_NS']),
     ('R',            ['PAIRED_CACHED_CORR_RATIO']),
@@ -518,8 +517,8 @@ def main():
         # (uses scalar block/leaf model — approximate only)
         if plans:
             print(f"\n(Reporting against sample_plans for diagnostic purposes —")
-            print(f" block/leaf constants are now per-B lookup tables; the")
-            print(f" scalar model used here is only approximate.)")
+            print(f" block/leaf constants are per-B lookup tables, not scalars;")
+            print(f" the scalar model used here is only approximate.)")
             report(params, plans, calib, pins=pins)
 
         if args.write:

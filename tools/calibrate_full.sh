@@ -853,10 +853,6 @@ echo "  ✓ Schoolbook lookup tables written to $CONFIG_H"
 # The cost model in src/cost_model.h's linear_roofline_cost() uses:
 #   compute_ns = 5.0 * n * k * BATCHED_FMA_NS;
 # This step measures BATCHED_FMA_NS directly from the verbatim inner loops.
-#
-# NOTE: tools/bench_linear_batched_fma.c exists on disk but may not yet be
-# committed to git.  If the build fails with "file not found", this tool
-# needs to be committed first (see HANDOFF.md).
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
 echo "── Step 10/15: Batched-linear-engine constant (tools/bench_linear_batched_fma.c) ──"
@@ -864,9 +860,8 @@ LINEAR_BENCH_BIN="$REPO_ROOT/bench_linear_batched_fma"
 
 if [ ! -f "$REPO_ROOT/tools/bench_linear_batched_fma.c" ]; then
     echo "  ⚠ WARNING: tools/bench_linear_batched_fma.c not found in repo."
-    echo "    This tool is not yet committed to git.  The BATCHED_FMA_NS"
-    echo "    constant will be left at its placeholder value (999.0)."
-    echo "    See HANDOFF.md for the tool status.  Skipping this step."
+    echo "    The BATCHED_FMA_NS constant will be left at its placeholder"
+    echo "    value (999.0).  Skipping this step."
 else
     gcc -O3 -march=native -o "$LINEAR_BENCH_BIN" tools/bench_linear_batched_fma.c -lm
     echo "  ✓ Built bench_linear_batched_fma"

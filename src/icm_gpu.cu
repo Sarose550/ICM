@@ -2756,7 +2756,6 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
         auto &lp = plan->levels[ell];
         if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
         int cn = lp.cn, cb = plan->nn[ell-1], pb = plan->nn[ell];
-        /* real_in / real_out no longer needed (cuFFT uses poly/g directly) */
         mb_si = std::max(mb_si, (size_t)qb*cb*cn*sizeof(cufftDoubleComplex));
         mb_sm = std::max(mb_sm, (size_t)qb*pb*cn*sizeof(cufftDoubleComplex));
         mc_si = std::max(mc_si, (size_t)qb*pb*cn*sizeof(cufftDoubleComplex));
@@ -2798,10 +2797,8 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
         if (lp.use_fft && lp.cache_fft && lp.tier != GPU_TIER_SCHOOLBOOK)
             A((size_t)qb * plan->nn[ell-1] * lp.cn * sizeof(cufftDoubleComplex));
     }
-    /* real_in / real_out no longer needed; only spectral buffers */
     A(mb_si); A(mb_sm);
     A(mc_si); A(mc_sm);
-    /* callback info slots removed (callbacks disabled) */
     #undef A
 
     char *arena = nullptr;
@@ -2854,7 +2851,6 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     }
     auto &sb = plan->shared_build_work;
     auto &sc = plan->shared_corr_work;
-    /* real_in / real_out no longer needed with FFT-stride layout */
     sb.real_in_bytes=0; sb.spec_in_bytes=mb_si; sb.spec_mid_bytes=mb_sm; sb.real_out_bytes=0;
     sc.real_in_bytes=0; sc.spec_in_bytes=mc_si; sc.spec_mid_bytes=mc_sm; sc.real_out_bytes=0;
     sb.real_in=nullptr; sb.real_out=nullptr;
@@ -2863,7 +2859,6 @@ static bool allocate_plan_device_memory(GpuPlan *plan) {
     P(sb.spec_mid, cufftDoubleComplex*, mb_sm);
     P(sc.spec_in, cufftDoubleComplex*, mc_si);
     P(sc.spec_mid, cufftDoubleComplex*, mc_sm);
-    /* callback info slots removed (callbacks disabled) */
     #undef P
     plan->use_async_pool = false;
     for (int ell = 1; ell < plan->L; ++ell) {

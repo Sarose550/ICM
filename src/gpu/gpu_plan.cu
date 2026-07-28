@@ -402,12 +402,10 @@ double tree_school_ns_per_fma() {
      * correct for wrap correction costs (large working set, GPU fully busy)
      * and for schoolbook tier comparisons at sizes where fused is not available
      * (conv_len > GPU_FUSED_MAX_CONV_LEN, so conv_len^2 is large enough to
-     * saturate the GPU).
-     *
-     * The old code returned max(GPU_SCHOOL_FMA_NS, GPU_BLOCK_BUILD_NS_PER_FMA),
-     * which inflated the schoolbook rate 18.6× to make the tier comparison
-     * "work" — but this gave correct results for the wrong reasons and caused
-     * wrong B selection at large n where the wrap correction cost dominates. */
+     * saturate the GPU). Do not blend in GPU_BLOCK_BUILD_NS_PER_FMA here — that
+     * rate reflects block-build overhead, not raw FMA throughput, and inflating
+     * this value causes wrong B selection at large n where wrap-correction
+     * cost dominates. */
     return GPU_SCHOOL_FMA_NS;
 #endif
 }

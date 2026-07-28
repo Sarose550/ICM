@@ -309,9 +309,8 @@ def read_existing_table(config_path: str, device_meta: dict) -> list[tuple[int, 
     This exists so a re-run of this orchestrator MERGES with whatever is
     already calibrated instead of silently discarding it: Step 2's base
     sweep only covers gen_calib_skeleton.py's 7-smooth n grid, which does
-    NOT include hand-added gap-fill anchors (e.g. the non-7-smooth
-    n=1,150,000/1,285,000/1,420,000 points added to close a real
-    hardware-verified B-selection cliff, see HANDOFF.md) — those points
+    NOT include hand-added gap-fill anchors at non-7-smooth n values (e.g.
+    points added to close a specific B-selection cliff) — those points
     would vanish on the next full orchestrator run if this function's
     result weren't seeded into live_table before Step 2/3 inject.
     """
