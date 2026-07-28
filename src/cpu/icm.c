@@ -129,6 +129,13 @@ static void make_nodes(int Q, double Smax, QP *pts) {
    V1 closed form
    ══════════════════════════════════════════════════════════════ */
 
+/* Convolution length below which the uncalibrated path uses schoolbook
+ * rather than FFT. See the rationale at its use site in
+ * tree_ctx_create_ex2(). Degree < 64, matching the GPU tier boundary. */
+#ifndef UNCALIB_SCHOOLBOOK_MAX_CONV_LEN
+#define UNCALIB_SCHOOLBOOK_MAX_CONV_LEN 128
+#endif
+
 static void v1_exact(int n, const double *S, double *V1) {
     for (int i = 0; i < n; i++) {
         double v = 1.0;
@@ -1289,7 +1296,30 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
             int past_ceiling = (CALIBRATED_MAX_CONV_LEN == -1 ||
                                 build_conv_len > CALIBRATED_MAX_CONV_LEN);
 
-            if (past_ceiling) {
+            /* Past the ceiling, only the LARGE end is unambiguous.
+             *
+             * The bug this guard exists for is schoolbook being chosen at huge
+             * convolution lengths, where its O(L^2) cost is unbounded. At the
+             * small end the opposite is true: schoolbook is both faster than an
+             * FFT and numerically exact, so forcing FFT there is wrong on both
+             * counts. Only the middle ever needed calibration to decide.
+             *
+             * This matters because an uncalibrated device takes this branch at
+             * EVERY tree level, including the leaves. The pure tree engine has
+             * degree-1 leaves, so its lowest levels convolve length-1 and
+             * length-3 polynomials; running an FFT for those, 16 levels deep
+             * over 65536 nodes, cost ~10x accuracy (tree n=65536 adversarial
+             * went from 1.08e-12 to 1.15e-11, past the 5e-12 tolerance and
+             * red on CI). The hybrid engine was unaffected only because its
+             * degree-32 blocks never produce a convolution below 63.
+             *
+             * The threshold matches the schoolbook/FFT boundary this project
+             * already uses on the GPU side (schoolbook below degree 64). */
+            if (past_ceiling && build_conv_len < UNCALIB_SCHOOLBOOK_MAX_CONV_LEN) {
+                /* Schoolbook, exactly as the calibrated path does when
+                 * schoolbook wins: leave the FFT fields unset and skip. */
+                tc->use_fft[ell] = 0;
+            } else if (past_ceiling) {
                 /* Uncalibrated path: always FFT, no cost comparison. */
                 tc->use_fft[ell] = 1;
 
