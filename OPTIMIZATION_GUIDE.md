@@ -286,11 +286,10 @@ writes sequentially; the backward pass reads in reverse. Both are streaming acce
 patterns that the hardware prefetcher handles perfectly at 400 GB/s.
 
 Checkpointing reduces memory to O(√n·k) but adds 33% recomputation. On M3 Pro
-(unified memory at ~400 GB/s),
-the recomputation costs more than the cache miss savings because streaming is
-already fast. On bandwidth-limited hardware (Zen 4 at 80 GB/s), checkpointing
-<!-- TODO: Measured Zen4 DRAM_BW_GBS=33.0, not 80 GB/s. 80 GB/s is the DDR5-5200
-     theoretical peak for a dual-channel config; actual streaming bandwidth is lower. -->
+(unified memory streaming at ~110.7 GB/s, calibrated `DRAM_BW_GBS`), the
+recomputation costs more than the cache miss savings because streaming is
+already fast. On bandwidth-limited hardware (Zen 4 at 33.0 GB/s streaming,
+well below the DDR5-5200 dual-channel theoretical peak), checkpointing
 becomes essential.
 
 The hybrid engine IS the blocked linear: block build = forward within a block,
@@ -329,9 +328,8 @@ For the GPU planner (B200), the equivalent tuning lives in
 
 ### Key Architectural Differences from M3 Pro
 - **SIMD**: AVX-512 (8 FP64/vector) vs NEON (2 FP64/vector)
-- **Memory BW**: ~60 GB/s DDR5 vs 400 GB/s unified
-<!-- TODO: Measured Zen4 DRAM_BW_GBS=33.0 (streaming), not 60 GB/s (theoretical peak).
-     M3 Pro DRAM_BW_GBS=110.7, not 400 GB/s. These are informal architectural numbers. -->
+- **Memory BW (streaming, calibrated `DRAM_BW_GBS`)**: 33.0 GB/s DDR5 vs
+  110.7 GB/s unified -- well below either platform's theoretical peak
 - **L1 cache**: 32KB vs 192KB
 - **L2 cache**: 1MB/core vs 32MB cluster
 - **Cores**: 16P (no E-cores) vs M3 Pro's P+E topology
@@ -411,10 +409,8 @@ Edit the `#define`s at the top of the file with measured values:
 **Important**: `L2_CACHE_SIZE` controls the checkpointing interval in the batched
 linear engine (`ckpt_interval_batched`). Zen 4's 1MB L2 vs M3 Pro's 32MB means
 checkpointing activates much earlier, which is critical - without it, the linear
-engine would stream through DRAM at 60 GB/s instead of L2 at ~1 TB/s.
-<!-- TODO: Actual measured Zen4 bandwidths: DRAM_BW_GBS=33.0, L2_BW_GBS=131.5.
-     The "60 GB/s" and "~1 TB/s" here are informal theoretical-peak estimates,
-     not the calibrated cost-model values. -->
+engine would stream through DRAM at 33.0 GB/s instead of L2 at 131.5 GB/s
+(both calibrated `DRAM_BW_GBS`/`L2_BW_GBS` values, not theoretical peaks).
 
 **Step 4: Rebuild and verify.**
 
