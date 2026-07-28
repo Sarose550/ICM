@@ -1,6 +1,13 @@
 /* Auto-generated FFT configuration from calibrate */
 /* Generated on this machine — do not use on different hardware */
 
+/* Largest convolution length the FFT timing table can honestly cover.
+ * Derived from max(calib_sizes) = 131072: best_fft_config(L) returns a
+ * non-sentinel cost for L ≤ 2*131072-1 = 262143. */
+#ifndef CALIBRATED_MAX_CONV_LEN
+#define CALIBRATED_MAX_CONV_LEN 262143
+#endif
+
 #define N_CALIBRATED_SIZES 749
 static const int calib_sizes[N_CALIBRATED_SIZES] = {
    1,2,3,4,5,6,7,8,9,10,12,14,15,16,18,20,21,24,25,27,

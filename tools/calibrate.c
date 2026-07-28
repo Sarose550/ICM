@@ -2,9 +2,9 @@
  * calibrate.c — Generate fft_config.h for the current machine.
  *
  * Produces:
- *   1. fftw_wisdom.dat  — FFTW PATIENT plans for all 7-smooth sizes up to MAX_SIZE
- *   2. fft_config.h     — C header with calib_sizes[], calib_times_ns[], and
- *                          the per-device cost-model constants
+ *   1. fftw_wisdom.dat  — FFTW PATIENT plans for all 7-smooth sizes up to max_size
+ *   2. fft_config.h     — C header with calib_sizes[], calib_times_ns[],
+ *                          CALIBRATED_MAX_CONV_LEN, and per-device constants
  *
  * The cost-model *functions* (best_fft_config, best_fft_config_joint) are not
  * generated here — they live once, for all devices, in src/cpu/fft_cost_model.h
@@ -22,6 +22,12 @@
  *   ./calibrate                   # full calibration (may take 10-30 minutes)
  *   ./calibrate --wisdom-only     # only generate wisdom (skip timing)
  *   ./calibrate --quick           # fewer reps (faster, less accurate)
+ *   ./calibrate --max-size N      # calibrate up to N (default 131072)
+ *
+ * --max-size tradeoff: a higher ceiling means a longer offline calibration
+ * run (more FFT sizes to benchmark) but gives a larger fully-optimal range
+ * before the uncalibrated FFTW_ESTIMATE fallback engages at runtime.
+ * The default 131072 keeps calibration under ~30 minutes on modern hardware.
  *
  * On Linux, pin to one core for stable results:
  *   taskset -c 0 nice -20 ./calibrate
@@ -36,7 +42,7 @@
 #include <time.h>
 #include <fftw3.h>
 
-#define MAX_SIZE 131072
+static int max_size = 131072;  /* overridable via --max-size N */
 #define WISDOM_FILE "fftw_wisdom.dat"
 
 static inline double now_ns(void) {
@@ -45,17 +51,32 @@ static inline double now_ns(void) {
     return ts.tv_sec * 1e9 + ts.tv_nsec;
 }
 
-/* ── Generate all 7-smooth numbers up to MAX_SIZE ── */
+/* ── Generate all 7-smooth numbers up to max_size ── */
 
-static int smooth_nums[800];
+static int *smooth_nums = NULL;
 static int n_smooth = 0;
 
+/* Count 7-smooth numbers ≤ limit without storing them. */
+static int count_smooth(int limit) {
+    int cnt = 0;
+    for (int a = 1; a <= limit; a *= 2)
+        for (int b = a; b <= limit; b *= 3)
+            for (int c = b; c <= limit; c *= 5)
+                for (int d = c; d <= limit; d *= 7)
+                    cnt++;
+    return cnt;
+}
+
 static void build_smooth_table(void) {
-    for (int a = 1; a <= MAX_SIZE; a *= 2)
-        for (int b = a; b <= MAX_SIZE; b *= 3)
-            for (int c = b; c <= MAX_SIZE; c *= 5)
-                for (int d = c; d <= MAX_SIZE; d *= 7)
-                    smooth_nums[n_smooth++] = d;
+    n_smooth = count_smooth(max_size);
+    smooth_nums = (int *)malloc((size_t)n_smooth * sizeof(int));
+    if (!smooth_nums) { fprintf(stderr, "malloc smooth_nums failed\n"); exit(1); }
+    int idx = 0;
+    for (int a = 1; a <= max_size; a *= 2)
+        for (int b = a; b <= max_size; b *= 3)
+            for (int c = b; c <= max_size; c *= 5)
+                for (int d = c; d <= max_size; d *= 7)
+                    smooth_nums[idx++] = d;
     /* Sort */
     for (int i = 1; i < n_smooth; i++) {
         int key = smooth_nums[i], j = i - 1;
@@ -97,7 +118,7 @@ static void generate_wisdom(void) {
 
 /* ── Phase 2: Benchmark each size ── */
 
-static double calib_times[800];
+static double *calib_times = NULL;  /* allocated after n_smooth is known */
 
 /* ── Phase 2.5: Measure streaming bandwidth at each cache level ── */
 
@@ -252,6 +273,19 @@ static void write_config(const char *filename) {
     fprintf(f, "/* Auto-generated FFT configuration from calibrate */\n");
     fprintf(f, "/* Generated on this machine — do not use on different hardware */\n\n");
 
+    /* CALIBRATED_MAX_CONV_LEN: largest convolution length the FFT timing
+     * table can honestly cover.  Derived from max(calib_sizes):
+     * best_fft_config(L) returns a non-sentinel cost for
+     * L ≤ 2 * max(calib_sizes) - 1. */
+    int max_calib = smooth_nums[n_smooth - 1];
+    int calib_max_conv_len = 2 * max_calib - 1;
+    fprintf(f, "/* Largest convolution length the FFT timing table can honestly cover.\n");
+    fprintf(f, " * Derived from max(calib_sizes) = %d: best_fft_config(L) returns a\n", max_calib);
+    fprintf(f, " * non-sentinel cost for L ≤ 2*%d-1 = %d. */\n", max_calib, calib_max_conv_len);
+    fprintf(f, "#ifndef CALIBRATED_MAX_CONV_LEN\n");
+    fprintf(f, "#define CALIBRATED_MAX_CONV_LEN %d\n", calib_max_conv_len);
+    fprintf(f, "#endif\n\n");
+
     /* calib_sizes[] */
     fprintf(f, "#define N_CALIBRATED_SIZES %d\n", n_smooth);
     fprintf(f, "static const int calib_sizes[N_CALIBRATED_SIZES] = {\n   ");
@@ -343,18 +377,26 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--wisdom-only") == 0) wisdom_only = 1;
         if (strcmp(argv[i], "--quick") == 0) quick = 1;
+        if (strcmp(argv[i], "--max-size") == 0 && i + 1 < argc) {
+            max_size = atoi(argv[++i]);
+            if (max_size < 2) { fprintf(stderr, "--max-size must be >= 2\n"); return 1; }
+        }
     }
 
     build_smooth_table();
-    printf("Found %d 7-smooth numbers up to %d\n\n", n_smooth, MAX_SIZE);
+    calib_times = (double *)calloc((size_t)n_smooth, sizeof(double));
+    if (!calib_times) { fprintf(stderr, "calloc calib_times failed\n"); return 1; }
+    printf("Found %d 7-smooth numbers up to %d\n\n", n_smooth, max_size);
 
     generate_wisdom();
-    if (wisdom_only) { printf("Done (wisdom only).\n"); return 0; }
+    if (wisdom_only) { printf("Done (wisdom only).\n"); free(smooth_nums); free(calib_times); return 0; }
 
     benchmark_sizes(quick);
     benchmark_bandwidth();
     write_config("fft_config.h");
 
+    int max_calib = smooth_nums[n_smooth - 1];
+    int calib_max_conv_len = 2 * max_calib - 1;
     printf("Done. Next steps:\n");
     printf("  1. cp fft_config.h devices/<DEVICE>/fft_config.h\n");
     printf("  2. cp fftw_wisdom.dat devices/<DEVICE>/fftw_wisdom.dat\n");
@@ -364,5 +406,10 @@ int main(int argc, char **argv) {
     printf("     FMA_NS, FFT_OVERHEAD_NS, PAIRED_CACHED_CORR_RATIO,\n");
     printf("     INDEP_PAIR_RATIO, L2_CACHE_SIZE, L3_CACHE_SIZE\n");
     printf("  6. ./bench_grid verify && ./bench_grid\n");
+    printf("\n  Calibration ceiling: conv lengths up to %d are fully optimal;\n", calib_max_conv_len);
+    printf("  beyond that the uncalibrated FFTW_ESTIMATE fallback engages.\n");
+    printf("  To raise the ceiling, re-run with --max-size N (higher N = longer calibration).\n");
+    free(smooth_nums);
+    free(calib_times);
     return 0;
 }

@@ -1,9 +1,10 @@
 # ICM Equity Computation — Makefile
 #
 # Usage:
-#   make                    # serial build (bench_grid)
+#   make                    # serial build (bench_grid) — uses devices/generic/
+#   make DEVICE=m3_pro      # build for Apple M3 Pro (macOS)
+#   make DEVICE=zen4        # build for AMD Zen 4 (Linux)
 #   make parallel           # OpenMP build (bench_grid)
-#   make DEVICE=zen4        # build for a different device
 #   make test               # quick verify
 #   make bench              # full benchmark grid
 #   make libicm.a           # build the static library
@@ -11,7 +12,23 @@
 #   make contour_1s         # contour sweep tool (serial)
 #   make contour_1s_par     # contour sweep tool (parallel)
 
-DEVICE ?= m3_pro
+DEVICE ?= generic
+
+# ── Uncalibrated-device warning ───────────────────────────────
+# When DEVICE=generic (no calibration data), results are CORRECT
+# but UNOPTIMIZED.  Print an impossible-to-miss message at build
+# time so the user knows exactly what they're getting and how to
+# fix it.
+ifeq ($(DEVICE),generic)
+$(info ======================================================================)
+$(info   BUILDING WITH DEVICE=generic — NO CALIBRATION DATA)
+$(info   Results will be CORRECT but UNOPTIMIZED (FFTW_ESTIMATE plans only).)
+$(info   To calibrate for real hardware performance, run:)
+$(info     ./tools/calibrate_full.sh <DEVICE>)
+$(info   then rebuild with DEVICE=<DEVICE>.)
+$(info ======================================================================)
+$(info )
+endif
 
 .DEFAULT_GOAL := all
 

@@ -49,6 +49,13 @@
  * select_engine_ex(), since the empirical table was calibrated only for
  * the full-equity case. */
 static double empirical_crossover_k(int n) {
+    /* Empty-table guard: when no crossover data exists (uncalibrated device),
+     * always dispatch hybrid. select_engine_ex() reads this as
+     * `k < k_cross ? linear : hybrid`, so "always hybrid" is a crossover of
+     * zero, not a large one. This also fixes the out-of-bounds read on
+     * crossover_n[0] that would otherwise occur when N_CROSSOVER_POINTS == 0. */
+    if (N_CROSSOVER_POINTS == 0) return 0.0;
+
     int lo = 0, hi = N_CROSSOVER_POINTS - 1;
     if (n <= crossover_n[0]) return (double)crossover_k[0];
     if (n >= crossover_n[hi]) return (double)crossover_k[hi];
@@ -84,6 +91,12 @@ static double empirical_crossover_k(int n) {
  * tools/calibrate_best_b.c; not necessarily sorted -- linear scan over
  * ~30-40 points per call is negligible). */
 static int empirical_best_B(int n, int k) {
+    /* Empty-table guard: when no B-selection calibration data exists
+     * (uncalibrated device), return the fixed uncalibrated default B=32.
+     * This also fixes the out-of-bounds read on bselect_n[0] when
+     * N_BSELECT_POINTS == 0. */
+    if (N_BSELECT_POINTS == 0) return 32;
+
     double log_n = log((double)n);
     int best_n = bselect_n[0];
     double best_n_dist = fabs(log_n - log((double)bselect_n[0]));

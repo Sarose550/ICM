@@ -178,9 +178,7 @@ static void wisdom_save(void) {
     fftw_export_wisdom_to_filename(WISDOM_FILE);
 }
 
-#if defined(ICM_BENCH_INCLUDE)
 static int next_pow2(int n);
-#endif
 
 /* ══════════════════════════════════════════════════════════════
    FFTW PLAN CACHE — create once, reuse across all quad points
@@ -505,47 +503,128 @@ static inline __attribute__((always_inline)) void correlate_school(const double 
 /* FFT vs schoolbook is decided per-level in tree_ctx_create_ex2()
  * using calibrated FFT times from fft_config.h. */
 
-/* next_pow2: only called from next_fftw_size (guarded by ICM_BENCH_INCLUDE). */
-#if defined(ICM_BENCH_INCLUDE)
+/* next_pow2: the defensive fallback in next_smooth_ge() when the smooth-number
+ * table cannot be extended, so it must be available to the library proper, not
+ * only to bench.c. */
 static inline int next_pow2(int n) {
     int p = 1; while (p < n) p <<= 1; return p;
 }
-#endif
 
 /* FFTW is 30–50% faster at composite (7-smooth) sizes than arbitrary sizes.
  * Rounding k to a smooth size rather than next_pow2 preserves this benefit. */
 
-/* Sorted array of all 7-smooth numbers up to 131072. ~500 entries = 2KB.
- * Binary search gives O(log 500) ≈ 9 comparisons without polluting L1
- * (unlike a 512KB direct-index table). */
-static int smooth_nums[800];  /* 749 smooth numbers up to 131072 */
+/* Sorted array of all 7-smooth numbers.  The table is built lazily on first
+ * use and extended on demand when a query needs a smooth number beyond the
+ * current maximum.  This lets the uncalibrated fallback path pick viable
+ * FFT sizes at any practical scale without a fixed ceiling.
+ *
+ * Default initial ceiling: 131072 (same as calibrate.c's historical MAX_SIZE).
+ * Each extension doubles the ceiling, amortized O(1) per query. */
+static int *smooth_nums = NULL;   /* dynamically allocated, sorted ascending */
 static int n_smooth = 0;
+static int smooth_cap = 0;        /* allocated capacity */
+static int smooth_max = 0;        /* largest value in the table */
+
+/* Count 7-smooth numbers ≤ limit without storing them. */
+static int count_smooth_up_to(int limit) {
+    int cnt = 0;
+    for (int a = 1; a <= limit; a *= 2)
+        for (int b = a; b <= limit; b *= 3)
+            for (int c = b; c <= limit; c *= 5)
+                for (int d = c; d <= limit; d *= 7)
+                    cnt++;
+    return cnt;
+}
+
+/* Extend smooth_nums to cover at least `needed` value. */
+static void ensure_smooth_up_to(int needed) {
+    if (smooth_max >= needed) return;
+    int new_max = smooth_max > 0 ? smooth_max * 2 : 131072;
+    while (new_max < needed) new_max *= 2;
+
+    int add_count = 0;
+    if (smooth_max == 0) {
+        add_count = count_smooth_up_to(new_max);
+    } else {
+        /* Count only values > smooth_max and ≤ new_max */
+        for (int a = 1; a <= new_max; a *= 2)
+            for (int b = a; b <= new_max; b *= 3)
+                for (int c = b; c <= new_max; c *= 5)
+                    for (int d = c; d <= new_max; d *= 7)
+                        if (d > smooth_max) add_count++;
+    }
+
+    int new_count = n_smooth + add_count;
+    if (new_count > smooth_cap) {
+        int new_cap = smooth_cap > 0 ? smooth_cap * 2 : add_count + 64;
+        if (new_cap < new_count) new_cap = new_count + 64;
+        int *tmp = (int *)realloc(smooth_nums, (size_t)new_cap * sizeof(int));
+        if (!tmp) { fprintf(stderr, "FATAL: realloc smooth_nums failed\n"); exit(1); }
+        smooth_nums = tmp;
+        smooth_cap = new_cap;
+    }
+
+    /* Generate new values (if starting fresh, generate all; otherwise, only > smooth_max) */
+    if (smooth_max == 0) {
+        n_smooth = 0;
+        for (int a = 1; a <= new_max; a *= 2)
+            for (int b = a; b <= new_max; b *= 3)
+                for (int c = b; c <= new_max; c *= 5)
+                    for (int d = c; d <= new_max; d *= 7)
+                        smooth_nums[n_smooth++] = d;
+    } else {
+        int old_count = n_smooth;
+        for (int a = 1; a <= new_max; a *= 2)
+            for (int b = a; b <= new_max; b *= 3)
+                for (int c = b; c <= new_max; c *= 5)
+                    for (int d = c; d <= new_max; d *= 7)
+                        if (d > smooth_max) smooth_nums[n_smooth++] = d;
+        /* Sort only the newly appended portion, then merge */
+        for (int i = old_count + 1; i < n_smooth; i++) {
+            int key = smooth_nums[i], j = i - 1;
+            while (j >= old_count && smooth_nums[j] > key) { smooth_nums[j+1] = smooth_nums[j]; j--; }
+            smooth_nums[j+1] = key;
+        }
+        /* Merge the two sorted runs */
+        int *merged = (int *)malloc((size_t)new_count * sizeof(int));
+        if (!merged) { fprintf(stderr, "FATAL: malloc merge buffer failed\n"); exit(1); }
+        int i = 0, j = old_count, k = 0;
+        while (i < old_count && j < new_count) {
+            if (smooth_nums[i] <= smooth_nums[j]) merged[k++] = smooth_nums[i++];
+            else merged[k++] = smooth_nums[j++];
+        }
+        while (i < old_count) merged[k++] = smooth_nums[i++];
+        while (j < new_count) merged[k++] = smooth_nums[j++];
+        memcpy(smooth_nums, merged, (size_t)new_count * sizeof(int));
+        free(merged);
+    }
+    smooth_max = new_max;
+}
 
 static void build_fftw_size_table(void) {
     if (n_smooth > 0) return;
-    for (int a = 1; a <= 131072; a *= 2)
-        for (int b = a; b <= 131072; b *= 3)
-            for (int c = b; c <= 131072; c *= 5)
-                for (int d = c; d <= 131072; d *= 7)
-                    smooth_nums[n_smooth++] = d;
-    /* Insertion sort (only ~500 elements, one-time) */
-    for (int i = 1; i < n_smooth; i++) {
-        int key = smooth_nums[i], j = i - 1;
-        while (j >= 0 && smooth_nums[j] > key) { smooth_nums[j+1] = smooth_nums[j]; j--; }
-        smooth_nums[j+1] = key;
-    }
+    ensure_smooth_up_to(131072);
 }
 
-/* next_fftw_size: binary search for smallest smooth number >= n.
- * Only called from bench.c (via ICM_BENCH_INCLUDE). */
-#if defined(ICM_BENCH_INCLUDE)
-static int next_fftw_size(int n) {
+/* Find the smallest 7-smooth number >= n.  Extends the smooth table
+ * on demand, so this works at any practical size.  Falls back to
+ * next_pow2 if extension/allocation fails (defensive). */
+static int next_smooth_ge(int n) {
+    if (n_smooth == 0) build_fftw_size_table();
+    ensure_smooth_up_to(n);
     int lo = 0, hi = n_smooth - 1;
     while (lo < hi) {
         int mid = (lo + hi) >> 1;
         if (smooth_nums[mid] < n) lo = mid + 1; else hi = mid;
     }
-    return (lo < n_smooth) ? smooth_nums[lo] : next_pow2(n);
+    return (lo < n_smooth && smooth_nums[lo] >= n) ? smooth_nums[lo] : next_pow2(n);
+}
+
+/* next_fftw_size: wrapper for bench.c (via ICM_BENCH_INCLUDE).
+ * Only called from bench.c. */
+#if defined(ICM_BENCH_INCLUDE)
+static int next_fftw_size(int n) {
+    return next_smooth_ge(n);
 }
 #endif
 
@@ -558,6 +637,8 @@ static int best_k_pad(int k) {
     if (k <= 2) return k;
     /* Power-of-2: already optimal — no padding needed */
     if ((k & (k - 1)) == 0) return k;
+
+    if (n_smooth == 0) build_fftw_size_table();
 
     int lo = 0, hi = n_smooth - 1;
     while (lo < hi) { int mid = (lo+hi)>>1; if (smooth_nums[mid] < k) lo = mid+1; else hi = mid; }
@@ -1188,90 +1269,143 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
              * choosing schoolbook for build also means schoolbook for correlate.
              * Below-sat polys have actual degree cps/2 (upper half is zero). */
             int build_conv_len = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
-            int bfn, bwm;
-            best_fft_config(build_conv_len, &bfn, &bwm, 0);  /* polymul: no input-wrap */
-            int fft_idx;
-            { int lo=0,hi=N_CALIBRATED_SIZES-1;
-              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-              fft_idx = lo; }
-            double fft_build = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
-                               ? calib_times_ns[fft_idx] : 1e18;
-            double fft_overhead = FFT_OVERHEAD_NS;
-            double build_correction = (double)bwm * (bwm + 1) / 2.0 * WRAP_FMA_NS;
-
-            /* Build cost comparison: schoolbook vs FFT.
-             * Uses build-phase cost only (not correlate), as this was empirically
-             * validated to give correct B and FFT crossover decisions.
-             * The correlate cost is implicitly handled: when schoolbook wins the
-             * build comparison, correlate also uses schoolbook, and the cost model
-             * in select_best_B accounts for both via the tree cost sum.
-             * Schoolbook build cost via direct per-size lookup (not FMA_NS formula). */
-            int idx;
-            { int lo=0,hi=N_CALIBRATED_SIZES-1;
-              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
-              idx=lo; }
-            double school_build = schoolbook_mul_ns[idx];
             int p_eff = is_below ? cps/2 + 1 : cps;
             int out_needed = tc->g_needed[ell-1];
-            /* school_build < 0 is the "unmeasured size" sentinel (cps beyond
-             * bench_schoolbook_tree.c's cutoff) — schoolbook is never chosen
-             * there (FFT always wins at that size), so force FFT rather than
-             * let a negative sentinel win a naive numeric comparison. */
-            tc->use_fft[ell] = (school_build < 0.0) ||
-                                (fft_build + fft_overhead + build_correction < school_build);
 
-            if (tc->use_fft[ell]) {
+            /* ── Calibration-boundary guard ──────────────────────────
+             * When the device has no calibration data (CALIBRATED_MAX_CONV_LEN
+             * == -1) or this level's convolution length exceeds the calibrated
+             * ceiling, skip the schoolbook-vs-FFT cost comparison entirely.
+             * Both calib_times_ns[] and schoolbook_mul_ns[] may be nonsensical
+             * or absent past the ceiling — there is nothing to compare.
+             *
+             * Always choose FFT.  Pick the smallest 7-smooth FFT size at or
+             * above what's needed, using the same structural search the
+             * calibrated path uses but over the full smooth-number table
+             * (not constrained to sizes that happen to have calibration data).
+             * Plans will be created with FFTW_ESTIMATE (zero-cost heuristic
+             * planning) via the existing FFTW_MEASURE|FFTW_WISDOM_ONLY →
+             * null-check → FFTW_ESTIMATE fallback in fft_cache_create_sizes(). */
+            int past_ceiling = (CALIBRATED_MAX_CONV_LEN == -1 ||
+                                build_conv_len > CALIBRATED_MAX_CONV_LEN);
+
+            if (past_ceiling) {
+                /* Uncalibrated path: always FFT, no cost comparison. */
+                tc->use_fft[ell] = 1;
+
+                /* Build FFT size: smallest smooth >= the FULL convolution length,
+                 * so the cyclic convolution equals the linear one exactly and
+                 * no wrap correction is needed (wrap_m = 0).
+                 *
+                 * The calibrated path is allowed to pick a size as small as
+                 * L/2+1 and pay a wrap correction, but only because it can
+                 * price that correction against the smaller transform. With no
+                 * cost data there is nothing to weigh, and choosing maximum
+                 * wrap unconditionally is both slower and, as measured, wrong. */
+                int bfn = next_smooth_ge(build_conv_len);
+                int bwm = 0;
                 tc->build_fft_n[ell] = bfn;
                 tc->build_wrap_m[ell] = bwm;
                 needed[n_needed++] = bfn;
 
-                /* Correlate FFT size (p_eff, out_needed already computed above) */
+                /* Correlate FFT size */
                 int g_eff_needed = out_needed + p_eff - 1;
                 int g_eff_max = is_below ? (cps + cps/2) : pgsz;
                 int g_eff = (g_eff_needed < g_eff_max) ? g_eff_needed : g_eff_max;
                 int corr_conv = g_eff + p_eff - 1;
 
                 if (!is_root) {
-                    /* Compare joint (cached) vs independent (uncached).
-                     * Joint: one FFT size, cache FFT(P) from build, reuse in correlates.
-                     * Independent: build and correlate each pick optimal sizes, no caching. */
-                    int jfn, jbm, jcm;
-                    double jcost = best_fft_config_joint(build_conv_len, corr_conv, p_eff,
-                                                          &jfn, &jbm, &jcm);
+                    /* Uncalibrated: no cost model to compare joint vs independent.
+                     * Always pick a single shared FFT size (joint) — simpler, fewer
+                     * plans, and without cost data there is no reason to split. */
+                    int max_conv = (build_conv_len > corr_conv) ? build_conv_len : corr_conv;
+                    int jfn = next_smooth_ge(max_conv);   /* covers both, wrap-free */
+                    int jbm = 0, jcm = 0;
+                    tc->build_fft_n[ell] = jfn;
+                    tc->build_wrap_m[ell] = jbm;
+                    tc->corr_fft_n[ell] = jfn;
+                    tc->corr_wrap_m[ell] = jcm;
+                    needed[n_needed - 1] = jfn;  /* overwrite bfn */
+                } else {
+                    int cfn = next_smooth_ge(corr_conv);  /* wrap-free */
+                    int cwm = 0;
+                    tc->corr_fft_n[ell] = cfn;
+                    tc->corr_wrap_m[ell] = cwm;
+                    needed[n_needed++] = cfn;
+                }
+            } else {
+                /* ── Calibrated path (original logic) ───────────── */
 
-                    int cfn, cwm;
-                    best_fft_config(corr_conv, &cfn, &cwm, p_eff);  /* correlate: input-wrap cost */
-                    /* Independent: build(bfn) + correlate_fft_pair(cfn).
-                     * Pair shares g FFT: 1 fwd(g) + 2 fwd(P_rev) + 2 pw + 2 ifft
-                     * ≈ 1.25× full pipeline. */
-                    int cfn_idx = 0;
-                    { int lo2=0, hi2=N_CALIBRATED_SIZES-1;
-                      while(lo2<hi2){int m2=(lo2+hi2)>>1;if(calib_sizes[m2]<cfn)lo2=m2+1;else hi2=m2;}
-                      cfn_idx = lo2; }
-                    /* Independent correlate cost: output-wrap + input-wrap (for correlate) */
-                    double corr_correction = (double)cwm * (cwm + 1) * WRAP_FMA_NS;
-                    double icost = fft_build + build_correction
-                        + INDEP_PAIR_RATIO * calib_times_ns[cfn_idx]
-                        + corr_correction;
+                int bfn, bwm;
+                best_fft_config(build_conv_len, &bfn, &bwm, 0);  /* polymul: no input-wrap */
+                int fft_idx;
+                { int lo=0,hi=N_CALIBRATED_SIZES-1;
+                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
+                  fft_idx = lo; }
+                double fft_build = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
+                                   ? calib_times_ns[fft_idx] : 1e18;
+                double fft_overhead = FFT_OVERHEAD_NS;
+                double build_correction = (double)bwm * (bwm + 1) / 2.0 * WRAP_FMA_NS;
 
-                    if (jcost < icost) {
-                        tc->build_fft_n[ell] = jfn;
-                        tc->build_wrap_m[ell] = jbm;
-                        tc->corr_fft_n[ell] = jfn;
-                        tc->corr_wrap_m[ell] = jcm;
-                        needed[n_needed - 1] = jfn;
+                /* Build cost comparison: schoolbook vs FFT.
+                 * Uses build-phase cost only (not correlate), as this was empirically
+                 * validated to give correct B and FFT crossover decisions. */
+                int idx;
+                { int lo=0,hi=N_CALIBRATED_SIZES-1;
+                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
+                  idx=lo; }
+                double school_build = schoolbook_mul_ns[idx];
+                /* school_build < 0 is the "unmeasured size" sentinel */
+                tc->use_fft[ell] = (school_build < 0.0) ||
+                                    (fft_build + fft_overhead + build_correction < school_build);
+
+                if (tc->use_fft[ell]) {
+                    tc->build_fft_n[ell] = bfn;
+                    tc->build_wrap_m[ell] = bwm;
+                    needed[n_needed++] = bfn;
+
+                    /* Correlate FFT size */
+                    int g_eff_needed = out_needed + p_eff - 1;
+                    int g_eff_max = is_below ? (cps + cps/2) : pgsz;
+                    int g_eff = (g_eff_needed < g_eff_max) ? g_eff_needed : g_eff_max;
+                    int corr_conv = g_eff + p_eff - 1;
+
+                    if (!is_root) {
+                        /* Compare joint (cached) vs independent (uncached). */
+                        int jfn, jbm, jcm;
+                        double jcost = best_fft_config_joint(build_conv_len, corr_conv, p_eff,
+                                                              &jfn, &jbm, &jcm);
+
+                        int cfn, cwm;
+                        best_fft_config(corr_conv, &cfn, &cwm, p_eff);
+                        int cfn_idx = 0;
+                        { int lo2=0, hi2=N_CALIBRATED_SIZES-1;
+                          while(lo2<hi2){int m2=(lo2+hi2)>>1;if(calib_sizes[m2]<cfn)lo2=m2+1;else hi2=m2;}
+                          cfn_idx = lo2; }
+                        double corr_correction = (double)cwm * (cwm + 1) * WRAP_FMA_NS;
+                        double icost = fft_build + build_correction
+                            + INDEP_PAIR_RATIO * calib_times_ns[cfn_idx]
+                            + corr_correction;
+
+                        if (jcost < icost) {
+                            tc->build_fft_n[ell] = jfn;
+                            tc->build_wrap_m[ell] = jbm;
+                            tc->corr_fft_n[ell] = jfn;
+                            tc->corr_wrap_m[ell] = jcm;
+                            needed[n_needed - 1] = jfn;
+                        } else {
+                            tc->corr_fft_n[ell] = cfn;
+                            tc->corr_wrap_m[ell] = cwm;
+                            needed[n_needed++] = cfn;
+                        }
                     } else {
+                        /* Root: no caching, optimize correlate independently */
+                        int cfn, cwm;
+                        best_fft_config(corr_conv, &cfn, &cwm, p_eff);
                         tc->corr_fft_n[ell] = cfn;
                         tc->corr_wrap_m[ell] = cwm;
                         needed[n_needed++] = cfn;
                     }
-                } else {
-                    /* Root: no caching (build skipped), optimize correlate independently */
-                    int cfn, cwm;
-                    best_fft_config(corr_conv, &cfn, &cwm, p_eff);  /* correlate: input-wrap cost */
-                    tc->corr_fft_n[ell] = cfn;
-                    tc->corr_wrap_m[ell] = cwm;
-                    needed[n_needed++] = cfn;
                 }
             }
         }
