@@ -2,7 +2,7 @@
  *
  * Directly measures the cost of an FP64 division embedded in a genuine
  * sequential dependency chain (each division depends on the previous
- * result) — this matches how FP64_DIV_NS is actually used in src/icm.c's
+ * result) — this matches how FP64_DIV_NS is actually used in src/cpu/icm.c's
  * leaf extraction (the bidirectional synthetic-division recurrence,
  * Q_m = (P_m - c*Q_{m-1})/a_j, see icm_paper.tex's Lemma lem:division-
  * stability). An independent/vectorizable division loop measures a very

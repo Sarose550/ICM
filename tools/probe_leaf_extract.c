@@ -8,7 +8,7 @@
  * probe_tree_levels.c.
  *
  * Build (macOS M3 Pro):
- *   gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
+ *   gcc -O3 -march=native -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
  *       -o build/probe_leaf_extract tools/probe_leaf_extract.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */

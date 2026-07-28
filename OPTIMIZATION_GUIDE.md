@@ -316,7 +316,7 @@ OMP_NUM_THREADS=16 ./bench_grid
 ## Porting to a New Device (General)
 
 The codebase is designed for easy porting. All device-specific tuning lives in
-`devices/<DEVICE>/fft_config.h`, no changes to `src/icm.c` needed. The engines,
+`devices/<DEVICE>/fft_config.h`, no changes to `src/cpu/icm.c` needed. The engines,
 cost models, and dispatch logic are fully parameterized by the constants in that header.
 
 For the GPU planner (B200), the equivalent tuning lives in
@@ -591,16 +591,16 @@ diverge most - FFTW's specialized codelets vs MKL's radix-2/3/5 focus.
 ```bash
 # Serial (FFTW only)
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
-    -Isrc -Idevices/zen4 -o bench_grid bench/bench.c -lfftw3 -lm
+    -Isrc/cpu -Idevices/zen4 -o bench_grid bench/bench.c -lfftw3 -lm
 
 # Parallel (FFTW only)
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
-    -fopenmp -Isrc -Idevices/zen4 -o bench_grid bench/bench.c \
+    -fopenmp -Isrc/cpu -Idevices/zen4 -o bench_grid bench/bench.c \
     -lfftw3 -lfftw3_threads -lm
 
 # Parallel (dual-library: dlopen both at runtime, no direct link dependency)
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
-    -fopenmp -Isrc -Idevices/zen4 -o bench_grid bench/bench.c -ldl -lm
+    -fopenmp -Isrc/cpu -Idevices/zen4 -o bench_grid bench/bench.c -ldl -lm
 ```
 
 ## GPU Cost Model (B200)

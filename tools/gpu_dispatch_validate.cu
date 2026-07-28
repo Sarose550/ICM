@@ -24,10 +24,10 @@
  *
  *   CUFFTDX_INC=$(find /usr/local/lib -maxdepth 4 -type d -path '*dist-packages/nvidia/mathdx/include' | head -1)
  *
- *   nvcc -O3 -std=c++17 -arch=sm_100 -Isrc -Idevices/b200 -Isrc/gpu \
+ *   nvcc -O3 -std=c++17 -arch=sm_100 -Isrc/cpu -Idevices/b200 -Isrc/gpu \
  *        -I"$CUFFTDX_INC" -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX \
  *        -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY \
- *        -dc -o build/gpu_dispatch_validate.o scripts/gpu_dispatch_validate.cu
+ *        -dc -o build/gpu_dispatch_validate.o tools/gpu_dispatch_validate.cu
  *
  *   nvcc -O3 -std=c++17 -arch=sm_100 \
  *        -o gpu_dispatch_validate build/gpu_dispatch_validate.o \

@@ -9,14 +9,14 @@
  * Compile (serial, macOS / Apple Silicon):
  *   gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
  *       -o bench bench/bench.c \
- *       -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
+ *       -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  *
  * Compile (parallel, macOS with libomp):
  *   gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
  *       -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include \
  *       -o bench bench/bench.c \
- *       -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
+ *       -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
  *       -L/opt/homebrew/lib -L/opt/homebrew/opt/libomp/lib \
  *       -lfftw3 -lfftw3_threads -lm -framework Accelerate -lomp
  *

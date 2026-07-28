@@ -37,12 +37,12 @@
  *   Q=256, srand(42), payout[m] = n-m, S[i] = 100+9900*rand()/RAND_MAX
  *
  * Build (macOS M3 Pro):
- *   gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
- *       -o build/calibrate_best_b tools/calibrate_best_b.c src/icm.c \
+ *   gcc -O3 -march=native -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
+ *       -o build/calibrate_best_b tools/calibrate_best_b.c src/cpu/icm.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  * Build (Linux/Zen4, AOCL-FFTW):
- *   gcc -O3 -march=znver4 -Isrc -Idevices/zen4 -I/usr/local/aocl-fftw/include \
- *       -o build/calibrate_best_b tools/calibrate_best_b.c src/icm.c \
+ *   gcc -O3 -march=znver4 -Isrc/cpu -Idevices/zen4 -I/usr/local/aocl-fftw/include \
+ *       -o build/calibrate_best_b tools/calibrate_best_b.c src/cpu/icm.c \
  *       -L/usr/local/aocl-fftw/lib -Wl,-rpath,/usr/local/aocl-fftw/lib \
  *       -lfftw3 -lm -ldl -lmvec
  */

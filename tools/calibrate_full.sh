@@ -339,7 +339,7 @@ echo ""
 echo "── Step 3/15: Build and run sample_plans.c ──"
 SP_BIN="$REPO_ROOT/sample_plans"
 gcc -O3 -march=native \
-    -Isrc \
+    -Isrc/cpu \
     -I"$DEVICE_DIR" \
     $HOMEBREW_INC \
     -o "$SP_BIN" \
@@ -414,7 +414,7 @@ echo ""
 echo "── Step 6/15: Profile FFT phases + schoolbook cost (./bench_grid profile) ──"
 BENCH_GRID_BIN="$REPO_ROOT/bench_grid"
 gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
-    -Isrc \
+    -Isrc/cpu \
     -I"$DEVICE_DIR" \
     $HOMEBREW_INC \
     -o "$BENCH_GRID_BIN" \
@@ -568,7 +568,7 @@ echo ""
 echo "── Step 8/15: Leaf-extraction via probe_leaf_extract.c B-sweep phase ──"
 LEAF_PROBE_BIN="$REPO_ROOT/probe_leaf_extract"
 gcc -O3 -march=native \
-    -Isrc \
+    -Isrc/cpu \
     -I"$DEVICE_DIR" \
     $HOMEBREW_INC \
     -o "$LEAF_PROBE_BIN" \
@@ -677,7 +677,7 @@ echo ""
 echo "── Step 9/15: Schoolbook per-size microbenchmark (tools/bench_schoolbook_tree.c) ──"
 SCHOOLBOOK_BENCH_BIN="$REPO_ROOT/bench_schoolbook_tree"
 gcc -O3 -march=native \
-    -Isrc \
+    -Isrc/cpu \
     -I"$DEVICE_DIR" \
     $HOMEBREW_INC \
     -o "$SCHOOLBOOK_BENCH_BIN" \
@@ -958,11 +958,11 @@ echo "  This binary-searches the real linear-vs-hybrid crossover k(n)"
 echo "  via direct timing (median of 7 reps, Q=256).  Takes several minutes."
 CROSSOVER_BIN="$REPO_ROOT/calibrate_crossover"
 gcc -O3 -march=native \
-    -Isrc \
+    -Isrc/cpu \
     -I"$DEVICE_DIR" \
     $HOMEBREW_INC \
     -o "$CROSSOVER_BIN" \
-    tools/calibrate_crossover.c src/icm.c \
+    tools/calibrate_crossover.c src/cpu/icm.c \
     $HOMEBREW_LIB \
     -lfftw3 -lm \
     $ACCEL_FLAGS $VEC_FLAGS
@@ -1070,11 +1070,11 @@ echo "  Times every candidate B at each (n,k) grid point"
 echo "  (median of 7 reps, Q=256).  Takes several minutes."
 BESTB_BIN="$REPO_ROOT/calibrate_best_b"
 gcc -O3 -march=native \
-    -Isrc \
+    -Isrc/cpu \
     -I"$DEVICE_DIR" \
     $HOMEBREW_INC \
     -o "$BESTB_BIN" \
-    tools/calibrate_best_b.c src/icm.c \
+    tools/calibrate_best_b.c src/cpu/icm.c \
     $HOMEBREW_LIB \
     -lfftw3 -lm \
     $ACCEL_FLAGS $VEC_FLAGS

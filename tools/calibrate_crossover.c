@@ -18,12 +18,12 @@
  * small table of (n, k_cross) pairs to paste into devices/<DEVICE>/fft_config.h.
  *
  * Build (macOS M3 Pro):
- *   gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
- *       -o build/calibrate_crossover tools/calibrate_crossover.c src/icm.c \
+ *   gcc -O3 -march=native -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
+ *       -o build/calibrate_crossover tools/calibrate_crossover.c src/cpu/icm.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  * Build (Linux/Zen4, AOCL-FFTW):
- *   gcc -O3 -march=znver4 -Isrc -Idevices/zen4 -I/usr/local/aocl-fftw/include \
- *       -o build/calibrate_crossover tools/calibrate_crossover.c src/icm.c \
+ *   gcc -O3 -march=znver4 -Isrc/cpu -Idevices/zen4 -I/usr/local/aocl-fftw/include \
+ *       -o build/calibrate_crossover tools/calibrate_crossover.c src/cpu/icm.c \
  *       -L/usr/local/aocl-fftw/lib -Wl,-rpath,/usr/local/aocl-fftw/lib \
  *       -lfftw3 -lm -ldl -lmvec
  */

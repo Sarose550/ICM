@@ -20,10 +20,10 @@
  *
  *   CUFFTDX_INC=$(find /usr/local/lib -maxdepth 4 -type d -path '*dist-packages/nvidia/mathdx/include' | head -1)
  *
- *   nvcc -O3 -std=c++17 -arch=sm_100 -Isrc -Idevices/b200 -Isrc/gpu \
+ *   nvcc -O3 -std=c++17 -arch=sm_100 -Isrc/cpu -Idevices/b200 -Isrc/gpu \
  *        -I"$CUFFTDX_INC" -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX \
  *        -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY \
- *        -dc -o build/threshold_search_gpu.o scripts/threshold_search_gpu.cu
+ *        -dc -o build/threshold_search_gpu.o tools/threshold_search_gpu.cu
  *
  *   nvcc -O3 -std=c++17 -arch=sm_100 \
  *        -o threshold_search_gpu build/threshold_search_gpu.o \

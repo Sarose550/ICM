@@ -6,7 +6,7 @@ Parameterized by device; produces the full calibration point list and band
 boundaries per the adaptive calibration methodology.
 
 Smooth-number logic must match the codebase exactly:
-  - CPU: build_fftw_size_table() in src/icm.c
+  - CPU: build_fftw_size_table() in src/cpu/icm.c
   - GPU: build_smooth_table()   in src/gpu/gpu_plan.cu
 
 Usage:
@@ -29,7 +29,7 @@ import sys
 
 def generate_7smooth_cpu(max_n: int) -> list[int]:
     """
-    Exact port of build_fftw_size_table() from src/icm.c lines 524-536.
+    Exact port of build_fftw_size_table() from src/cpu/icm.c lines 524-536.
 
     Hardcoded to 131072 in the original; parameterized here so we can
     reuse the identical loop structure at any cap.  No early-break
@@ -51,7 +51,7 @@ def generate_7smooth_cpu(max_n: int) -> list[int]:
             b *= 3
         a *= 2
 
-    # Insertion sort, matches src/icm.c exactly (~500 elements, one-time)
+    # Insertion sort, matches src/cpu/icm.c exactly (~500 elements, one-time)
     for i in range(1, len(smooth)):
         key = smooth[i]
         j = i - 1

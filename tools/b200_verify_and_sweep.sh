@@ -13,8 +13,8 @@
 #
 # ── Usage ────────────────────────────────────────────────────────────────────
 #
-#   B200_HOST=<host> B200_PORT=<port> ./scripts/b200_verify_and_sweep.sh
-#   ./scripts/b200_verify_and_sweep.sh <host> <port>
+#   B200_HOST=<host> B200_PORT=<port> ./tools/b200_verify_and_sweep.sh
+#   ./tools/b200_verify_and_sweep.sh <host> <port>
 #
 #   Positional args take precedence over env vars.
 #
@@ -214,9 +214,9 @@ echo "=== STAGE 2 (Gate 2): build & run gpu_ws_repro ==="
 # reference object (not needed here) and minus VkFFT (not configured).
 echo "--- build gpu_ws_repro ---"
 CUDA_FLAGS="-O3 -std=c++17 -arch=sm_100"
-GPU_INCLUDES="-Isrc -Idevices/b200"
+GPU_INCLUDES="-Isrc/cpu -Idevices/b200"
 CUFFTDX_FLAGS="$CUFFTDX_INC -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY"
-REPRO_SRC="scripts/gpu_ws_repro.cu"
+REPRO_SRC="tools/gpu_ws_repro.cu"
 REPRO_OBJ="build/gpu_ws_repro.o"
 REPRO_BIN="gpu_ws_repro"
 

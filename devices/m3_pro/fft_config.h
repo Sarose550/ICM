@@ -192,8 +192,7 @@ static const double block_build_ns_per_player[6] = {
  * icm_equity() call's cold allocation, unlike the old bench_leaf_fma.c
  * table which was 2-2.3x too high: it only ever exercised the expensive
  * forward-divide branch, but real production data is ~99.9% the cheap
- * "zero" branch (aj underflows, no division at all). See HANDOFF.md and
- * DISPATCH_GAP_ANALYSIS.md. */
+ * "zero" branch (aj underflows, no division at all). See HANDOFF.md. */
 #ifndef LEAF_FMA_NS_PER_PLAYER_DEFINED
 #define LEAF_FMA_NS_PER_PLAYER_DEFINED
 static const double leaf_fma_ns_per_player[6] = {

@@ -1,7 +1,7 @@
 /* bench_wrap_fma.c — isolated microbenchmark for the wrap-correction loop.
  *
  * Directly measures WRAP_FMA_NS by timing ONLY the wrap-correction inner
- * loop (verbatim copy of src/icm.c's polymul_fft_wrap correction), sweeping
+ * loop (verbatim copy of src/cpu/icm.c's polymul_fft_wrap correction), sweeping
  * wrap_m over a wide range so it dominates the measured time by construction.
  *
  * The indirect regression in tools/fit_cost_model.py is structurally unable
@@ -35,7 +35,7 @@ static double now_ns(void) {
 }
 
 /* Verbatim copy of the correction loop body from polymul_fft_wrap
- * (src/icm.c).  Returns exact FMA count performed. */
+ * (src/cpu/icm.c).  Returns exact FMA count performed. */
 static long long wrap_correct(const double *a, int na, const double *b, int nb,
                                double *c, int k, int fft_n, int wrap_m,
                                double *out_sink) {

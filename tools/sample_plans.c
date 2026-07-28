@@ -9,10 +9,10 @@
  *
  * Build (DEVICE = target device dir under devices/, e.g. zen4 or m3_pro):
  *   # macOS
- *   gcc -O3 -march=native -Isrc -Idevices/<DEVICE> -I/opt/homebrew/include \
+ *   gcc -O3 -march=native -Isrc/cpu -Idevices/<DEVICE> -I/opt/homebrew/include \
  *       -o sample_plans tools/sample_plans.c -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  *   # Linux
- *   gcc -O3 -march=native -Isrc -Idevices/<DEVICE> \
+ *   gcc -O3 -march=native -Isrc/cpu -Idevices/<DEVICE> \
  *       -o sample_plans tools/sample_plans.c -lfftw3 -lm -ldl -lmvec
  */
 #include "icm.c"

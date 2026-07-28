@@ -6,7 +6,7 @@
  * indexed identically to calib_sizes[] (N_CALIBRATED_SIZES entries).
  * Above the cutoff (1024), sentinel values of -1.0.
  *
- * Build: gcc -O3 -march=native -Isrc -Idevices/m3_pro \
+ * Build: gcc -O3 -march=native -Isrc/cpu -Idevices/m3_pro \
  *        -I/opt/homebrew/include -o bench_schoolbook_tree \
  *        tools/bench_schoolbook_tree.c -L/opt/homebrew/lib -lfftw3 -lm \
  *        -framework Accelerate

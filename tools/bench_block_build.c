@@ -1,7 +1,7 @@
 /* bench_block_build.c — isolated microbenchmark for the block-build phase.
  *
  * Directly measures BLOCK_FMA_NS and BLOCK_MEM_NS by timing ONLY the
- * block-build inner loop (verbatim copy of src/icm.c's engine_hybrid_core
+ * block-build inner loop (verbatim copy of src/cpu/icm.c's engine_hybrid_core
  * block-build section), sweeping the block size B across the engine's
  * actual candidate list {8,16,24,32,48,64} plus edge points for a cleaner
  * regression.
@@ -9,7 +9,7 @@
  * The block-build phase builds the per-block polynomial product
  *   P(x) = ∏_{j in block} (a_j·x + (1-a_j))
  * via a nested loop: for each player, bsize FMAs update the coefficient
- * array P[0..B].  The cost-model estimate (src/icm.c lines 2178, 2526-2528):
+ * array P[0..B].  The cost-model estimate (src/cpu/icm.c lines 2178, 2526-2528):
  *   block_build = n * ((B+1)/2 * BLOCK_FMA_NS + BLOCK_MEM_NS)
  * models this as a per-player FMA term scaling with (B+1)/2 plus a fixed
  * per-player memory-streaming cost.
@@ -60,7 +60,7 @@ static double now_ns(void) {
 
 /* ── Verbatim block-build for one block ─────────────────────────────
  *
- * This is the EXACT loop body from engine_hybrid_core() in src/icm.c,
+ * This is the EXACT loop body from engine_hybrid_core() in src/cpu/icm.c,
  * lines ~1963-1987 (the "Steps 1+2 fused" comment block).  The only
  * adaptation is that P, a, and leaf are passed as parameters instead of
  * being indexed from the HybridCtx struct — the computation is identical.

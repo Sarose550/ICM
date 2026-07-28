@@ -75,7 +75,7 @@ static double empirical_crossover_k(int n) {
 
 /* ── Empirical hybrid-engine block-size (B) lookup ────────────────────
  *
- * select_best_B() (src/icm.c) chooses which block size B in
+ * select_best_B() (src/cpu/icm.c) chooses which block size B in
  * {8,16,24,32,48,64} the hybrid engine uses, via 2D nearest-neighbor
  * lookup over a calibrated (n,k,B) grid (see tools/calibrate_best_b.c).
  *
