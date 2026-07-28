@@ -211,7 +211,7 @@ echo "=== STAGE 2 (Gate 2): build & run gpu_ws_repro ==="
 
 # Compile the repro against the object files already built in Stage 1.
 # Mirror the bench_gpu_fused build recipe from the Makefile, minus the CPU
-# reference object (not needed here) and minus VkFFT (not configured).
+# reference object (not needed here).
 echo "--- build gpu_ws_repro ---"
 CUDA_FLAGS="-O3 -std=c++17 -arch=sm_100"
 GPU_INCLUDES="-Isrc/cpu -Idevices/b200"

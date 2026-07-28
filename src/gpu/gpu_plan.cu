@@ -1168,7 +1168,7 @@ bool build_plan_metadata(GpuPlan *plan) {
     choose_uncached_levels(plan);
 
     /* Compact fft_stride: store polynomials at psz spacing.
-     * cuFFT/VkFFT use a scratch buffer with gather/scatter for fft_n-strided access. */
+     * cuFFT uses a scratch buffer with gather/scatter for fft_n-strided access. */
     plan->fft_stride.assign(plan->L, 0);
     for (int ell = 0; ell < plan->L; ++ell) {
         plan->fft_stride[ell] = plan->psz[ell];
@@ -1514,124 +1514,6 @@ size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb) {
     return max_ws;
 }
 
-#if ICM_HAVE_VKFFT
-/* ── VkFFT plan helpers ───────────────────────────────────────── */
-
-bool should_use_vkfft(int fft_n) {
-    /* Only use VkFFT for tier-3 sizes (> GPU_FUSED_MAX_CONV_LEN) where calibration says VkFFT wins */
-    if (fft_n <= 4096) return false;
-    int idx = find_calib_index(fft_n);
-    if (idx < 0) return false;
-    return gpu_calib_lib[idx] == 1;
-}
-
-/* Note: stream_ptr must point to a persistent cudaStream_t (e.g., &plan->stream_compute).
- * VkFFT stores the pointer, not a copy, so it must remain valid for the app's lifetime. */
-static int s_vkfft_cuda_init_done = 0;
-
-bool create_vkfft_r2c_plan(VkFFTApplication *app, int n, int batch, int stride, cudaStream_t *stream_ptr) {
-    if (!s_vkfft_cuda_init_done) {
-        cuInit(0);
-        s_vkfft_cuda_init_done = 1;
-    }
-    int cn = n / 2 + 1;
-
-    /* Out-of-place R2C/C2R via isInputFormatted/isOutputFormatted.
-     *
-     * Forward R2C: reads real data from inputBuffer at inputBufferStride
-     *              spacing, writes complex to buffer (contiguous at cn).
-     * Inverse C2R: reads complex from buffer, writes real to outputBuffer
-     *              at outputBufferStride spacing.
-     *
-     * This avoids gather/scatter — VkFFT handles the strided real layout
-     * natively, same as cuFFT's idist/odist. The complex side (buffer) is
-     * contiguous at cn complex elements per batch element. */
-
-    /* Main buffer: contiguous complex, cn complex doubles per batch element */
-    uint64_t buf_size = (uint64_t)cn * batch * sizeof(cufftDoubleComplex);
-    /* Input/output buffer: strided real, stride doubles per batch element */
-    uint64_t io_buf_size = (uint64_t)stride * batch * sizeof(double);
-
-    VkFFTConfiguration config = {};
-    config.FFTdim = 1;
-    config.size[0] = (uint64_t)n;
-    config.numberBatches = (uint64_t)batch;
-    config.doublePrecision = 1;
-    config.performR2C = 1;
-
-    /* Main buffer (complex side): contiguous */
-    config.bufferSize = &buf_size;
-    config.bufferNum = 1;
-    config.bufferStride[0] = (uint64_t)cn;  /* complex elements per batch */
-
-    /* Input buffer (real side): strided at fft_stride */
-    config.isInputFormatted = 1;
-    config.inputBufferSize = &io_buf_size;
-    config.inputBufferStride[0] = (uint64_t)stride;  /* real elements per batch */
-
-    /* Output buffer (real side): strided at fft_stride */
-    config.isOutputFormatted = 1;
-    config.outputBufferSize = &io_buf_size;
-    config.outputBufferStride[0] = (uint64_t)stride;
-
-    CUdevice cuDevice;
-    cuDeviceGet(&cuDevice, 0);
-    config.device = &cuDevice;
-    config.stream = stream_ptr;
-    config.num_streams = 1;
-
-    VkFFTResult res = initializeVkFFT(app, config);
-    if (res != VKFFT_SUCCESS) {
-        fprintf(stderr, "VkFFT init failed for n=%d batch=%d stride=%d: error %d\n",
-                n, batch, stride, (int)res);
-        return false;
-    }
-    return true;
-}
-
-void destroy_vkfft_app(VkFFTApplication *app) {
-    deleteVkFFT(app);
-}
-
-/* Gather strided real data into contiguous buffer for VkFFT in-place R2C.
- * src[batch_idx * src_stride + j] -> dst[batch_idx * (cn*2) + j] for j in [0, fft_n)
- * where cn = fft_n/2+1, padded stride for in-place R2C = cn*2.
- * Zeroes padding element at j = fft_n..cn*2-1. */
-__global__ void k_gather_strided(const double *src, int src_stride, double *dst,
-                                 int fft_n, int batch) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int cn = fft_n / 2 + 1;
-    int dst_stride = cn * 2;  /* in-place R2C stride in doubles */
-    int total = batch * dst_stride;
-    if (idx >= total) return;
-    int b = idx / dst_stride;
-    int j = idx % dst_stride;
-    if (j < fft_n) {
-        dst[idx] = src[b * src_stride + j];
-    } else {
-        dst[idx] = 0.0;  /* zero padding for in-place R2C */
-    }
-}
-
-/* Scatter contiguous VkFFT C2R output back to strided layout.
- * src[batch_idx * (cn*2) + j] -> dst[batch_idx * dst_stride + j] for j in [0, valid_len)
- * Also zeroes dst[j] for j in [valid_len, dst_stride) if needed. */
-__global__ void k_scatter_strided(const double *src, int fft_n, double *dst,
-                                  int dst_stride, int valid_len, int batch) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * dst_stride;
-    if (idx >= total) return;
-    int b = idx / dst_stride;
-    int j = idx % dst_stride;
-    int cn = fft_n / 2 + 1;
-    int src_stride = cn * 2;
-    if (j < valid_len && j < fft_n) {
-        dst[idx] = src[b * src_stride + j];
-    } else {
-        dst[idx] = 0.0;
-    }
-}
-#endif /* ICM_HAVE_VKFFT */
 
 /* ── allocate_plan_device_memory ───────────────────────────────── */
 
@@ -1693,21 +1575,6 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
         if (!CUFFT_OK(cufftSetStream(b.plan_inv, plan->stream_compute))) return false;
     }
 
-#if ICM_HAVE_VKFFT
-    /* VkFFT plans also use stride = fft_n (read/write scratch buffer via gather/scatter) */
-    if (lp.tier == GPU_TIER_CUFFT && should_use_vkfft(fft_n)) {
-        if (create_vkfft_r2c_plan(&b.vkfft_app_fwd, fft_n, qb * child_batch, fft_n, &plan->stream_compute)) {
-            b.vkfft_fwd_initialized = 1;
-            if (create_vkfft_r2c_plan(&b.vkfft_app_inv, fft_n, qb * parent_batch, fft_n, &plan->stream_compute)) {
-                b.vkfft_inv_initialized = 1;
-                b.use_vkfft = 1;
-            } else {
-                destroy_vkfft_app(&b.vkfft_app_fwd);
-                b.vkfft_fwd_initialized = 0;
-            }
-        }
-    }
-#endif
 
     auto &c = plan->corr_fft[ell];
     c.fft_n = fft_n;
@@ -1725,20 +1592,6 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
         if (!CUFFT_OK(cufftSetStream(c.plan_inv, plan->stream_compute))) return false;
     }
 
-#if ICM_HAVE_VKFFT
-    if (b.use_vkfft) {
-        if (create_vkfft_r2c_plan(&c.vkfft_app_fwd, fft_n, qb * parent_batch, fft_n, &plan->stream_compute)) {
-            c.vkfft_fwd_initialized = 1;
-            if (create_vkfft_r2c_plan(&c.vkfft_app_inv, fft_n, qb * 2 * parent_batch, fft_n, &plan->stream_compute)) {
-                c.vkfft_inv_initialized = 1;
-                c.use_vkfft = 1;
-            } else {
-                destroy_vkfft_app(&c.vkfft_app_fwd);
-                c.vkfft_fwd_initialized = 0;
-            }
-        }
-    }
-#endif
 
     if (lp.cache_fft && !plan->d_fft_cache[ell]) {
         size_t bytes_cache = (size_t)qb * (size_t)child_batch * (size_t)cn * sizeof(cufftDoubleComplex);
@@ -1816,7 +1669,7 @@ retry_arena:
         mc_sm = std::max(mc_sm, (size_t)qb*2*pb*cn*sizeof(cufftDoubleComplex));
     }
 
-    /* Scratch buffer for cuFFT/VkFFT gather/scatter (compact storage).
+    /* Scratch buffer for cuFFT gather/scatter (compact storage).
      * Sized to the largest batch across all FFT levels. */
     size_t fft_scratch_bytes = 0;
     for (int ell = 1; ell < plan->L; ++ell) {
@@ -1956,21 +1809,6 @@ retry_arena:
         if (!allocate_level_buffers(plan, ell, {})) return false;
     }
 
-#if ICM_HAVE_VKFFT
-    {
-        int n_vkfft = 0, n_cufft_only = 0;
-        for (int ell = 1; ell < plan->L; ++ell) {
-            if (!plan->levels[ell].use_fft || plan->levels[ell].tier == GPU_TIER_SCHOOLBOOK) continue;
-            if (plan->levels[ell].tier != GPU_TIER_CUFFT) continue;
-            if (plan->build_fft[ell].use_vkfft) n_vkfft++;
-            else n_cufft_only++;
-        }
-        if (n_vkfft > 0) {
-            fprintf(stderr, "VkFFT dual-dispatch: %d tier-3 levels use VkFFT, %d use cuFFT\n",
-                    n_vkfft, n_cufft_only);
-        }
-    }
-#endif
 
     /* Share cuFFT workspace */
     {
@@ -1990,12 +1828,6 @@ retry_arena:
                     for (int e = 1; e < plan->L; ++e) {
                         auto &bf = plan->build_fft[e];
                         auto &cf = plan->corr_fft[e];
-#if ICM_HAVE_VKFFT
-                        if (bf.vkfft_fwd_initialized) { destroy_vkfft_app(&bf.vkfft_app_fwd); bf.vkfft_fwd_initialized = 0; }
-                        if (bf.vkfft_inv_initialized) { destroy_vkfft_app(&bf.vkfft_app_inv); bf.vkfft_inv_initialized = 0; }
-                        if (cf.vkfft_fwd_initialized) { destroy_vkfft_app(&cf.vkfft_app_fwd); cf.vkfft_fwd_initialized = 0; }
-                        if (cf.vkfft_inv_initialized) { destroy_vkfft_app(&cf.vkfft_app_inv); cf.vkfft_inv_initialized = 0; }
-#endif
                         if (bf.plan_fwd) { cufftDestroy(bf.plan_fwd); bf.plan_fwd = 0; }
                         if (bf.plan_inv) { cufftDestroy(bf.plan_inv); bf.plan_inv = 0; }
                         if (cf.plan_fwd) { cufftDestroy(cf.plan_fwd); cf.plan_fwd = 0; }

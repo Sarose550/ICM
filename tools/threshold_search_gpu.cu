@@ -31,7 +31,6 @@
  *        build/gpu_exec_fused.o build/gpu_api_fused.o \
  *        build/gpu_dlink_fused.o -lcufft -lcudart
  *
- *   # If VKFFT is enabled, append: -lnvrtc -lcuda
  *
  * Architecture note: -arch=sm_100 targets B200 (Blackwell).  Verify
  * against the Makefile's CUDA_ARCH default for your target device.

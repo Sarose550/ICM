@@ -251,9 +251,6 @@ int icm_gpu_plan_summary(const IcmGpuPlan *plan_opaque, IcmGpuPlanSummary *summa
         else if (plan->levels[ell].tier == GPU_TIER_FUSED) summary->n_tier2++;
         else {
             summary->n_tier3++;
-#if ICM_HAVE_VKFFT
-            if (plan->build_fft[ell].use_vkfft) summary->n_vkfft++;
-#endif
         }
     }
     summary->q_batch = plan->q_batch;

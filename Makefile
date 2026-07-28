@@ -197,8 +197,6 @@ $(CPU_REF_OBJ): src/cpu/icm.c src/cpu/icm.h devices/$(DEVICE)/fft_config.h | $(B
 	$(CC) $(CFLAGS) $(INCLUDES) -c src/cpu/icm.c -o $@
 
 CUFFTDX_FLAGS = $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY
-VKFFT_FLAGS = $(if $(VKFFT_INC),$(VKFFT_INC) -DUSE_VKFFT)
-VKFFT_LIBS = $(if $(VKFFT_INC),-lnvrtc -lcuda)
 GPU_INCLUDES = $(INCLUDES) -Idevices/b200
 
 # ── Multi-file GPU compilation (separate compilation + device linking) ──
@@ -210,7 +208,7 @@ $(BUILD_DIR)/gpu_%.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu -dc -o $@ $<
 
 $(BUILD_DIR)/gpu_%_fused.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $@ $<
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $@ $<
 
 GPU_OBJS_PLAIN = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
 GPU_OBJS_FUSED = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%_fused.o,$(GPU_SRCS))
@@ -226,40 +224,40 @@ bench_gpu: bench/bench_gpu.cu $(GPU_OBJS_PLAIN) $(BUILD_DIR)/gpu_dlink.o $(CPU_R
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu.o $(GPU_OBJS_PLAIN) $(BUILD_DIR)/gpu_dlink.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
 
 bench_gpu_fused: bench/bench_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ)
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/bench_gpu_fused.o bench/bench_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu_fused.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/bench_gpu_fused.o bench/bench_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu_fused.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
 
 calibrate_gpu: tools/calibrate_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu.o tools/calibrate_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu.o tools/calibrate_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 heatmap_gpu: tools/heatmap_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/heatmap_gpu.o tools/heatmap_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/heatmap_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/heatmap_gpu.o tools/heatmap_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/heatmap_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 push_limit_gpu: tools/push_limit_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/push_limit_gpu.o tools/push_limit_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/push_limit_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/push_limit_gpu.o tools/push_limit_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/push_limit_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 validate_planner_gpu: tools/validate_planner_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/validate_planner_gpu.o tools/validate_planner_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/validate_planner_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/validate_planner_gpu.o tools/validate_planner_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/validate_planner_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 gpu_sample_plans: tools/gpu_sample_plans.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/gpu_sample_plans.o tools/gpu_sample_plans.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_sample_plans.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/gpu_sample_plans.o tools/gpu_sample_plans.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_sample_plans.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 calibrate_gpu_best_b: tools/calibrate_gpu_best_b.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu_best_b.o tools/calibrate_gpu_best_b.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu_best_b.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu_best_b.o tools/calibrate_gpu_best_b.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu_best_b.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 gpu_phase_profile: tools/gpu_phase_profile.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/gpu_phase_profile.o tools/gpu_phase_profile.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_phase_profile.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/gpu_phase_profile.o tools/gpu_phase_profile.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_phase_profile.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 test_gpu_cost_model: tools/test_gpu_cost_model.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_cost_model.o tools/test_gpu_cost_model.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_cost_model.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_cost_model.o tools/test_gpu_cost_model.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_cost_model.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 test_cpu_cost_model: tools/test_cpu_cost_model.c src/cpu/icm.c src/cpu/icm.h devices/$(DEVICE)/fft_config.h
 	# -Wno-unused-function: this tool only exercises a subset of icm.c
