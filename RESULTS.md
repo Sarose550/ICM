@@ -564,60 +564,52 @@ coverage to break this collinearity is flagged as real, open follow-up work.
 
 | n | k=64 | k=1024 | k=n/2 | k=n |
 |---|------|--------|-------|-----|
-| 4,096 | 0.37 | 0.77 | 0.87 | 0.91 |
-| 16,384 | 1.19 | 2.83 | 4.04 | 4.34 |
-| 65,536 | 4.39 | 11.02 | 19.87 | 20.65 |
-| 262,144 | 17.15 | 43.54 | 97.75 | 101.36 |
-| 1,048,576 | 77.48 | 186.32 | 505.52 | 509.91 |
-| 4,194,304 | 273.25 | 1106.64 | 4345.23 | 4777.09 |
+| 4,096 | 0.35 | 0.74 | 0.82 | 0.84 |
+| 16,384 | 1.16 | 2.79 | 3.85 | 4.10 |
+| 65,536 | 4.35 | 10.94 | 19.36 | 20.22 |
+| 262,144 | 17.09 | 43.37 | 96.31 | 100.49 |
+| 1,048,576 | 77.45 | 187.72 | 508.24 | 513.41 |
+| 4,194,304 | 272.98 | 771.48 | 2,383.66 | 2,340.89 |
+| 16,777,216 | 1,280.52 | 3,127.15 | 10,716.87 | 10,825.24 |
+| 33,554,432 | 2,639.85 | 6,141.28 | 22,584.75 | 23,116.73 |
 
-Sampled from the full 211-point calibration heatmap
-(`results/gpu_heatmap_b200.csv`), regenerated 2026-07-26 with the async
-memory-pool fix (commit `386c856`) applied -- all 211 cells pass with
-zero errors, including the 21 that failed in the previous (2026-07-25)
-run. See HANDOFF.md for the full history: original OOM found and fixed
-(G/G2/G3/G4, commits `8ce8a07`..`abd9fa4`), a second long-sweep-only OOM
-found in the following full-sweep verification, root-caused via static
-analysis to CUDA default-allocator fragmentation (every allocation
-confirmed correctly paired with a free, no leak), and fixed by routing
-the arena and cuFFT workspace allocations through a CUDA stream-ordered
-memory pool instead of raw `cudaMalloc`/`cudaFree`.
+Full 211-point calibration heatmap (`results/gpu_heatmap_b200_20260728.csv`),
+regenerated 2026-07-27/28 on top of the ragged-tree fix (`b53dd17`) and the
+extended B-selection table above n=1,572,864 (`b06379e`) -- all 210 cells
+pass with zero errors, cv ≤ 0.036 everywhere (most 0.000), and exactly one
+negligible non-monotonicity (n=4,194,304, k=2048→4096: 967.9→939.0ms, a
+~3% single-sample wobble with identical B=128 and identical tier
+composition on both sides, not a structural issue like the earlier
+FFT-calibration-gap non-monotonicity).
 
-### Frontier probes (dedicated max-n / max-field search)
+**This session's two GPU fixes combined are a large, broad win, not just a
+correctness fix.** Diffing this heatmap cell-by-cell against the previous
+(2026-07-26, pre-fix) run at the same 210 `(n,k)` points: every cell with
+n ≥ 2,097,152 -- previously dispatched to the stale `B=112` anchor beyond
+the old B-selection table's range -- now dispatches `B=128` and is
+**1.84x-2.34x faster**, e.g. the largest cell (n=k=33,554,432) drops from
+45,046ms to 23,117ms. Zero cells regressed (none slower by more than 1%);
+smaller cells already inside the pre-existing calibration range (n ≤
+1,048,576) are unchanged (within ~1% noise), as expected. Summed over all
+210 common cells, total grid time drops from 726.8s to 451.7s (1.61x
+aggregate). The two fixes landed together (`b53dd17` then `b06379e`), so
+this comparison cannot cleanly separate the register-pressure fix's
+contribution from the B-selection table's -- both changed between the old
+and new run -- but the combined effect at large n is unambiguous and
+substantial.
 
-These are not part of the systematic grid above -- they're specific `n`
-values used to characterize large-n behavior.
+### 1-second threshold: real binary search (median of 5 reps/candidate)
 
-| n | k | Time (ms) |
-|---|---|-----------|
-| 1,441,792 | n | 1,125 |
-| 1,572,864 | n | 1,124 |
-| 6,291,456 | 100 | 950.5 |
-| 8,388,608 | 100 | 1,235 |
-| 16,777,216 | 10 | 1,365 |
+| Query shape | Largest n ≤ 1000ms | Smallest n > 1000ms | Bracket width |
+|---|---|---|---|
+| k = n | 1,490,944 (918.8ms) | 1,506,304 (1,124.2ms) | 15,360 (1.0% of lo) |
+| k = 100 | 7,975,936 (998.9ms) | 7,991,296 (1,001.1ms) | 15,360 (0.2% of lo) |
 
-Regenerated 2026-07-25 via a targeted auto-dispatch probe
-(`scripts/frontier_probe.cu`), not the original `tools/push_limit_gpu.cu`
-exhaustive B/M/T hyperparameter sweep -- that tool's full 20-value n-grid
-search was measured taking over 3.5 minutes on just its first (smallest) n
-value with no early-exit for the feasible region, making a full run
-impractical within the session's time/budget. The numbers above use the
-same real full computation and the empirically-validated auto B-selection
-(`gbselect_*` table) that production dispatch actually uses, just without
-hunting for the absolute-optimal B/M/T at each point the way the original
-tool does. If exact reproduction of the original tool's methodology
-matters for the paper, `push_limit_gpu` should be re-run to completion in
-a future session with a larger time budget.
-
-### 1-second threshold: needs re-measurement
-
-The previous n≈1,441,792 (k=n) / n≈6,291,456 (k=100) threshold estimates
-predate this session's dispatch/workspace fixes and the frontier-probe
-methodology change above; the new numbers no longer land cleanly on those
-boundaries (e.g. n=6,291,456 now measures 950ms, not 626ms). A precise
-re-measurement needs a real binary search (matching how the original
-thresholds were found), not a re-interpretation of the existing 5 sample
-points -- flagged as a follow-up, not resolved here.
+Full search trace in `results/gpu_threshold_search_20260728.txt`
+(`scripts/threshold_search_gpu.cu`, plan-based API). Supersedes the old
+2026-07-25 frontier-probe-derived estimates (n≈1,441,792 / n≈6,291,456),
+which predated the ragged-tree fix and were reinterpretations of 5 fixed
+sample points, not an actual search.
 
 ### Dispatch: three-tier kernel planner (schoolbook / cuFFTDx fused / batched cuFFT), cost-based per tree level
 

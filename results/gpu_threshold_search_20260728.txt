@@ -1,0 +1,49 @@
+threshold_search_gpu — binary search for 1000ms crossing
+method: median of 5 reps per candidate n, Q=256
+plan-based API (icm_gpu_plan_create + icm_gpu_equity_with_plan)
+
+=== Binary search: k=n ===
+n            k        median_ms    verdict
+----------------------------------------
+262144       262144   100.516      BELOW
+4194304      4194304  2335.088     ABOVE
+2228224      2228224  2080.323     ABOVE  [lo=262144 hi=2228224]
+1245184      1245184  810.629      BELOW  [lo=1245184 hi=2228224]
+1736704      1736704  1144.316     ABOVE  [lo=1245184 hi=1736704]
+1490944      1490944  918.807      BELOW  [lo=1490944 hi=1736704]
+1613824      1613824  1124.147     ABOVE  [lo=1490944 hi=1613824]
+1552384      1552384  1136.021     ABOVE  [lo=1490944 hi=1552384]
+1521664      1521664  1127.321     ABOVE  [lo=1490944 hi=1521664]
+1506304      1506304  1124.207     ABOVE  [lo=1490944 hi=1506304]
+
+--- k=n threshold ---
+Largest n ≤ 1000ms: 1490944
+Smallest n > 1000ms: 1506304
+Search bracket width: 15360 (1.0% of lo)
+
+=== Binary search: k=100 ===
+n            k        median_ms    verdict
+----------------------------------------
+1048576      100      102.871      BELOW
+16777216     100      1816.799     ABOVE
+8912896      100      1098.999     ABOVE  [lo=1048576 hi=8912896]
+4980736      100      790.676      BELOW  [lo=4980736 hi=8912896]
+6946816      100      886.173      BELOW  [lo=6946816 hi=8912896]
+7929856      100      992.897      BELOW  [lo=7929856 hi=8912896]
+8421376      100      1050.939     ABOVE  [lo=7929856 hi=8421376]
+8175616      100      1017.663     ABOVE  [lo=7929856 hi=8175616]
+8052736      100      1009.015     ABOVE  [lo=7929856 hi=8052736]
+7991296      100      1001.060     ABOVE  [lo=7929856 hi=7991296]
+7960576      100      996.591      BELOW  [lo=7960576 hi=7991296]
+7975936      100      998.857      BELOW  [lo=7975936 hi=7991296]
+
+--- k=100 threshold ---
+Largest n ≤ 1000ms: 7975936
+Smallest n > 1000ms: 7991296
+Search bracket width: 15360 (0.2% of lo)
+
+========================================
+FINAL RESULTS:
+  k=n   threshold n = 1490944
+  k=100 threshold n = 7975936
+========================================
