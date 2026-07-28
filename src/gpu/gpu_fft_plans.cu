@@ -15,6 +15,27 @@
 
 namespace icm_gpu_detail {
 
+/* Look up offline-calibrated cuFFT workspace per-batch-unit (bytes).
+ * Returns SIZE_MAX if the size is not in the table, the table is absent
+ * (no GPU_HAS_CUFFT_WS_CALIB), or the size was probed but never
+ * successfully calibrated (calibrate_gpu.cu stores its own SIZE_MAX-style
+ * sentinel for those -- never treat that as a real 0-ish byte count).
+ * Mirrors find_calib_index exactly. */
+#ifdef GPU_HAS_CUFFT_WS_CALIB
+static size_t lookup_cufft_ws_bytes(int fft_n, bool r2c) {
+    int idx = find_calib_index(fft_n);
+    if (idx < 0) return SIZE_MAX;
+    unsigned long long v = r2c ? gpu_calib_r2c_ws_bytes[idx]
+                                : gpu_calib_c2r_ws_bytes[idx];
+    if (v == ~0ULL) return SIZE_MAX;
+    return (size_t)v;
+}
+#else
+static size_t lookup_cufft_ws_bytes(int, bool) {
+    return SIZE_MAX;
+}
+#endif
+
 /* Check whether batch × n would overflow signed 32-bit internally in cuFFT.
  * cufftMakePlanMany takes int parameters; very large batch×size products
  * can overflow cuFFT's internal 32-bit indexing, producing
