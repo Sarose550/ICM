@@ -641,8 +641,27 @@ int main(int argc, char **argv) {
 
     int verify_ns_quick[] = {16, 32, 64, 128, 256, 1024, 4096};
     int verify_ns_full[]  = {16, 32, 64, 128, 256, 1024, 4096, 16384, 65536};
-    int *verify_ns = verify_only ? verify_ns_full : verify_ns_quick;
-    int n_vn = verify_only ? 9 : 7;
+    int n_vn_full = 9, n_vn_quick = 7;
+    int *verify_ns;
+    int n_vn;
+
+    if (verify_only) {
+        verify_ns = verify_ns_full;
+        n_vn = n_vn_full;
+        /* ICM_VERIFY_MAX_N caps the largest n in CI verify runs so the
+         * per-PR gate finishes in 1-2 minutes.  n=65536 is the main
+         * offender — n=4096-16384 already exercises every engine, every
+         * tier decision, and every cross-check.  When unset (local runs),
+         * the full set is always used and behaviour is unchanged. */
+        char *max_n_str = getenv("ICM_VERIFY_MAX_N");
+        if (max_n_str) {
+            int max_n = atoi(max_n_str);
+            while (n_vn > 0 && verify_ns[n_vn - 1] > max_n) n_vn--;
+        }
+    } else {
+        verify_ns = verify_ns_quick;
+        n_vn = n_vn_quick;
+    }
 
     int all_pass = 1;
 
