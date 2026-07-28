@@ -200,7 +200,7 @@ CUFFTDX_FLAGS = $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DIS
 GPU_INCLUDES = $(INCLUDES) -Idevices/b200
 
 # ── Multi-file GPU compilation (separate compilation + device linking) ──
-GPU_SRCS = src/gpu/gpu_kernels.cu src/gpu/gpu_plan.cu src/gpu/gpu_exec.cu src/gpu/gpu_api.cu
+GPU_SRCS = src/gpu/gpu_kernels.cu src/gpu/gpu_plan.cu src/gpu/gpu_fft_plans.cu src/gpu/gpu_exec.cu src/gpu/gpu_api.cu
 GPU_OBJS = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
 GPU_HDRS = src/gpu/gpu_internal.h src/gpu/icm_gpu.h devices/b200/gpu_fft_config.h
 
