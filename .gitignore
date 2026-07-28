@@ -136,3 +136,8 @@ test_cpu_cost_model_*
 
 # AI agent project instructions -- not for public repo view
 CLAUDE.md
+
+# AI agent session logs / ephemeral sprint boards -- internal only, contain
+# rented-hardware IPs and cloud rental contract IDs, not for public repo view
+HANDOFF.md
+SPRINT_GPU_MONOTONICITY_DAG.md
