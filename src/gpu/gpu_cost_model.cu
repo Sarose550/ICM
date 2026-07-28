@@ -1,5 +1,5 @@
 /*
- * gpu_cost_model.cu — the GPU analytical cost model and plan-parameter choice.
+ * gpu_cost_model.cu: the GPU analytical cost model and plan-parameter choice.
  *
  * Everything that DECIDES what a plan should look like, with no side effects
  * beyond reading the calibration tables in gpu_fft_config.h: per-size FFT and
@@ -94,11 +94,11 @@ double estimate_cufft_pipeline_ns(int fft_n) {
 /* Batch-aware cuFFT per-pipeline cost.
  *
  * The calibrated per-pipeline cost (from gpu_calib_cufft_ns) is measured at
- * a moderate batch that varies by FFT size — typically 1024 for N ≤ 2048,
+ * a moderate batch that varies by FFT size (typically 1024 for N ≤ 2048,
  * 512 for N ≤ 8192, down to 16 for the largest sizes.  This calibration
  * batch is large enough for reasonable GPU utilisation, but in the q-batch
  * execution pipeline the effective batch per cuFFT call is q_batch × nn[ell],
- * which can reach 10 000–100 000.  At these large batches, kernel-launch
+ * which can reach 10 000 to 100 000.  At these large batches, kernel-launch
  * overhead fully amortises and the per-pipeline cost drops to a floor
  * determined by HBM bandwidth and compute throughput.
  *
@@ -237,7 +237,7 @@ void best_fft_config_gpu(int conv_len, int len_P, double correction_scale,
         }
     }
     /* Also consider the smallest smooth FFT >= conv_len (wrap_m = 0).
-     * This matters when conv_len exceeds the largest calibrated size — the
+     * This matters when conv_len exceeds the largest calibrated size; the
      * extrapolated cost without any wrap correction can beat a calibrated
      * size that requires large wrap. */
     if (best_m > 0) {
@@ -380,12 +380,12 @@ double tree_school_ns_per_fma() {
 #ifdef GPU_TREE_SCHOOL_NS_PER_FMA
     return GPU_TREE_SCHOOL_NS_PER_FMA;
 #else
-    /* Use the calibrated schoolbook FMA throughput — the physical rate at which
+    /* Use the calibrated schoolbook FMA throughput, the physical rate at which
      * the GPU executes FMA instructions when the SMs are saturated.  This is
      * correct for wrap correction costs (large working set, GPU fully busy)
      * and for schoolbook tier comparisons at sizes where fused is not available
      * (conv_len > GPU_FUSED_MAX_CONV_LEN, so conv_len^2 is large enough to
-     * saturate the GPU). Do not blend in GPU_BLOCK_BUILD_NS_PER_FMA here — that
+     * saturate the GPU). Do not blend in GPU_BLOCK_BUILD_NS_PER_FMA here; that
      * rate reflects block-build overhead, not raw FMA throughput, and inflating
      * this value causes wrong B selection at large n where wrap-correction
      * cost dominates. */
@@ -472,7 +472,7 @@ int pick_tier_for_fft_len(int fft_n, int conv_len) {
     }
 
     /* Fused not calibrated at this fft_n but conv_len is within the fused
-     * range — the schoolbook FMA model is unreliable here (per-parent
+     * range: the schoolbook FMA model is unreliable here (per-parent
      * overhead dominates at small conv_len, underestimating actual cost
      * by 10-20×).  Return cuFFT; the caller's fused fallback will check
      * the power-of-2 fused option separately. */
@@ -602,7 +602,7 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
 
     /* Estimate q_batch from VRAM budget, matching gpu_api.cu per_q_bytes.
      * Includes poly+g arrays, block prods, a_sorted, PLUS spec buffers,
-     * FFT scratch, and FFT cache — all of which scale with q_batch. */
+     * FFT scratch, and FFT cache, all of which scale with q_batch. */
     double assumed_qb = 64.0;
     {
         size_t per_q = 0;
@@ -735,7 +735,7 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         /* If the cuFFT config chose a non-fused size, check whether a
          * power-of-2 fused size would be cheaper.  The fused kernel operates
          * at conv_len <= GPU_FUSED_MAX_CONV_LEN with zero-padding up to the
-         * next power-of-2 — this is often faster than cuFFT at a smaller
+         * next power-of-2; this is often faster than cuFFT at a smaller
          * non-power-of-2 size because the single-kernel fused approach
          * eliminates 5+ kernel launches.
          * Also fire when tier is already GPU_TIER_FUSED but paying a nonzero
@@ -763,7 +763,7 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
                     current_total = school_build + school_corr;
                 } else if (tier == GPU_TIER_FUSED) {
                     /* Already-fused: baseline is the current fused cost
-                     * including its wrap penalties — compare apples-to-apples
+                     * including its wrap penalties; compare apples-to-apples
                      * against a clean power-of-2 fused alternative. */
                     current_total = estimate_fused_build_ns(fft_n)
                         + estimate_fused_corr_ns(fft_n)
@@ -857,7 +857,7 @@ int gpu_select_best_B_est(int n, int k_pad, const std::vector<int> &smooth) {
     }
     if (largest_valid > 0) return largest_valid;
 
-    /* No candidate fits n/k_pad at all (shouldn't happen in practice) —
+    /* No candidate fits n/k_pad at all (shouldn't happen in practice);
      * fall back to the analytical estimate. */
     CandidateCost best{};
     best.B = 16;

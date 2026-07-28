@@ -144,7 +144,7 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         }
 
         /* Per-Q-point VRAM: poly+g arrays, block prods, a_sorted,
-         * PLUS spec buffers, FFT cache, and scratch — all scale with qb. */
+         * PLUS spec buffers, FFT cache, and scratch, all scale with qb. */
         size_t per_q_bytes = 0;
         size_t max_cb_cn = 0, max_pb_cn = 0, max_cb_fft = 0, cache_per_q = 0;
         for (int ell = 0; ell < plan->L; ++ell)
@@ -169,7 +169,7 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         /* qb>1 extras: a_qbatch[qi], inner_qbatch, block_prods_qbatch.
          * These are allocated per q-point when qb > 1.  Added unconditionally
          * to per_q_bytes (slightly conservative when final qb==1, which is
-         * acceptable — the overestimate only matters at the qb=1→2 boundary). */
+         * acceptable; the overestimate only matters at the qb=1→2 boundary). */
         per_q_bytes += (size_t)plan->n * sizeof(double);          /* a_qbatch slot */
         per_q_bytes += (size_t)plan->n * sizeof(double);          /* inner_qbatch share */
         per_q_bytes += (size_t)plan->N_tree * (plan->B + 1) * sizeof(double); /* block_prods_qbatch */
@@ -178,7 +178,7 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
          * so we can use most of the remaining VRAM.
          *
          * With the memory pool enabled (default), GPU_VRAM_BYTES reflects
-         * total device memory, not current real availability — the pool may
+         * total device memory, not current real availability; the pool may
          * retain freed allocations from prior plans.  This is acceptable
          * because cudaMallocAsync draws from the pool first, so the budget
          * calculation remains a reasonable upper bound.  Callers that need a
@@ -198,7 +198,7 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         /* Proactive cuFFT workspace check: query real workspace size at
          * candidate qb before committing any VRAM.  Halve qb until the
          * total (arena estimate + cuFFT workspace) fits within budget.
-         * qb=1 is accepted unconditionally — the reactive retry in
+         * qb=1 is accepted unconditionally; the reactive retry in
          * allocate_plan_device_memory() remains as a fallback. */
         size_t cufft_ws = 0;
         if (!qb_override && !plan->opts.enable_graphs) {

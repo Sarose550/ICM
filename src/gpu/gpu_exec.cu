@@ -129,7 +129,7 @@ bool run_build_level_fft(GpuPlan *plan, int ell) {
     int total_parent = qb * parent_batch;
 
 
-    /* cuFFT path — bypass scratch when stride already matches fft_n */
+    /* cuFFT path: bypass scratch when stride already matches fft_n */
     int fft_n_b = b.fft_n;
     double *fwd_src = plan->d_poly_levels[ell - 1];
     if (child_stride != fft_n_b) {
@@ -237,7 +237,7 @@ static bool ensure_cufft_plans_for_level(GpuPlan *plan, int ell) {
             if (cf.plan_inv) CUFFT_OK(cufftSetWorkArea(cf.plan_inv, plan->shared_cufft_workspace));
         }
     } else {
-        /* Workspace didn't move — just bind the four new plans */
+        /* Workspace didn't move; just bind the four new plans */
         if (plan->shared_cufft_workspace) {
             CUFFT_OK(cufftSetWorkArea(b.plan_fwd, plan->shared_cufft_workspace));
             CUFFT_OK(cufftSetWorkArea(b.plan_inv, plan->shared_cufft_workspace));
@@ -313,7 +313,7 @@ bool run_prop_level_fft(GpuPlan *plan, int ell) {
     int threads = GPU_THREADS_PER_BLOCK;
     int n_children = 2 * nparents;
 
-    /* cuFFT path — bypass scratch when stride already matches fft_n */
+    /* cuFFT path: bypass scratch when stride already matches fft_n */
     {
         int fft_n = c.fft_n;
         /* D2Z on g_levels[ell]: bypass gather when parent_stride == fft_n */
@@ -495,7 +495,7 @@ bool run_build_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     int threads = GPU_THREADS_PER_BLOCK;
 
 
-    /* cuFFT path — bypass scratch when stride already matches fft_n */
+    /* cuFFT path: bypass scratch when stride already matches fft_n */
     int fft_n_b = b.fft_n;
     double *fwd_src = plan->d_poly_levels[ell - 1];
     if (child_stride != fft_n_b) {
@@ -638,7 +638,7 @@ bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     int n_children = 2 * nparents_total;
 
 
-    /* cuFFT path — bypass scratch when stride already matches fft_n */
+    /* cuFFT path: bypass scratch when stride already matches fft_n */
     {
         int fft_n = c.fft_n;
         /* D2Z on g_levels[ell]: bypass gather when ps == fft_n */
@@ -746,8 +746,6 @@ bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
 }
 
 /* ── run_hybrid_batched_q / run_hybrid_single_q ────────────────── */
-/* These are large functions copied verbatim from the original.
- * They orchestrate kernel launches using the level runners above. */
 
 bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     int threads = GPU_THREADS_PER_BLOCK;

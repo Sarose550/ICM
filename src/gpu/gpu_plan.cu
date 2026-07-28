@@ -126,7 +126,7 @@ bool build_plan_metadata(GpuPlan *plan) {
                     ell, nparents, wrap_scale, bfn, bwm, fft_build / 1e6, school_build / 1e6);
         }
 
-        /* When fused is available, always use FFT path — the schoolbook
+        /* When fused is available, always use FFT path; the schoolbook
          * FMA model underestimates actual cost at small conv_len where
          * per-parent overhead dominates over raw FMAs. */
         double fused_build_check = std::numeric_limits<double>::infinity();
@@ -189,7 +189,7 @@ bool build_plan_metadata(GpuPlan *plan) {
                     double current_total;
                     if (tier == GPU_TIER_FUSED) {
                         /* Already-fused: baseline is the current fused cost
-                         * including its wrap penalties — compare apples-to-apples
+                         * including its wrap penalties; compare apples-to-apples
                          * against a clean power-of-2 fused alternative. */
                         current_total = estimate_fused_build_ns(fft_n)
                             + estimate_fused_corr_ns(fft_n)

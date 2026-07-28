@@ -80,7 +80,7 @@ int icm_gpu_plan_summary(const IcmGpuPlan *plan, IcmGpuPlanSummary *summary);
  *
  * Timing is available through the optional IcmGpuRunStats *stats out-
  * parameter: if non-NULL, stats->total_ns carries the wall-clock time in
- * nanoseconds.  (Pass NULL to suppress timing — you still get 0/-1 return
+ * nanoseconds.  (Pass NULL to suppress timing; you still get 0/-1 return
  * status.)
  */
 int icm_gpu_equity_with_plan(IcmGpuPlan *plan, int Q,

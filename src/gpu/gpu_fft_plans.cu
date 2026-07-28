@@ -1,5 +1,5 @@
 /*
- * gpu_fft_plans.cu — cuFFT plan creation and workspace estimation.
+ * gpu_fft_plans.cu: cuFFT plan creation and workspace estimation.
  *
  * The binding layer between this codebase and the cuFFT library: plan
  * creation (including the 64-bit API path for batch x size products that
@@ -65,7 +65,7 @@ extern "C" cufftResult cufftMakePlanMany64(cufftHandle, int, long long*,
 bool create_cufft_plan(cufftHandle *plan, int n, int batch, bool r2c, int real_dist) {
     if (real_dist <= 0) real_dist = n;
     if (!CUFFT_OK(cufftCreate(plan))) return false;
-    /* Disable auto workspace allocation — we use a shared workspace set later.
+    /* Disable auto workspace allocation; we use a shared workspace set later.
      * Without this, each plan allocates its own workspace on creation,
      * which exhausts VRAM when many large plans coexist. */
     if (!CUFFT_OK(cufftSetAutoAllocation(*plan, 0))) return false;
@@ -135,7 +135,7 @@ size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb) {
         auto &lp = plan->levels[ell];
         if (!lp.use_fft || lp.tier == GPU_TIER_SCHOOLBOOK) continue;
         /* FUSED-tier cuFFTDx-supported levels execute via cuFFTDx (zero workspace);
-         * skip — no cuFFT workspace contribution. */
+         * skip; no cuFFT workspace contribution. */
         if (lp.tier == GPU_TIER_FUSED && plan->opts.use_cufftdx && is_cufftdx_supported_fft_n(lp.fft_n)) continue;
         int fft_n = lp.fft_n;
         int child_batch = plan->nn[ell - 1];

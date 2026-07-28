@@ -1,5 +1,5 @@
 /*
- * gpu_memory.cu — device memory: the arena, the CUDA memory pool, and the
+ * gpu_memory.cu: device memory: the arena, the CUDA memory pool, and the
  * per-level buffer layout.
  *
  * Everything that ALLOCATES, as opposed to everything that decides
