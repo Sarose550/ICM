@@ -110,7 +110,7 @@ Serial: interpolated from bench_grid (n=16,384 at 778 ms, n=32,768 at 1,970 ms).
 
 ## AMD Ryzen 9 7950X (Zen 4, AVX-512, AOCL-FFTW) — 2026-07-27 reference data
 
-> **Reference hardware**: dedicated Zen4 box (84.32.71.35), fresh redeployment 2026-07-27.
+> **Reference hardware**: dedicated Zen4 box, fresh redeployment 2026-07-27.
 > AOCL-FFTW (AMD's official znver4-tuned build, tag 5.3) is the sole FFT backend,
 > built from source with the documented AM5 flag set. A direct A/B test confirmed
 > AOCL is cleanly faster than plain system FFTW at every calibrated size, no dual

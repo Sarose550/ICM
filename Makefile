@@ -17,7 +17,7 @@ DEVICE ?= m3_pro
 
 CC = gcc
 CFLAGS = -O3 -march=native -Wall
-INCLUDES = -Isrc -Idevices/$(DEVICE)
+INCLUDES = -Isrc/cpu -Idevices/$(DEVICE)
 LDFLAGS = -lfftw3 -lm
 NVCC ?= nvcc
 CUDA_ARCH ?= sm_100
@@ -73,8 +73,8 @@ LIBICM_OMP_OBJ = $(BUILD_DIR)/icm_omp.o
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(LIBICM_OBJ): src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+$(LIBICM_OBJ): src/cpu/icm.c src/cpu/icm.h src/cpu/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -c src/cpu/icm.c -o $@
 
 $(LIBICM): $(LIBICM_OBJ)
 	ar rcs $@ $^
@@ -90,8 +90,8 @@ endif
 
 LIBICM_SHARED = $(BUILD_DIR)/libicm.$(SHARED_EXT)
 
-$(BUILD_DIR)/icm_shared.o: src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -fPIC $(INCLUDES) -c src/icm.c -o $@
+$(BUILD_DIR)/icm_shared.o: src/cpu/icm.c src/cpu/icm.h src/cpu/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -fPIC $(INCLUDES) -c src/cpu/icm.c -o $@
 
 $(LIBICM_SHARED): $(BUILD_DIR)/icm_shared.o
 	$(CC) $(SHARED_FLAGS) -o $@ $^ $(LDFLAGS)
@@ -103,8 +103,8 @@ libicm.dylib: $(LIBICM_SHARED)
 libicm.so: $(LIBICM_SHARED)
 
 # OpenMP variant
-$(LIBICM_OMP_OBJ): src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+$(LIBICM_OMP_OBJ): src/cpu/icm.c src/cpu/icm.h src/cpu/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -c src/cpu/icm.c -o $@
 
 $(BUILD_DIR)/libicm_omp.a: $(LIBICM_OMP_OBJ)
 	ar rcs $@ $^
@@ -176,8 +176,8 @@ results-refresh: contour_1s contour_1s_par
 # CPU reference object for GPU benchmarks (cross-check against CPU results)
 CPU_REF_OBJ = $(BUILD_DIR)/icm_cpu_ref.o
 
-$(CPU_REF_OBJ): src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+$(CPU_REF_OBJ): src/cpu/icm.c src/cpu/icm.h devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -c src/cpu/icm.c -o $@
 
 CUFFTDX_FLAGS = $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY
 VKFFT_FLAGS = $(if $(VKFFT_INC),$(VKFFT_INC) -DUSE_VKFFT)
@@ -187,7 +187,7 @@ GPU_INCLUDES = $(INCLUDES) -Idevices/b200
 # ── Multi-file GPU compilation (separate compilation + device linking) ──
 GPU_SRCS = src/gpu/gpu_kernels.cu src/gpu/gpu_plan.cu src/gpu/gpu_exec.cu src/gpu/gpu_api.cu
 GPU_OBJS = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
-GPU_HDRS = src/gpu/gpu_internal.h src/icm_gpu.h devices/b200/gpu_fft_config.h
+GPU_HDRS = src/gpu/gpu_internal.h src/gpu/icm_gpu.h devices/b200/gpu_fft_config.h
 
 $(BUILD_DIR)/gpu_%.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu -dc -o $@ $<
@@ -244,7 +244,7 @@ test_gpu_cost_model: tools/test_gpu_cost_model.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_cost_model.o tools/test_gpu_cost_model.cu
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_cost_model.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
 
-test_cpu_cost_model: tools/test_cpu_cost_model.c src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h
+test_cpu_cost_model: tools/test_cpu_cost_model.c src/cpu/icm.c src/cpu/icm.h devices/$(DEVICE)/fft_config.h
 	# -Wno-unused-function: this tool only exercises a subset of icm.c
 	# (no naive-engine path), so some functions used elsewhere in the
 	# codebase are legitimately unreferenced from this translation unit.

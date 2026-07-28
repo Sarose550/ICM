@@ -4,7 +4,11 @@
  * Produces:
  *   1. fftw_wisdom.dat  — FFTW PATIENT plans for all 7-smooth sizes up to MAX_SIZE
  *   2. fft_config.h     — C header with calib_sizes[], calib_times_ns[], and
- *                          best_fft_config() / best_fft_config_joint() functions
+ *                          the per-device cost-model constants
+ *
+ * The cost-model *functions* (best_fft_config, best_fft_config_joint) are not
+ * generated here — they live once, for all devices, in src/cpu/fft_cost_model.h
+ * and consume the data this tool emits.
  *
  * The generated fft_config.h should be placed in devices/<DEVICE>/fft_config.h.
  *
@@ -329,72 +333,6 @@ static void write_config(const char *filename) {
 "#define DRAM_BW_GBS %.1f\n"
 "#endif\n\n",
         bw_l2_gbs, bw_l3_gbs, bw_dram_gbs);
-
-    /* best_fft_config_joint() — 6-arg version with p_eff for input-wrap cost */
-    fprintf(f,
-"/* ── Cost model functions ── */\n\n"
-"/* Joint optimization of build + paired cached correlate at one shared FFT size.\n"
-" * p_eff = build_conv/2 + 1 (polynomial size at this level) for input-wrap cost. */\n"
-"static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,\n"
-"                                     int *out_size, int *out_build_m, int *out_corr_m) {\n"
-"    int max_conv = (build_conv > corr_conv) ? build_conv : corr_conv;\n"
-"    int min_size = max_conv / 2 + 1;\n"
-"\n"
-"    int lo = 0, hi = N_CALIBRATED_SIZES - 1;\n"
-"    int half = min_size;\n"
-"    while (lo < hi) { int mid = (lo+hi)>>1; if (calib_sizes[mid] < half) lo = mid+1; else hi = mid; }\n"
-"\n"
-"    double best_cost = 1e18;\n"
-"    *out_size = 0; *out_build_m = 0; *out_corr_m = 0;\n"
-"\n"
-"    for (int i = lo; i < N_CALIBRATED_SIZES; i++) {\n"
-"        int S = calib_sizes[i];\n"
-"        if (S > 2 * max_conv) break;\n"
-"        if (S < min_size) continue;\n"
-"        int mb = (S >= build_conv) ? 0 : build_conv - S;\n"
-"        int mc = (S >= corr_conv) ? 0 : corr_conv - S;\n"
-"        double cost = calib_times_ns[i]\n"
-"                    + (double)mb*(mb+1)/2.0 * FMA_NS\n"
-"                    + calib_times_ns[i] * PAIRED_CACHED_CORR_RATIO\n"
-"                    + (double)mc*(mc+1) * FMA_NS;\n"
-"        if (cost < best_cost) {\n"
-"            best_cost = cost;\n"
-"            *out_size = S;\n"
-"            *out_build_m = mb;\n"
-"            *out_corr_m = mc;\n"
-"        }\n"
-"    }\n"
-"    return best_cost;\n"
-"}\n\n");
-
-    /* best_fft_config() — 4-arg version with len_P for input-wrap cost */
-    fprintf(f,
-"/* For a needed convolution length L, find the fastest FFT size.\n"
-" * len_P: polynomial size for input-wrap cost (pass 0 for pure convolution). */\n"
-"static void best_fft_config(int L, int *out_size, int *out_wrap_m, int len_P) {\n"
-"    int lo = 0, hi = N_CALIBRATED_SIZES - 1;\n"
-"    int half_L = L > 1 ? L / 2 : 1;\n"
-"    while (lo < hi) { int mid = (lo+hi)>>1; if (calib_sizes[mid] < half_L) lo = mid+1; else hi = mid; }\n"
-"\n"
-"    double best_cost = 1e18;\n"
-"    *out_size = 0; *out_wrap_m = 0;\n"
-"\n"
-"    int min_size = L / 2 + 1;\n"
-"    for (int i = lo; i < N_CALIBRATED_SIZES; i++) {\n"
-"        int S = calib_sizes[i];\n"
-"        if (S > 2 * L) break;\n"
-"        if (S < min_size) continue;\n"
-"        int m = (S >= L) ? 0 : L - S;\n"
-"        double correction = (len_P > 0) ? (double)m * (m + 1) * FMA_NS\n"
-"                                        : (double)m * (m + 1) / 2.0 * FMA_NS;\n"
-"        double cost = calib_times_ns[i] + correction;\n"
-"        if (cost < best_cost) {\n"
-"            best_cost = cost;\n"
-"            *out_size = S;\n"
-"            *out_wrap_m = m;\n"
-"        }\n"
-"    }\n"
-"}\n");
 
     fclose(f);
     printf("  Written %s (%d sizes)\n\n", filename, n_smooth);
