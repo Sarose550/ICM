@@ -1,0 +1,201 @@
+OpenMP enabled: 16 threads
+=== CORRECTNESS VERIFICATION ===
+
+tree   n=16   uniform      PASS     err=7.44e-13  
+naive  n=16   uniform      PASS     err=7.43e-13  
+linear n=16   uniform      PASS     err=7.43e-13  
+hyb8   n=16   uniform      PASS     err=7.44e-13  
+xchk   n=16   uniform      PASS     diff=4.59e-16  
+V2     n=16   uniform      PASS     err=9.79e-13  
+tree   n=16   adversarial  PASS     err=5.03e-13  
+naive  n=16   adversarial  PASS     err=5.02e-13  
+linear n=16   adversarial  PASS     err=5.02e-13  
+hyb8   n=16   adversarial  PASS     err=5.02e-13  
+xchk   n=16   adversarial  PASS     diff=4.44e-16  
+V2     n=16   adversarial  PASS     err=5.01e-13  
+tree   n=16   geometric    PASS     err=5.81e-13  
+naive  n=16   geometric    PASS     err=5.81e-13  
+linear n=16   geometric    PASS     err=5.81e-13  
+hyb8   n=16   geometric    PASS     err=5.81e-13  
+xchk   n=16   geometric    PASS     diff=4.42e-16  
+V2     n=16   geometric    PASS     err=6.40e-13  
+tree   n=16   equal        PASS     err=1.04e-12  
+naive  n=16   equal        PASS     err=1.04e-12  
+linear n=16   equal        PASS     err=1.04e-12  
+hyb8   n=16   equal        PASS     err=1.04e-12  
+xchk   n=16   equal        PASS     diff=4.18e-16  
+V2     n=16   equal        PASS     err=1.66e-12  
+tree   n=16   adv_1e9      PASS     err=1.54e-10  
+naive  n=16   adv_1e9      PASS     err=1.54e-10  
+linear n=16   adv_1e9      PASS     err=1.54e-10  
+hyb8   n=16   adv_1e9      PASS     err=1.54e-10  
+xchk   n=16   adv_1e9      PASS     diff=2.22e-16  
+V2     n=16   adv_1e9      PASS     err=1.54e-10  
+tree   n=32   uniform      PASS     err=7.83e-13  
+naive  n=32   uniform      PASS     err=7.83e-13  
+linear n=32   uniform      PASS     err=7.83e-13  
+hyb8   n=32   uniform      PASS     err=7.83e-13  
+xchk   n=32   uniform      PASS     diff=5.16e-16  
+V2     n=32   uniform      PASS     err=1.05e-12  
+tree   n=32   adversarial  PASS     err=5.02e-13  
+naive  n=32   adversarial  PASS     err=5.02e-13  
+linear n=32   adversarial  PASS     err=5.02e-13  
+hyb8   n=32   adversarial  PASS     err=5.02e-13  
+xchk   n=32   adversarial  PASS     diff=4.53e-16  
+V2     n=32   adversarial  PASS     err=5.09e-13  
+tree   n=32   geometric    PASS     err=5.83e-13  
+naive  n=32   geometric    PASS     err=5.83e-13  
+linear n=32   geometric    PASS     err=5.83e-13  
+hyb8   n=32   geometric    PASS     err=5.83e-13  
+xchk   n=32   geometric    PASS     diff=1.57e-15  
+V2     n=32   geometric    PASS     err=6.43e-13  
+tree   n=32   equal        PASS     err=1.07e-12  
+naive  n=32   equal        PASS     err=1.07e-12  
+linear n=32   equal        PASS     err=1.08e-12  
+hyb8   n=32   equal        PASS     err=1.07e-12  
+xchk   n=32   equal        PASS     diff=4.13e-16  
+V2     n=32   equal        PASS     err=1.66e-12  
+tree   n=32   adv_1e9      PASS     err=1.54e-10  
+naive  n=32   adv_1e9      PASS     err=1.54e-10  
+linear n=32   adv_1e9      PASS     err=1.54e-10  
+hyb8   n=32   adv_1e9      PASS     err=1.54e-10  
+xchk   n=32   adv_1e9      PASS     diff=5.67e-16  
+V2     n=32   adv_1e9      PASS     err=1.54e-10  
+tree   n=64   uniform      PASS     err=8.11e-13  
+naive  n=64   uniform      PASS     err=8.11e-13  
+linear n=64   uniform      PASS     err=8.11e-13  
+hyb8   n=64   uniform      PASS     err=8.11e-13  
+xchk   n=64   uniform      PASS     diff=1.05e-15  
+V2     n=64   uniform      PASS     err=1.09e-12  
+tree   n=64   adversarial  PASS     err=5.04e-13  
+naive  n=64   adversarial  PASS     err=5.03e-13  
+linear n=64   adversarial  PASS     err=5.04e-13  
+hyb8   n=64   adversarial  PASS     err=5.03e-13  
+xchk   n=64   adversarial  PASS     diff=1.11e-15  
+V2     n=64   adversarial  PASS     err=4.57e-13  
+tree   n=64   geometric    PASS     err=5.85e-13  
+naive  n=64   geometric    PASS     err=5.84e-13  
+linear n=64   geometric    PASS     err=5.84e-13  
+hyb8   n=64   geometric    PASS     err=5.84e-13  
+xchk   n=64   geometric    PASS     diff=9.58e-16  
+V2     n=64   geometric    PASS     err=6.46e-13  
+tree   n=64   equal        PASS     err=1.09e-12  
+naive  n=64   equal        PASS     err=1.09e-12  
+linear n=64   equal        PASS     err=1.09e-12  
+hyb8   n=64   equal        PASS     err=1.09e-12  
+xchk   n=64   equal        PASS     diff=3.82e-16  
+V2     n=64   equal        PASS     err=1.67e-12  
+tree   n=64   adv_1e9      PASS     err=1.54e-10  
+naive  n=64   adv_1e9      PASS     err=1.54e-10  
+linear n=64   adv_1e9      PASS     err=1.54e-10  
+hyb8   n=64   adv_1e9      PASS     err=1.54e-10  
+xchk   n=64   adv_1e9      PASS     diff=8.43e-16  
+V2     n=64   adv_1e9      PASS     err=1.54e-10  
+tree   n=128  uniform      PASS     err=8.17e-13  
+naive  n=128  uniform      PASS     err=8.15e-13  
+linear n=128  uniform      PASS     err=8.15e-13  
+hyb8   n=128  uniform      PASS     err=8.15e-13  
+xchk   n=128  uniform      PASS     diff=1.53e-15  
+V2     n=128  uniform      PASS     err=1.10e-12  
+tree   n=128  adversarial  PASS     err=5.03e-13  
+naive  n=128  adversarial  PASS     err=5.01e-13  
+linear n=128  adversarial  PASS     err=5.01e-13  
+hyb8   n=128  adversarial  PASS     err=5.01e-13  
+xchk   n=128  adversarial  PASS     diff=2.00e-15  
+V2     n=128  adversarial  PASS     err=4.14e-13  
+tree   n=128  geometric    PASS     err=5.86e-13  
+naive  n=128  geometric    PASS     err=5.85e-13  
+linear n=128  geometric    PASS     err=5.85e-13  
+hyb8   n=128  geometric    PASS     err=5.85e-13  
+xchk   n=128  geometric    PASS     diff=1.28e-15  
+V2     n=128  geometric    PASS     err=6.46e-13  
+tree   n=128  equal        PASS     err=1.10e-12  
+naive  n=128  equal        PASS     err=1.10e-12  
+linear n=128  equal        PASS     err=1.10e-12  
+hyb8   n=128  equal        PASS     err=1.10e-12  
+xchk   n=128  equal        PASS     diff=9.21e-16  
+V2     n=128  equal        PASS     err=1.70e-12  
+tree   n=128  adv_1e9      PASS     err=1.54e-10  
+naive  n=128  adv_1e9      PASS     err=1.54e-10  
+linear n=128  adv_1e9      PASS     err=1.54e-10  
+hyb8   n=128  adv_1e9      PASS     err=1.54e-10  
+xchk   n=128  adv_1e9      PASS     diff=2.04e-15  
+V2     n=128  adv_1e9      PASS     err=1.54e-10  
+tree   n=256  uniform      PASS     err=8.17e-13  
+naive  n=256  uniform      PASS     err=8.15e-13  
+linear n=256  uniform      PASS     err=8.14e-13  
+hyb8   n=256  uniform      PASS     err=8.14e-13  
+xchk   n=256  uniform      PASS     diff=2.44e-15  
+V2     n=256  uniform      PASS     err=1.09e-12  
+tree   n=256  adversarial  PASS     err=5.11e-13  
+naive  n=256  adversarial  PASS     err=5.07e-13  
+linear n=256  adversarial  PASS     err=5.07e-13  
+hyb8   n=256  adversarial  PASS     err=5.06e-13  
+xchk   n=256  adversarial  PASS     diff=4.55e-15  
+V2     n=256  adversarial  PASS     err=1.30e-12  
+tree   n=256  geometric    PASS     err=5.88e-13  
+naive  n=256  geometric    PASS     err=5.85e-13  
+linear n=256  geometric    PASS     err=5.85e-13  
+hyb8   n=256  geometric    PASS     err=5.85e-13  
+xchk   n=256  geometric    PASS     diff=2.20e-15  
+V2     n=256  geometric    PASS     err=6.46e-13  
+tree   n=256  equal        PASS     err=1.10e-12  
+naive  n=256  equal        PASS     err=1.10e-12  
+linear n=256  equal        PASS     err=1.10e-12  
+hyb8   n=256  equal        PASS     err=1.10e-12  
+xchk   n=256  equal        PASS     diff=9.04e-16  
+V2     n=256  equal        PASS     err=1.83e-12  
+tree   n=256  adv_1e9      PASS     err=1.54e-10  
+naive  n=256  adv_1e9      PASS     err=1.54e-10  
+linear n=256  adv_1e9      PASS     err=1.54e-10  
+hyb8   n=256  adv_1e9      PASS     err=1.54e-10  
+xchk   n=256  adv_1e9      PASS     diff=3.01e-15  
+V2     n=256  adv_1e9      PASS     err=1.54e-10  
+tree   n=1024 uniform      PASS     err=8.09e-13  
+linear n=1024 uniform      PASS     err=7.98e-13  
+hyb8   n=1024 uniform      PASS     err=7.98e-13  
+xchk   n=1024 uniform      PASS     diff=8.64e-15  
+tree   n=1024 adversarial  PASS     err=5.27e-13  
+linear n=1024 adversarial  PASS     err=5.11e-13  
+hyb8   n=1024 adversarial  PASS     err=5.11e-13  
+xchk   n=1024 adversarial  PASS     diff=1.83e-14  
+tree   n=1024 adv_1e9      PASS     err=1.54e-10  
+linear n=1024 adv_1e9      PASS     err=1.54e-10  
+hyb8   n=1024 adv_1e9      PASS     err=1.54e-10  
+xchk   n=1024 adv_1e9      PASS     diff=1.44e-15  
+tree   n=4096 uniform      PASS     err=8.49e-13  
+linear n=4096 uniform      PASS     err=8.05e-13  
+hyb8   n=4096 uniform      PASS     err=8.06e-13  
+xchk   n=4096 uniform      PASS     diff=2.86e-14  
+tree   n=4096 adversarial  PASS     err=4.63e-13  
+linear n=4096 adversarial  PASS     err=3.98e-13  
+hyb8   n=4096 adversarial  PASS     err=3.97e-13  
+xchk   n=4096 adversarial  PASS     diff=7.53e-14  
+tree   n=4096 adv_1e9      PASS     err=1.54e-10  
+linear n=4096 adv_1e9      PASS     err=1.54e-10  
+hyb8   n=4096 adv_1e9      PASS     err=1.54e-10  
+xchk   n=4096 adv_1e9      PASS     diff=3.54e-14  
+subset n=1024 10/1024      PASS     diff=2.01e-16  
+
+ALL TESTS PASSED
+
+=== PERFORMANCE GRID (ms, Q=256, uniform stacks) ===
+
+n       k=10                                k=50                                k=100                               k=n/4                               k=n/2                               k=n                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(median of 5 runs per engine per cell)
+
+64      L:0.0134(T0.0621 L0.0134 H0.0494 )  L:0.0224(T0.107 L0.0224 H0.0612 )   L:0.0253(T0.0973 L0.0253 H0.0615 )  L:0.0141(T0.0726 L0.0141 H0.0443 )  L:0.0176(T0.0904 L0.0176 H0.0568 )  L:0.0262(T0.0953 L0.0262 H0.0622 )
+128     L:0.0202(T0.119 L0.0202 H0.0958 )   L:0.0396(T0.210 L0.0396 H0.128 )    L:0.0667(T0.221 L0.0667 H0.153 )    L:0.0287(T0.174 L0.0287 H0.114 )    L:0.0464(T0.191 L0.0464 H0.127 )    H:0.135 (T0.202 L0.816 H0.135 )   
+256     L:0.0343(T0.239 L0.0343 H0.192 )    L:0.0753(T0.422 L0.0753 H0.265 )    H:0.304 (T0.467 L0.839 H0.304 )     H:0.263 (T0.375 L0.725 H0.263 )     H:0.290 (T0.415 L0.814 H0.290 )     H:0.317 (T0.447 L1.01 H0.317 )    
+512     L:0.0612(T0.461 L0.0612 H0.374 )    H:0.548 (T0.850 L0.754 H0.548 )     H:0.688 (T0.928 L0.883 H0.688 )     H:0.596 (T0.816 L0.983 H0.596 )     H:0.670 (T0.904 L1.39 H0.670 )      H:0.756 (T0.993 L2.55 H0.756 )    
+1024    L:0.121 (T0.929 L0.121 H0.711 )     L:0.359 (T1.73 L0.359 H1.12 )       L:1.21  (T1.96 L1.21 H1.45 )        H:1.41  (T1.86 H1.41 )              H:1.66  (T2.12 H1.66 )              H:1.78  (T2.28 H1.78 )            
+2048    L:0.294 (T1.85 L0.294 H1.51 )       L:0.681 (T3.32 L0.681 H2.12 )       L:1.16  (T3.76 L1.16 H2.97 )        H:3.50  (T4.56 H3.50 )              H:3.94  (T4.89 H3.94 )              H:4.23  (T5.22 H4.23 )            
+4096    L:0.651 (T3.78 L0.651 H2.90 )       L:1.48  (T6.64 L1.48 H4.26 )        L:2.35  (T7.52 L2.35 H5.64 )        H:8.40  (T10.2 H8.40 )              H:9.36  (T11.3 H9.36 )              H:10.1  (T12.2 H10.1 )            
+8192    L:1.23  (T7.48 L1.23 H5.81 )        L:2.84  (T13.4 L2.84 H10.1 )        L:4.63  (T15.1 L4.63 H11.6 )        H:20.4  (T25.2 H20.4 )              H:24.2  (T30.1 H24.2 )              H:28.1  (T36.7 H28.1 )            
+16384   L:2.37  (T15.3 L2.37 H11.9 )        L:6.43  (T28.5 L6.43 H20.7 )        L:9.69  (T38.5 L9.69 H24.6 )        H:88.1  (T122 H88.1 )               H:112   (T143 H112 )                H:142   (T176 H142 )              
+32768   L:6.04  (T42.5 L6.04 H24.9 )        L:13.6  (T131 L13.6 H63.5 )         L:23.6  (T165 L23.6 H89.6 )         H:280   (T331 H280 )                H:314   (T365 H314 )                H:363   (T416 H363 )              
+65536   L:21.0  (T188 L21.0 H81.2 )         L:30.4  (T329 L30.4 H123 )          L:48.4  (T369 L48.4 H216 )          H:627   (T804 H627 )                H:729   (T906 H729 )                H:901   (T1060 H901 )             
+
+Legend: T=tree(+FFT), L=linear, H=hybrid(B=8). Best engine shown.
+Done.

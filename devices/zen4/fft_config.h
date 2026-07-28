@@ -226,8 +226,8 @@ static const double leaf_fma_ns_per_player[6] = {
 #endif
 
 /* ── Empirical linear-vs-hybrid crossover table ──────────────────────
- * RECALIBRATED 2026-07-27 (box 84.32.71.35, a fresh redeployment -- same
- * IP the user's Zen4 instance now uses, but a genuinely different
+ * RECALIBRATED 2026-07-27 (a fresh redeployment of the user's Zen4
+ * instance -- same reference machine, but a genuinely different
  * physical/virtualized machine than the 2026-07-22 measurement below).
  * The prior table (measured on box 84.32.71.47, a since-superseded
  * instance) was found to systematically disagree with this box's real
