@@ -1073,6 +1073,43 @@ bool build_plan_metadata(GpuPlan *plan) {
     for (int ell = 0; ell < plan->L; ++ell) {
         plan->fft_stride[ell] = plan->psz[ell];
     }
+    /* Ragged-tree work counts.
+     *
+     * nn[ell] slots exist per Q-point but only n_real[ell] of them carry
+     * real data.  n_work[ell] is how many are worth computing:
+     *
+     *   - at least n_real[ell], so every real node is produced;
+     *   - rounded up to an even count, so that a cuFFTDx launch with
+     *     FFTs-per-block=2 never ends in a half-empty block (a partially
+     *     retired block would leave the surviving half calling cuFFTDx's
+     *     internal __syncthreads() alone).  The one extra node is a phantom
+     *     built from two phantom children, i.e. identity*identity=identity,
+     *     which is exactly the value the prefill already put there;
+     *   - never above nn[ell] (the allocated slot count).
+     *
+     * n_work[0] is the real leaf-block count; phantom leaf blocks come from
+     * init_pad_identity() instead of being rebuilt on every call. */
+    plan->ragged_skip = 1;
+    {
+        const char *rag_env = getenv("ICM_GPU_RAGGED");
+        if (rag_env && rag_env[0] && atoi(rag_env) == 0) plan->ragged_skip = 0;
+    }
+    plan->n_work.assign(plan->L, 0);
+    plan->n_work[0] = std::min(plan->nblocks, plan->nn[0]);
+    for (int ell = 1; ell < plan->L; ++ell) {
+        int w = plan->n_real[ell] + (plan->n_real[ell] & 1);
+        plan->n_work[ell] = std::min(w, plan->nn[ell]);
+    }
+    if (debug_plan) {
+        for (int ell = 0; ell < plan->L; ++ell) {
+            fprintf(stderr, "  level %d: nn=%d n_real=%d n_work=%d%s\n",
+                    ell, plan->nn[ell], plan->n_real[ell], plan->n_work[ell],
+                    (plan->n_work[ell] < plan->nn[ell]) ? "  (ragged: phantom tail skipped)" : "");
+        }
+        if (!plan->ragged_skip)
+            fprintf(stderr, "  ICM_GPU_RAGGED=0: phantom-node skipping disabled\n");
+    }
+
     if (debug_plan) {
         for (int ell = 0; ell < plan->L; ++ell) {
             fprintf(stderr, "  fft_stride[%d] = %d  (psz=%d)\n",
@@ -1610,6 +1647,44 @@ static bool allocate_level_buffers(GpuPlan *plan, int ell, const std::vector<int
     return true;
 }
 
+/* Establish the phantom-node invariant for the whole polynomial tree.
+ *
+ * Every padded slot of every level (and of the pipelined alternate leaf
+ * buffer) gets the identity polynomial [1, 0, 0, ...], in every Q-plane.
+ * Run once, right after the arena is allocated and zeroed.
+ *
+ * Nothing ever overwrites those slots with anything else: a level computed
+ * at full width recomputes conv(identity, identity) = identity, and a level
+ * computed at reduced width does not touch them at all.  That is what lets
+ * the level runners stop at n_work[ell] parents while the parent that owns
+ * the ragged boundary still reads a well-defined phantom sibling. */
+bool init_pad_identity(GpuPlan *plan) {
+    int threads = GPU_THREADS_PER_BLOCK;
+    int qb = plan->q_batch;
+    for (int ell = 0; ell < plan->L; ++ell) {
+        int nn_slots = plan->nn[ell];
+        int first_pad = plan->n_real[ell];
+        int stride = plan->fft_stride[ell];
+        if (first_pad >= nn_slots || stride <= 0) continue;
+        size_t total = (size_t)qb * (size_t)(nn_slots - first_pad) * (size_t)stride;
+        int blocks = (int)((total + threads - 1) / threads);
+        k_pad_identity<<<blocks, threads, 0, plan->stream_compute>>>(
+            plan->d_poly_levels[ell], first_pad, nn_slots, stride, qb);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
+    /* The q-pipeline swaps d_poly_levels[0] with this alternate leaf buffer
+     * (single Q-point only), so it needs the same phantom leaves. */
+    if (plan->d_poly_leaves_alt && plan->n_real[0] < plan->nn[0]) {
+        int stride = plan->fft_stride[0];
+        size_t total = (size_t)(plan->nn[0] - plan->n_real[0]) * (size_t)stride;
+        int blocks = (int)((total + threads - 1) / threads);
+        k_pad_identity<<<blocks, threads, 0, plan->stream_compute>>>(
+            plan->d_poly_leaves_alt, plan->n_real[0], plan->nn[0], stride, 1);
+        if (!CUDA_OK(cudaGetLastError())) return false;
+    }
+    return true;
+}
+
 bool allocate_plan_device_memory(GpuPlan *plan) {
     int arena_retries = 0;
 retry_arena:
@@ -1853,6 +1928,8 @@ retry_arena:
             }
         }
     }
+
+    if (!init_pad_identity(plan)) return false;
 
     if (!CUDA_OK(cudaMemcpyAsync(plan->d_S_sorted, plan->S_sorted.data(),
                                  (size_t)plan->n * sizeof(double), cudaMemcpyHostToDevice,
