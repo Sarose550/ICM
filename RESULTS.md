@@ -231,8 +231,8 @@ speedup numbers differ because the same 3600 MT/s bandwidth ceiling that
 hurts serial also limits how much aggregate bandwidth 16 threads can extract
 — the parallel numbers are closer to the old box's parallel numbers than the
 serial numbers are, consistent with 16 threads already saturating the bus on
-both boxes. See the QA report (`scripts/zen4_qa_report_20260727.md`) for the
-full comparison.
+both boxes. The full old-vs-new comparison is in the prior-hardware section
+below.
 
 ### 1-second threshold: n = 17,984 (k=n, single-threaded), n ≈ 72,200 (k=n, 16-thread)
 
@@ -243,6 +243,15 @@ extrapolated from the contour data above (n=70,000 at 1718ms floor; this is the 
 floor the old box hit, consistent with both boxes being bandwidth-saturated in parallel).
 
 ### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈249–281 (empirical crossover table in `devices/zen4/fft_config.h`, recalibrated for this box this session, commits `eb40e2d`/`2aff562`).
+
+> **Open: parallel B-selection divergence vs. prior box.** At k=10000, 13000,
+> 19000, 22000, 26000 in the parallel contour, this box selects B=32 where the
+> prior (higher-bandwidth) Zen4 box selected B=64. The `bselect_*` table (1944
+> points in `devices/zen4/fft_config.h`) was carried over unchanged from the
+> prior box and has not been re-verified against this box's actual bandwidth
+> profile. Whether B=32 is genuinely optimal here or the table needs
+> recalibration is an open question, flagged for a future pass (2026-07-27 QA
+> session).
 
 ### AOCL-FFTW: sole backend, no dual dispatch
 
@@ -606,7 +615,7 @@ substantial.
 | k = 100 | 7,975,936 (998.9ms) | 7,991,296 (1,001.1ms) | 15,360 (0.2% of lo) |
 
 Full search trace in `results/gpu_threshold_search_20260728.txt`
-(`scripts/threshold_search_gpu.cu`, plan-based API). Supersedes the old
+(`tools/threshold_search_gpu.cu`, plan-based API). Supersedes the old
 2026-07-25 frontier-probe-derived estimates (n≈1,441,792 / n≈6,291,456),
 which predated the ragged-tree fix and were reinterpretations of 5 fixed
 sample points, not an actual search.

@@ -1,3 +1,19 @@
+// gpu_ws_repro.cu — standalone regression check for GPU workspace-sizing OOM.
+//
+// Reproduces the original bug where the GPU planner over-allocated workspace
+// for large-n plans, causing out-of-memory failures at n=2,097,152 with
+// k=256 and k=512. Uses the plan-based API (icm_gpu_plan_create) — tests
+// that plan creation succeeds, not that equity results are correct.
+//
+// Kept as a standalone tool (not integrated into bench/bench_gpu.cu) because
+// bench_gpu.cu uses the equity API (icm_gpu_equity) exclusively, and
+// introducing a plan-API regression check there would require untestable
+// restructuring without a CUDA toolchain on hand. Run directly:
+//   nvcc -I src/gpu -o gpu_ws_repro tools/gpu_ws_repro.cu && ./gpu_ws_repro
+//
+// Regression check for: original GPU workspace-sizing OOM bug
+// (n=2097152, k=256/512).
+
 #include <cstdio>
 #include <cstdlib>
 #include <vector>

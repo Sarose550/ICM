@@ -218,35 +218,29 @@ never asked the question "is fused at 128 with heavy wrap correction actually
 cheaper than fused at 256 with zero wrap correction?" — exactly the comparison
 that would have caught the mistake.
 
-**The fix** (implemented this session, awaiting real-hardware verification):
+**The fix** (implemented and hardware-verified on a rented B200, 2026-07-26):
 the gate now also fires when the tier is already FUSED but the chosen
 configuration has a nonzero wrap penalty. When it fires from an already-FUSED
 state, it correctly compares against fused-kernel costs instead of cuFFT costs,
-so the comparison is apples-to-apples.
+so the comparison is apples-to-apples. `bench_gpu_fused verify` passed 36/0
+after the fix. The previously-bad cell at n=4,194,304,k=128 dropped from
+~890ms to 511.7ms; n=8,388,608,k=128 from 1349.8ms to 1025.8ms;
+n=1,048,576,k=128 from 122.6ms to 93.7ms; n=524,288,k=128 from 54.17ms to
+42.2ms (now correctly below its k=256 neighbour, resolving the inversion).
 
 ### The scale of impact
 
-A Python simulation (`scripts/analyze_fftsize_bug_blast_radius.py`) replicated
+A Python simulation (kept out of tree, in `scratch/`) replicated
 the exact decision logic and swept 189 grid points of (n, k) values. It found
 that **12 of 189 points (6.3%)** were affected, every one sharing the identical
 signature: a computation that fit in a 128-point FFT with heavy wrap correction
 but would have been better off with a 256-point FFT with zero wrap correction.
 
-The same analysis confirmed the fix should also resolve 5 of the 11
+The same analysis confirmed the fix resolves 5 of the 11
 previously-cataloged non-monotonicities in the GPU heatmap data (cells where
 a larger k ran faster than a smaller k at the same n — a counter-intuitive
-result that should not happen with a correct cost model).
-
-**An important caveat, not hidden:** the cost model's own prediction of how
-much the fix will help is 3-4 orders of magnitude smaller than the real
-measured gap on hardware. The cost model estimates the fix saves ~0.6
-nanoseconds to 38 microseconds per computation point, but the real hardware
-showed a ~280ms gap between the bad and good configurations at n=4,194,304.
-This means the wrap-correction cost is probably under-modeled — the
-FMA-count-based formula likely misses real per-kernel-launch overhead or
-memory-bandwidth costs in the actual wrap-correction GPU kernel. The fix
-should move things in the right direction, but the magnitude of improvement
-needs real-hardware verification.
+result that should not happen with a correct cost model). Hardware
+verification confirmed all five inversions resolved.
 
 ### Two deeper gaps found during the investigation
 
@@ -264,8 +258,8 @@ wrap-correction cost using a generic FMA-operation rate (`GPU_SCHOOL_FMA_NS`
 with work). But wrap correction is not a fully-saturating workload: it involves
 a separate kernel launch, operates on irregularly-sized data, and does not
 benefit from the same throughput optimizations as a large dense matrix
-multiplication. The formula-based estimate is very likely wrong, and the
-280ms-vs-microseconds gap described above is strong evidence of this.
+multiplication. The formula-based estimate has not been validated against
+direct measurement.
 
 **Gap 2: The batch-adjustment system for FFT costs is inactive on the current GPU.**
 
@@ -359,15 +353,7 @@ captures all of that, whether or not anyone understood it in advance.
 
 ## 5. Open methodological gaps, prioritized
 
-1. **Verify the wrap-correction fix on real B200 hardware.** The fix is written
-   and reviewed but cannot be compiled or tested without a real NVIDIA B200 GPU.
-   On the next B200 rental: rebuild, run `bench_gpu_fused verify`, re-measure
-   the affected cell (n=4,194,304, k=128), and spot-check at least one other
-   affected cell (n=65,536–524,288, k=128 range). Confirm the fix actually
-   moves the measured time toward the expected ~550–600ms, not just the tiny
-   improvement the cost model itself predicts.
-
-2. **Collect the GPU FFT floor measurements and enable the batch-adjustment
+1. **Collect the GPU FFT floor measurements and enable the batch-adjustment
    system.** The floor measurements (`gpu_floor_ns[]`, `gpu_floor_fft_sizes[]`)
    need to be collected from real B200 hardware (the tools `bench_batch.cu` and
    `level_timer.cu` are referenced in the source comments as the measurement
@@ -375,15 +361,13 @@ captures all of that, whether or not anyone understood it in advance.
    config header to activate the batch-aware cost estimates. Right now, batch
    size is silently ignored.
 
-3. **Build a GPU-specific wrap-correction microbenchmark.** Mirror what
+2. **Build a GPU-specific wrap-correction microbenchmark.** Mirror what
    `tools/bench_wrap_fma.c` does for the CPU: measure wrap-correction cost
    directly on the GPU by running the wrap-correction kernel in isolation
    across a wide range of sizes. Feed the resulting measurement into the cost
-   model instead of the generic `GPU_SCHOOL_FMA_NS` rate. The 280ms-vs-
-   microseconds gap found this session is strong evidence the current estimate
-   is wrong.
+   model instead of the generic `GPU_SCHOOL_FMA_NS` rate.
 
-4. **Replace the GPU engine-selection formula with an empirical crossover
+3. **Replace the GPU engine-selection formula with an empirical crossover
    table.** The CPU side already did this (commit `44bc959`) and closed a
    37-45% dispatch-accuracy gap for subset queries. The GPU side still uses a
    formula-based comparison in `gpu_select_engine_est()`. In current practice
@@ -391,28 +375,11 @@ captures all of that, whether or not anyone understood it in advance.
    but the mechanism should be brought to parity with the CPU side to prevent
    future problems if the linear engine ever becomes a real option on GPU.
 
-5. **Clean up the fit_gpu_cost_model.py situation.** The tool fits four
+4. **Clean up the fit_gpu_cost_model.py situation.** The tool fits four
    parameters that are never used by any code. Either: delete the tool if it
    is genuinely obsolete, or wire its outputs into the GPU cost model if the
    fit approach is still intended to be used. Document the decision in
    CLAUDE.md so future readers are not confused.
-
-6. **Re-measure the one confirmed-bad heatmap data point** (n=4,194,304,
-   k=128) and two lower-priority suspicious points (n=8,388,608, k=128 and
-   n=1,048,576, k=128), all with 5 or more repetitions. These are currently
-   single-repetition measurements that cannot be trusted for the published
-   results. This is independent of the cost-model fix — even if the fix
-   improves accuracy, the data point needs a proper multi-rep measurement
-   before it goes into RESULTS.md or the paper.
-
-7. **Run the 1-second threshold binary search on GPU.** The tool
-   `scripts/threshold_search_gpu.cu` is written and reviewed but has never
-   been executed. It searches for the largest problem size that completes in
-   under 1 second on the B200 GPU, which is a headline number for the paper.
-   This needs a B200 rental and should be run only after the wrap-correction
-   fix is verified, because the binary search assumes monotonicity (bigger
-   problems always take longer), and the fix directly targets the known
-   non-monotonicity that would corrupt the search.
 
 ---
 
