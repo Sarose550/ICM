@@ -69,8 +69,8 @@ GPU_COLOR = '#f97316'
 # Each device has a key matching the --device flag value.
 # To add a new device, add an entry here. Filenames are glob patterns
 # resolved against results/ via find_latest() -- the most recently
-# modified match wins, so dated files (e.g. from CLAUDE.md's benchmarking
-# recipes) work without any renaming or copying.
+# modified match wins, so dated benchmark output files work without any
+# renaming or copying.
 
 DEVICE_CONFIGS = {
     'zen4': {

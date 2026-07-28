@@ -3,7 +3,7 @@
 
 # ICM -- Independent Chip Model Equity Computation
 
-High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~25,000 players / payouts in 1 second*. A CUDA backend extends this to over 1.5 million players in about a second on an NVIDIA B200. Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
+High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~25,000 players / payouts in 1 second*. A CUDA backend extends this to up to 1.49 million players in under a second on an NVIDIA B200 (full field, `k=n`). Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
 
 > 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf) - full derivation, proofs, and performance evaluation.
 >
@@ -154,12 +154,13 @@ is in the paper; raw sweep data is in `results/accuracy_convergence.csv`.
 
 | n | k=64 | k=1024 | k=n/2 | k=n |
 |---|------|--------|-------|-----|
-| 4,096 | 0.37 | 0.75 | 0.82 | 0.86 |
-| 16,384 | 1.19 | 2.86 | 4.07 | 4.37 |
-| 65,536 | 4.40 | 10.83 | 19.85 | 20.64 |
-| 262,144 | 17.14 | 42.21 | 97.60 | 101.3 |
-| 1,048,576 | 68.09 | 167.34 | 683.06 | 687.67 |
-| 4,194,304 | 273.28 | 873.28 | 2475.64 | 2500.45 |
+| 4,096 | 0.35 | 0.74 | 0.82 | 0.84 |
+| 16,384 | 1.16 | 2.79 | 3.85 | 4.10 |
+| 65,536 | 4.35 | 10.94 | 19.36 | 20.22 |
+| 262,144 | 17.09 | 43.37 | 96.31 | 100.49 |
+| 1,048,576 | 77.45 | 187.72 | 508.24 | 513.41 |
+| 4,194,304 | 272.98 | 771.48 | 2,383.66 | 2,340.89 |
+| 33,554,432 | 2,639.85 | 6,141.28 | 22,584.75 | 23,116.73 |
 
 See the paper for the full grids, contour plots, and dispatch analysis.
 
@@ -256,6 +257,32 @@ make DEVICE=mydevice
 ```
 
 Update the `#define` constants in `fft_config.h` with measured values from `./bench_grid profile`. See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for details on each constant.
+
+**How long this takes:** the FFTW calibration pass (`./calibrate`, the
+slowest single step) is dominated by FFTW's PATIENT planning phase across
+749 smooth sizes, not by the benchmark measurement loop - so `--quick`
+(which only cuts benchmark repetitions 10x) does **not** proportionally
+cut wall-clock time the way its name suggests. Expect it to land somewhere
+in the 10-30+ minute range documented above for a full run, and treat
+`--quick` as "less precise, not necessarily much faster." Wall-clock time
+is also sensitive to other load on the machine (FFTW's planner does real
+timing internally, so a busy machine both slows the run down and can
+degrade the calibration quality) - run it on an otherwise-idle machine if
+you can. `./tools/calibrate_full.sh` prints real-time progress per step so
+you're never guessing whether it's stuck. If you just want to check
+whether the shipped `m3_pro`/`zen4` calibration already works on your
+unit, skip calibration entirely and run the two commands at the top of
+this section (`make DEVICE=... && ./bench_grid crossover`) instead -
+that's seconds, not minutes.
+
+**GPU (NVIDIA) devices** calibrate separately from the CPU pipeline - FFT
+timings, B-selection block-size table, and the 4-parameter cost model are
+each their own step. See ["GPU Cost Model (B200)"](OPTIMIZATION_GUIDE.md#gpu-cost-model-b200)
+in `OPTIMIZATION_GUIDE.md` for the full command sequence, or run
+`./tools/run_b200_campaign.sh` for the whole pipeline in one shot.
+Wall-clock time scales with how large an (n,k) grid you calibrate over -
+the B200 reference calibration in `devices/b200/` covers a 211-point grid
+up to n=33,554,432.
 
 ## Python Bindings
 
