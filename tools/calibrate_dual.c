@@ -1,5 +1,5 @@
 /*
- * calibrate_dual.c — Benchmark FFTW vs MKL at each smooth size via dlopen.
+ * calibrate_dual.c; Benchmark FFTW vs MKL at each smooth size via dlopen.
  *
  * Both libraries export the same fftw_* symbols, so we dlopen each separately
  * and resolve function pointers. For each 7-smooth size up to 131072, we time
@@ -125,7 +125,7 @@ static double bench_lib(FFTLib *lib, int sz, int quick) {
     memset(rbuf, 0, sz * sizeof(double));
     memset(rbuf2, 0, sz * sizeof(double));
 
-    /* Create plans — try MEASURE+WISDOM_ONLY first (uses PATIENT wisdom if available) */
+    /* Create plans; try MEASURE+WISDOM_ONLY first (uses PATIENT wisdom if available) */
     fftw_plan_t fwd = lib->plan_r2c(sz, rbuf, cbuf, FFTW_MEASURE | FFTW_WISDOM_ONLY);
     fftw_plan_t inv = lib->plan_c2r(sz, cbuf, rbuf, FFTW_MEASURE | FFTW_WISDOM_ONLY);
     if (!fwd || !inv) {
@@ -210,7 +210,7 @@ int main(int argc, char **argv) {
            have_fftw ? "loaded" : "MISSING",
            have_mkl  ? "loaded" : "MISSING");
 
-    /* Import FFTW PATIENT wisdom — try multiple paths */
+    /* Import FFTW PATIENT wisdom; try multiple paths */
     const char *wisdom_paths[] = {
         WISDOM_FILE,
         "devices/zen4/fftw_wisdom.dat",
@@ -221,7 +221,7 @@ int main(int argc, char **argv) {
         int loaded = 0;
         for (int wp = 0; wisdom_paths[wp] && !loaded; wp++)
             loaded = fftw_lib.import_wisdom(wisdom_paths[wp]);
-        printf("FFTW wisdom: %s\n", loaded ? "loaded" : "NOT FOUND (using ESTIMATE — results will be inaccurate!)");
+        printf("FFTW wisdom: %s\n", loaded ? "loaded" : "NOT FOUND (using ESTIMATE; results will be inaccurate!)");
     }
     if (have_mkl && mkl_lib.import_wisdom)
         mkl_lib.import_wisdom(WISDOM_FILE);
@@ -276,7 +276,7 @@ int main(int argc, char **argv) {
     }
     fprintf(f, "\n};\n\n");
 
-    /* calib_times_ns[] — best of both libraries */
+    /* calib_times_ns[]; best of both libraries */
     fprintf(f, "static const double calib_times_ns[N_CALIBRATED_SIZES] = {\n   ");
     for (int i = 0; i < n_smooth; i++) {
         double best = (best_lib[i] == 0) ? fftw_times[i] : mkl_times[i];
@@ -286,7 +286,7 @@ int main(int argc, char **argv) {
     }
     fprintf(f, "\n};\n\n");
 
-    /* calib_lib[] — which library won at each size */
+    /* calib_lib[]; which library won at each size */
     fprintf(f, "/* 0 = FFTW, 1 = MKL */\n");
     fprintf(f, "static const int calib_lib[N_CALIBRATED_SIZES] = {\n   ");
     for (int i = 0; i < n_smooth; i++) {

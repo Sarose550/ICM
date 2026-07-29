@@ -104,11 +104,11 @@ limits peak parallel speedup to ~8x vs Zen 4's ~14x on 16 homogeneous P-cores.
 
 Serial: interpolated from bench_grid (n=16,384 at 778 ms, n=32,768 at 1,970 ms). Parallel: extrapolated from bench_grid (n=32,768 at 296 ms, n=65,536 at 649 ms); regenerated contour and grid (July 2026) using the post-recalibration B-selection tables.
 
-### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈122–124 (empirical crossover table in `devices/m3_pro/fft_config.h`).
+### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈122-124 (empirical crossover table in `devices/m3_pro/fft_config.h`).
 
 ---
 
-## AMD Ryzen 9 7950X (Zen 4, AVX-512, AOCL-FFTW) — 2026-07-27 reference data
+## AMD Ryzen 9 7950X (Zen 4, AVX-512, AOCL-FFTW), 2026-07-27 reference data
 
 > **Reference hardware**: dedicated Zen4 box, fresh redeployment 2026-07-27.
 > AOCL-FFTW (AMD's official znver4-tuned build, tag 5.3) is the sole FFT backend,
@@ -119,16 +119,16 @@ Serial: interpolated from bench_grid (n=16,384 at 778 ms, n=32,768 at 1,970 ms).
 > `WRAP_FMA_NS=0.40` is directly measured via `tools/bench_wrap_fma.c`, see
 > [Calibration methodology](#calibration-methodology).
 >
-> **Important — this box's RAM runs at 3600 MT/s vs. its 5600 MT/s DIMM rating**,
+> **Important: this box's RAM runs at 3600 MT/s vs. its 5600 MT/s DIMM rating**,
 > an AMD AM5 2-DIMMs-per-channel (2DPC) platform electrical limit, confirmed not
 > fixable at the OS/BIOS level. A 1DPC replacement box was not available. Per
 > explicit user decision, **this box (at 3600 MT/s) is now the standing Zen4
-> reference** for this project — this is a permanent characteristic of the reference
+> reference** for this project; this is a permanent characteristic of the reference
 > hardware, not a temporary anomaly or a bug to fix.
 >
 > The RAM ceiling's effect is **not a flat percentage**: linear/schoolbook-engine
-> timings are nearly identical to our prior (higher-bandwidth) Zen4 box (~0.97–1.0×),
-> while hybrid/FFT-heavy timings are 40–65% slower at larger k, because FFT is
+> timings are nearly identical to our prior (higher-bandwidth) Zen4 box (~0.97-1.0×),
+> while hybrid/FFT-heavy timings are 40-65% slower at larger k, because FFT is
 > memory-bandwidth-bound and schoolbook isn't. See the [Prior hardware comparison
 > (2026-07-22/24)](#prior-hardware-comparison-2026-07-2224) subsection below for the
 > full old-vs-new breakdown.
@@ -222,50 +222,50 @@ At the 1-second boundary (from contour sweep, Q=256). Source:
 
 ### Known scaling limit: parallel speedup degrades at n ≥ 16,384 (same mechanism, different absolute numbers)
 
-Parallel speedup on the 16-physical-core 7950X is a healthy 10–14x below
+Parallel speedup on the 16-physical-core 7950X is a healthy 10-14x below
 n=16,384 (e.g. n=8,192, k=n: 12.1x) but falls to ~5.7x at n=16,384 and stays
-in the 5–7x range through n=65,536 (k=n). The underlying mechanism is the same
+in the 5-7x range through n=65,536 (k=n). The underlying mechanism is the same
 genuine memory-bandwidth/cache-capacity wall documented in the prior-hardware
 section below (confirmed via `perf stat` on the earlier box), but the absolute
 speedup numbers differ because the same 3600 MT/s bandwidth ceiling that
-hurts serial also limits how much aggregate bandwidth 16 threads can extract
-— the parallel numbers are closer to the old box's parallel numbers than the
+hurts serial also limits how much aggregate bandwidth 16 threads can extract;
+the parallel numbers are closer to the old box's parallel numbers than the
 serial numbers are, consistent with 16 threads already saturating the bus on
 both boxes. The full old-vs-new comparison is in the prior-hardware section
 below.
 
 ### 1-second threshold: n = 17,984 (k=n, single-threaded), n ≈ 72,200 (k=n, 16-thread)
 
-Serial: **n=17,984** — the first real `bench_grid threshold` binary search this
+Serial: **n=17,984**, the first real `bench_grid threshold` binary search this
 project has run on Zen4 hardware (prior RESULTS.md's "n≈29,000" was an interpolation
 between two grid points, never a real binary search). Parallel: n≈72,200,
 extrapolated from the contour data above (n=70,000 at 1718ms floor; this is the same
 floor the old box hit, consistent with both boxes being bandwidth-saturated in parallel).
 
-### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈249–281 (empirical crossover table in `devices/zen4/fft_config.h`, recalibrated for this box this session, commits `eb40e2d`/`2aff562`).
+### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈249-281 (empirical crossover table in `devices/zen4/fft_config.h`, recalibrated for this box this session, commits `eb40e2d`/`2aff562`).
 
 ### AOCL-FFTW: sole backend, no dual dispatch
 
 AOCL-FFTW (AMD's official znver4-tuned build) is the only FFT backend for Zen 4.
-A direct A/B test at n=32768,k=n confirmed AOCL is 20–25% faster than plain system
+A direct A/B test at n=32768,k=n confirmed AOCL is 20-25% faster than plain system
 FFTW at the raw kernel level, reproducible across repeated runs. Per-level FFT-size
 selection uses `best_fft_config()` driven by `calib_times_ns[]` (749 calibrated sizes,
 AOCL PATIENT wisdom). No `calib_lib[]` array exists, the earlier claim of
 "AOCL-FFTW+MKL dual dispatch, 637 vs 112 sizes" in prior versions of this document
 traced to measurements on a different box that never had AOCL-FFTW installed.
 
-### Prior hardware comparison (2026-07-22/24) — "when we had more memory bandwidth"
+### Prior hardware comparison (2026-07-22/24): "when we had more memory bandwidth"
 
 The numbers below are from our earlier Zen4 box, which ran its DIMMs at full rated
 speed (1DPC configuration, ~5600 MT/s effective). They are preserved here as a
-labeled historical reference — the user's own framing: "when you had more memory
+labeled historical reference; the user's own framing: "when you had more memory
 bandwidth, you did better on the Zen4." The gap is **not a flat percentage**: at
 small k (linear/schoolbook engine, compute-bound), the two boxes are nearly identical
-(ratio ~0.97–1.0×). At large k (hybrid/FFT engine, memory-bandwidth-bound), the
-current box is ~40–65% slower. A single "divide everything by ~1.6" extrapolation
-would be wrong — it overcorrects the linear-dominated region. If a 1DPC-equivalent
+(ratio ~0.97-1.0×). At large k (hybrid/FFT engine, memory-bandwidth-bound), the
+current box is ~40-65% slower. A single "divide everything by ~1.6" extrapolation
+would be wrong; it overcorrects the linear-dominated region. If a 1DPC-equivalent
 number is needed for commentary, scale by regime: ~1.0× for k < 100 (linear-bound),
-~1.6–1.8× for k ≥ 1000 (hybrid/FFT-bound). **These are rough estimates, not
+~1.6-1.8× for k ≥ 1000 (hybrid/FFT-bound). **These are rough estimates, not
 measurements.**
 
 #### Old performance grid (2026-07-22/24, higher-bandwidth Zen4)
@@ -354,7 +354,7 @@ bench_grid runs (median of 5, Q=256, uniform stacks).
 
 #### Old 1-second threshold (2026-07-22/24): n ≈ 29,000 (k=n, serial), n ≈ 70,000 (k=n, parallel)
 
-Serial: interpolated from bench_grid (n=16,384 at 491 ms, n=32,768 at 1,140 ms) —
+Serial: interpolated from bench_grid (n=16,384 at 491 ms, n=32,768 at 1,140 ms);
 **never a real binary search**; the current box's n=17,984 is the first real
 `bench_grid threshold` result for Zen4. Parallel: interpolated from bench_grid
 (n=32,768 at 359 ms, n=65,536 at 928 ms).
@@ -388,7 +388,7 @@ to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 
 ### Zen 4 specific
 
-- AOCL-FFTW (znver4-tuned, tag 5.3), sole FFT backend, 20–25% faster than plain FFTW
+- AOCL-FFTW (znver4-tuned, tag 5.3), sole FFT backend, 20-25% faster than plain FFTW
 - BQ=8 batched linear with interleaved layout (native AVX-512 width)
 - L2-aware checkpointing with 1MB per-core L2
 - B=24/32, cost model adapts to Zen 4's wider schoolbook-FFT crossover.
@@ -441,7 +441,7 @@ and were refit on real hardware via `tools/fit_cost_model.py`.
 > to 10.2% and pushes `FFT_OVERHEAD_NS`/`FMA_NS` to compensate, a collinearity
 > limitation in the current `sample_plans` training data, not a correctness
 > issue. `./bench_grid verify` passes ALL TESTS and `./bench_grid crossover`
-> shows a clean, monotonic linear→hybrid transition at k≈122–124 (empirical
+> shows a clean, monotonic linear→hybrid transition at k≈122-124 (empirical
 > crossover table in `devices/m3_pro/fft_config.h`).
 
 ### Zen 4 (AMD Ryzen 9 7950X, AVX-512, AOCL-FFTW)
@@ -485,7 +485,7 @@ the reported bandwidth by ~`reps`x.
 **Fixed** with a standard compiler memory barrier (`asm volatile` with a
 memory clobber) after each repetition, forcing the compiler to treat memory as
 externally observed. Verified in isolation not to regress M3 Pro's
-already-correct values (it tightens them: 83–114 GB/s scattered → a consistent
+already-correct values (it tightens them: 83-114 GB/s scattered → a consistent
 ~115 GB/s across all three cache levels).
 
 **Re-verified with a fresh calibration run on Zen4 hardware** (commit `18bf1c3`,

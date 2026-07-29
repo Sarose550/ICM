@@ -1,4 +1,4 @@
-/* threshold_search_gpu.cu — Binary search for the exact n where GPU
+/* threshold_search_gpu.cu: Binary search for the exact n where GPU
  * runtime crosses 1000ms, using the lightweight single-measurement
  * approach from frontier_probe.cu (one icm_gpu_equity_with_plan call per
  * candidate n), NOT the exhaustive B/M/T hyperparameter grid search from
@@ -13,7 +13,7 @@
  * Output: per-candidate log lines as the search narrows, then the final
  * threshold n for each curve.
  *
- * Build (B200, cuFFTDx-enabled — matches Makefile's push_limit_gpu target):
+ * Build (B200, cuFFTDx-enabled; matches Makefile's push_limit_gpu target):
  *
  *   # Pre-flight: the fused GPU objects + device-link object must already
  *   # be built (e.g. via 'make bench_gpu_fused' first).  Then:
@@ -35,7 +35,7 @@
  * Architecture note: -arch=sm_100 targets B200 (Blackwell).  Verify
  * against the Makefile's CUDA_ARCH default for your target device.
  *
- * Runtime expectation: ~2–4 minutes on a B200 (roughly 20–30 candidate
+ * Runtime expectation: ~2 to 4 minutes on a B200 (roughly 20 to 30 candidate
  * points × 5 reps × ~2s worst-case wall time per rep).
  */
 
@@ -94,7 +94,7 @@ static double measure_ms(int n, int k) {
 
     IcmGpuPlan *plan = icm_gpu_plan_create(n, S.data(), k, &opts);
     if (!plan) {
-        /* OOM or invalid config — treat as "over threshold" so the binary
+        /* OOM or invalid config; treat as "over threshold" so the binary
          * search backs off to a smaller n. */
         fprintf(stderr, "  [measure_ms] n=%d k=%d plan_create FAIL: %s\n",
                 n, k, icm_gpu_last_error());
@@ -104,7 +104,7 @@ static double measure_ms(int n, int k) {
         return -1.0;
     }
 
-    /* Warmup — one call to amortise any lazy allocation / JIT overhead */
+    /* Warmup: one call to amortise any lazy allocation / JIT overhead */
     IcmGpuRunStats warm_stats{};
     int warm_ok = icm_gpu_equity_with_plan(plan, Q_POINTS,
                                             payout.data(), eq.data(),
@@ -162,8 +162,8 @@ static int binary_search_threshold(int k_mode) {
 
     int lo, hi;
     if (k_mode == 0) {
-        lo = 262144;   /* 256K — should be well under 1s */
-        hi = 4194304;  /* 4M   — should be over 1s at this n */
+        lo = 262144;   /* 256K; should be well under 1s */
+        hi = 4194304;  /* 4M;   should be over 1s at this n */
     } else {
         lo = 1048576;   /* 1M */
         hi = 16777216;  /* 16M */
@@ -181,7 +181,7 @@ static int binary_search_threshold(int k_mode) {
     fflush(stdout);
 
     if (t_lo > 1000.0) {
-        /* Even the smallest n is over 1s — halve until we go under */
+        /* Even the smallest n is over 1s; halve until we go under */
         while (lo > 8192 && t_lo > 1000.0) {
             lo /= 2;
             k_lo = (k_mode == 0) ? lo : 100;
@@ -202,7 +202,7 @@ static int binary_search_threshold(int k_mode) {
     int k_hi = (k_mode == 0) ? hi : 100;
     double t_hi = measure_ms(hi, k_hi);
     if (t_hi < 0.0) {
-        /* hi OOMed — halve until it works */
+        /* hi OOMed; halve until it works */
         while (hi > lo && t_hi < 0.0) {
             hi /= 2;
             k_hi = (k_mode == 0) ? hi : 100;
@@ -218,12 +218,12 @@ static int binary_search_threshold(int k_mode) {
     fflush(stdout);
 
     if (t_hi <= 1000.0) {
-        /* Even the largest testable n is under 1s — double until over */
+        /* Even the largest testable n is under 1s; double until over */
         while (hi < 134217728 && t_hi <= 1000.0) {  /* cap at 128M */
             hi *= 2;
             k_hi = (k_mode == 0) ? hi : 100;
             t_hi = measure_ms(hi, k_hi);
-            if (t_hi < 0.0) { hi /= 2; break; }  /* OOM — back off */
+            if (t_hi < 0.0) { hi /= 2; break; }  /* OOM; back off */
             printf("%-12d %-8d %-12.3f %s\n", hi, k_hi, t_hi,
                    (t_hi <= 1000.0) ? "BELOW" : "ABOVE (expanding)");
             fflush(stdout);
@@ -245,7 +245,7 @@ static int binary_search_threshold(int k_mode) {
 
         double t_mid = measure_ms(mid, k_mid);
         if (t_mid < 0.0) {
-            /* Measurement failed (likely OOM) — treat as "above
+            /* Measurement failed (likely OOM); treat as "above
              * threshold" so we back off to a smaller n. */
             fprintf(stderr, "  [search] n=%d FAIL, treating as ABOVE\n", mid);
             hi = mid;
@@ -285,7 +285,7 @@ int main() {
         return 1;
     }
 
-    printf("threshold_search_gpu — binary search for 1000ms crossing\n");
+    printf("threshold_search_gpu: binary search for 1000ms crossing\n");
     printf("method: median of %d reps per candidate n, Q=%d\n",
            N_REPS, Q_POINTS);
     printf("plan-based API (icm_gpu_plan_create + icm_gpu_equity_with_plan)\n");

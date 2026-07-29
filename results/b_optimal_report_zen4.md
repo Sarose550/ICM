@@ -15,12 +15,12 @@ We measured the hybrid engine's wall-clock time for **every B ∈ {8, 16, 24, 32
   benchmark grid (from `tools/sample_plans.c`'s `n_values[]`), skipping the
   smallest (256, too fast to resolve) and largest (65536, would take hours).
   32768 was only partially completed (k up to 275) due to time constraints,
-  but 512–16384 are fully covered.
+  but 512-16384 are fully covered.
 
-- **k values per n**: a hybrid grid of ~15–17 points per n:
+- **k values per n**: a hybrid grid of ~15-17 points per n:
   - **Dense bracket near the linear→hybrid crossover** (k≈275 on Zen4, per D10):
     {200, 240, 260, 275, 290, 310, 350, 400}
-  - **Log-spaced grid from ~500 to k=n**: 6–8 additional points depending on
+  - **Log-spaced grid from ~500 to k=n**: 6-8 additional points depending on
     n (fewer for large n to stay within time budget). Always includes k=n.
 
 - **Q = 256** (standard for this project)
@@ -36,7 +36,7 @@ For each (n,k) cell, we also record `icm_select_best_B(n,k)` (the cost
 model's pick) for comparison; this is read once per cell, not per B.
 
 **Time budget**: the full sweep took ~8 minutes for n=512 through n=16384.
-n=32768 was truncated at k=275 because each cell at that n takes 600–2000ms
+n=32768 was truncated at k=275 because each cell at that n takes 600-2000ms
 per timing, and completing all ~13 k values would have pushed the sweep
 beyond ~45 minutes. The partial n=32768 data (k=200,240,260,275) is sufficient
 to confirm the pattern holds at larger n.
@@ -137,7 +137,7 @@ candidate ceiling of 64 is fine: B=96+ is always slower, so there's no
 reason to search beyond 64.
 
 If anything, the candidate list could potentially be **shortened** (e.g.,
-search only {16, 32, 48, 64} or even just {32}) since B=32 wins everywhere.
+search only {16, 32, 48, 64} or even {32} alone) since B=32 wins everywhere.
 But the current 6-value search is cheap (it constructs tree contexts, not
 full engine runs) and provides robustness against future hardware where the
 optimum might shift. We recommend keeping it as-is.

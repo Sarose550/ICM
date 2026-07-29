@@ -2,7 +2,7 @@
 
 ## 1. What problem is this solving?
 
-This library computes tournament poker equities — numbers like "what is my
+This library computes tournament poker equities: numbers like "what is my
 expected share of the prize pool, given everyone's chip stacks?" There are
 several different ways to compute the same answer. Think of them as different
 "engines" or "methods." Some engines are faster for small problems, some are
@@ -14,15 +14,14 @@ which engine to use and how to configure it. The user never specifies this
 themselves. This whole system of automatic picking is what we call **the cost
 model.**
 
-Why can't we just say "always use the theoretically best engine?" Because on
-real hardware, crude math doesn't predict real speed. The CLAUDE.md project
-file documents a concrete example: every individual number in an older formula
-was verified correct against real execution, but when those individually-correct
-numbers were combined into one big go/no-go prediction, the prediction was
-wrong on both M3 Pro and Zen4 hardware. The problem is that a formula has to
-correctly account for every microarchitectural effect — cache sizes, memory
-bandwidth, instruction pipeline behavior — and getting all of that right in one
-equation is extraordinarily hard.
+"Always use the theoretically best engine" fails because on real hardware, crude
+math does not predict real speed. The CLAUDE.md project file documents a concrete
+example: every individual number in an older formula was verified correct against
+real execution, but when those individually-correct numbers were combined into one
+big go/no-go prediction, the prediction was wrong on both M3 Pro and Zen4
+hardware. The problem is that a formula has to correctly account for every
+microarchitectural effect (cache sizes, memory bandwidth, instruction pipeline
+behavior) and getting all of that right in one equation is extraordinarily hard.
 
 The solution this project adopted: wherever possible, **replace formula-based
 predictions with direct real measurements.** Time the actual candidate choices
@@ -36,22 +35,22 @@ tables at runtime instead of computing a guess from an equation.
 Every time the program runs a computation, it makes three separate decisions.
 Here they are, in the order they happen.
 
-### Decision (a): Which engine to use — "linear" vs "hybrid" vs "tree"
+### Decision (a): Which engine to use: linear, hybrid, or tree
 
 **What these engines do, in one sentence each:**
 
 - The **linear engine** does the math directly, one multiplication at a time.
   It uses no special tricks. It is simple, but its cost grows in direct
   proportion to both the number of players (n) and the number of top-finishing
-  positions to compute (k) — written as "O(n × k)." For small k, this is the
-  fastest option simply because there is no setup overhead to pay.
+  positions to compute (k), written as "O(n × k)." For small k, this is the
+  fastest option because there is no setup overhead to pay.
 
 - The **hybrid engine** breaks the problem into chunks called blocks, processes
-  each block separately, and then combines results using a mathematical shortcut
-  — the Fast Fourier Transform, or FFT. An FFT is a clever way to multiply many
+  each block separately, and then combines results using a mathematical shortcut:
+  the Fast Fourier Transform, or FFT. An FFT is a clever way to multiply many
   numbers together at once, much faster than doing it pair by pair, but it has
   a fixed startup cost. Using an FFT is like renting a bulldozer: it takes time
-  to start the engine and drive it to the site, but once it's there it moves
+  to start the engine and drive it to the site, but once it is there it moves
   dirt much faster than a shovel. The FFT only pays off above a certain problem
   size. The hybrid engine tries to get the best of both worlds: use the simple
   method for small sub-problems, use the FFT for large ones.
@@ -66,7 +65,7 @@ Here they are, in the order they happen.
 This decision uses a **lookup table combined with interpolation.** A dedicated
 tool (`tools/calibrate_crossover.c`) runs both engines at many different problem
 sizes, directly times them on the real hardware, and records the exact problem
-size where hybrid becomes faster than linear — the "crossover point." These
+size where hybrid becomes faster than linear: the "crossover point." These
 crossover points are stored in a small table in each device's configuration file
 (`fft_config.h`). At runtime, when the program needs to decide for a problem
 size that falls between two measured crossover points, it draws a smooth curve
@@ -77,8 +76,8 @@ of connecting two known points with a curve on log-scaled axes is called
 **Why this approach (and not a formula?):**
 
 The decision is between two discrete options (linear or hybrid), but the
-threshold where the answer flips from one to the other is a continuous quantity
-— it could be any value of k. A lookup table with interpolation makes sense
+threshold where the answer flips from one to the other is a continuous quantity:
+it could be any value of k. A lookup table with interpolation makes sense
 here: measure a modest number of crossover points across the range, interpolate
 between them, and you get accurate predictions at every problem size without
 having to measure every single one.
@@ -89,10 +88,10 @@ having to measure every single one.
 crossover table that the CPU side was upgraded to. `gpu_select_engine_est()`
 in `src/gpu/gpu_plan.cu` (line 828) computes a linear-engine cost estimate
 from raw FMA-operation counts and compares it to the hybrid-engine estimate.
-In practice, the GPU code almost always picks hybrid anyway — the code actually
-overrides "linear" to "hybrid" at line 858 — so this gap has limited practical
-impact at the moment. But it means the GPU engine-selection logic was never
-given the same measurement-based fix that the CPU received.
+In practice, the GPU code almost always picks hybrid anyway (the code overrides
+"linear" to "hybrid" at line 858), so this gap has limited practical impact at
+the moment. But it means the GPU engine-selection logic was never given the
+same measurement-based fix that the CPU received.
 
 ---
 
@@ -107,7 +106,7 @@ the simple direct method, and then uses FFTs to combine results across blocks.
 
 The block size can only be one of a small set of specific values: 8, 16, 24,
 32, 48, or 64. There is no such thing as "block size 40." This is a **discrete
-choice** — you pick one of the available options, not a number on a continuous
+choice**: you pick one of the available options, not a number on a continuous
 slider.
 
 **How this decision is made:**
@@ -118,7 +117,7 @@ block size across a grid of (n, k) problem sizes, times each one directly, and
 records which block size was fastest. The resulting table maps a pair of numbers
 (n, k) to a block size B. At runtime, when the program needs to decide for a
 particular (n, k), it finds the closest (n, k) that was actually measured and
-uses the B from that entry — a technique called **nearest-neighbor lookup.**
+uses the B from that entry, a technique called **nearest-neighbor lookup.**
 
 **Why this approach (and not interpolation?):**
 
@@ -144,13 +143,13 @@ If it uses an FFT, it must also pick exactly what FFT size to use from a large
 menu of calibrated sizes. The FFT size must be at least as large as the
 computation requires, but it could be larger. Using a larger FFT is more
 expensive per FFT, but a smaller FFT that is "too small" forces the program to
-do extra cleanup work afterward — this cleanup is called **wrap correction**
+do extra cleanup work afterward; this cleanup is called **wrap correction**
 (explained below).
 
 **What is wrap correction?**
 
 When the program uses an FFT that is slightly smaller than the full computation
-needs, the FFT produces a result with a predictable error — some of the answer
+needs, the FFT produces a result with a predictable error: some of the answer
 "wraps around" and lands in the wrong place, like a car's odometer rolling over
 from 99,999 back to 0. The program can fix this error afterward by computing the
 wrapped-around portion separately and adding it back. This extra fixing step is
@@ -167,7 +166,7 @@ each one takes, and stores those timings in a table (749 entries on CPU, over
 3,000 on GPU). At runtime, for each computation step, the program scans the
 calibrated sizes that could work, adds the estimated wrap-correction cost to
 each candidate's measured FFT time, and picks the combination with the lowest
-total cost. This is **not interpolation and not a formula** — it is searching
+total cost. This is **not interpolation and not a formula**: it is searching
 through real measurements for the cheapest valid option.
 
 The wrap-correction cost itself is estimated by a formula (number of cleanup
@@ -181,7 +180,7 @@ This decision involves comparing costs across many concrete, measurable options
 cost can be measured directly and stored in a table. There is no interpolation
 between FFT sizes because every size that is actually available has its own
 real measurement. This is the one layer of the cost model that was already
-measurement-based from the start — it was never the problem.
+measurement-based from the start; it was never the problem.
 
 ---
 
@@ -189,11 +188,11 @@ measurement-based from the start — it was never the problem.
 
 ### The specific bug found and fixed
 
-At one exact problem configuration — n=4,194,304 players, k=128 top positions
-— the GPU cost model made a bad choice. It selected an FFT size of 128 with a
+At one exact problem configuration (n=4,194,304 players, k=128 top positions),
+the GPU cost model made a bad choice. It selected an FFT size of 128 with a
 wrap correction of 127 (meaning: the FFT was 127 units too small, requiring
 nearly as much cleanup work as the original computation). Meanwhile, the very
-next column in the results table — same n, but k=256 — ran substantially faster
+next column in the results table (same n, but k=256) ran substantially faster
 (612ms vs 890ms) even though it was computing roughly twice as much work.
 
 **Why the bad choice happened:**
@@ -205,17 +204,17 @@ with heavy wrap correction was cheaper than fft_n=256 with zero wrap correction.
 
 Later in the decision chain, a separate check exists specifically to catch this
 kind of mistake: "Is a clean power-of-2 fused-kernel size actually cheaper than
-what we just chose?" This check is at line 698 and line 959 of
-`src/gpu/gpu_plan.cu`. But this check had a gate on it — it only ran when the
+what we chose?" This check is at line 698 and line 959 of
+`src/gpu/gpu_plan.cu`. But this check had a gate on it: it only ran when the
 selected execution method was NOT already the fused kernel
 (`tier != GPU_TIER_FUSED`).
 
 The problem: at small FFT sizes, the fused kernel is almost always chosen
-(because it's reliably faster than the alternative cuFFT library at small
+(because it is reliably faster than the alternative cuFFT library at small
 sizes). So by the time the program reached the "is a clean size cheaper?"
-check, the tier was already FUSED — and the check was skipped. The program
+check, the tier was already FUSED, and the check was skipped. The program
 never asked the question "is fused at 128 with heavy wrap correction actually
-cheaper than fused at 256 with zero wrap correction?" — exactly the comparison
+cheaper than fused at 256 with zero wrap correction?", exactly the comparison
 that would have caught the mistake.
 
 **The fix** (implemented and hardware-verified on a rented B200, 2026-07-26):
@@ -238,7 +237,7 @@ but would have been better off with a 256-point FFT with zero wrap correction.
 
 The same analysis confirmed the fix resolves 5 of the 11
 previously-cataloged non-monotonicities in the GPU heatmap data (cells where
-a larger k ran faster than a smaller k at the same n — a counter-intuitive
+a larger k ran faster than a smaller k at the same n, a counter-intuitive
 result that should not happen with a correct cost model). Hardware
 verification confirmed all five inversions resolved.
 
@@ -253,8 +252,8 @@ and fitting a line to the results. This direct measurement feeds into the
 CPU cost model as the `WRAP_FMA_NS` constant.
 
 On the GPU side, no equivalent tool exists. The GPU cost model estimates
-wrap-correction cost using a generic FMA-operation rate (`GPU_SCHOOL_FMA_NS`
-— the speed of one multiply-and-add operation when the GPU is fully saturated
+wrap-correction cost using a generic FMA-operation rate (`GPU_SCHOOL_FMA_NS`,
+the speed of one multiply-and-add operation when the GPU is fully saturated
 with work). But wrap correction is not a fully-saturating workload: it involves
 a separate kernel launch, operates on irregularly-sized data, and does not
 benefit from the same throughput optimizations as a large dense matrix
@@ -264,9 +263,9 @@ direct measurement.
 **Gap 2: The batch-adjustment system for FFT costs is inactive on the current GPU.**
 
 Running many small jobs together at once is often cheaper per-job than running
-them one at a time — this is called **batching.** The GPU cost model has a
+them one at a time; this is called **batching.** The GPU cost model has a
 well-designed system for estimating how the per-call cost of an FFT drops as
-more jobs are batched together. It uses a concept of a "floor cost" — the
+more jobs are batched together. It uses a concept of a "floor cost": the
 asymptotic minimum cost per FFT call when the GPU is fully loaded with work,
 measured directly for each FFT size.
 
@@ -312,9 +311,9 @@ machine, without the user having to figure it out manually.
 The core insight is that **directly timing real candidate choices and storing
 the results in a table produces more reliable automatic decisions than
 computing a decision from a mathematical formula.** A formula requires
-correctly modeling every relevant hardware effect — cache sizes at every level,
+correctly modeling every relevant hardware effect (cache sizes at every level,
 memory bandwidth under different access patterns, instruction pipeline
-behavior, branch prediction, and so on. A real measurement automatically
+behavior, branch prediction, and so on). A real measurement automatically
 captures all of that, whether or not anyone understood it in advance.
 
 **Specific precedents cited in the project's CLAUDE.md:**
@@ -332,12 +331,12 @@ captures all of that, whether or not anyone understood it in advance.
   it is installed on): ATLAS searches through candidate implementations at
   install time, timing each one on the real hardware, rather than assuming a
   formula can predict which version will be fastest. The paradigm is called
-  "AEOS" — Automated Empirical Optimization of Software.
+  "AEOS": Automated Empirical Optimization of Software.
 
 - **BeBOP/Sparsity** (a research project on optimizing sparse matrix
   operations, from Demmel, Dongarra, Whaley, and others, 2004): This project
-  searched through register-blocking parameters — choices about how to group
-  operations to fit into the CPU's fastest memory — by timing real candidates,
+  searched through register-blocking parameters (choices about how to group
+  operations to fit into the CPU's fastest memory) by timing real candidates,
   directly analogous to this project's block-size selection.
 
 - **LAPACK's ILAENV** (a standard linear algebra library used in scientific
@@ -346,7 +345,7 @@ captures all of that, whether or not anyone understood it in advance.
   simple algorithm to the blocked algorithm?" The answer (parameter NX,
   ISPEC=3) is measured empirically on each machine and consulted as a cheap
   threshold comparison at runtime, with no live racing of both candidates in
-  production — exactly the pattern this project uses for its own
+  production, exactly the pattern this project uses for its own
   linear-vs-hybrid crossover.
 
 ---

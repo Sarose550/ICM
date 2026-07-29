@@ -1,7 +1,7 @@
-/* calibrate_gpu_best_b.cu — Direct empirical measurement of the real
+/* calibrate_gpu_best_b.cu; Direct empirical measurement of the real
  * fastest hybrid-engine block size B(n,k) on the GPU, replacing
  * gpu_select_best_B_est()'s summed-analytical-constants prediction with
- * a small, per-device empirical lookup table — same methodology and
+ * a small, per-device empirical lookup table; same methodology and
  * rationale as tools/calibrate_best_b.c on CPU (LAPACK ILAENV precedent:
  * measure the real decision directly rather than summing calibrated
  * constants).
@@ -12,7 +12,7 @@
  * --narrow-around for single-point refinement; supports resumability
  * (skips already-computed rows in the output CSV on restart).
  *
- * This is a ONE-TIME, OFFLINE calibration step — it never runs in
+ * This is a ONE-TIME, OFFLINE calibration step; it never runs in
  * production.
  *
  * Build:
@@ -34,7 +34,7 @@
 
 #include "icm_gpu.h"
 
-/* ── Full candidate B set — matches kBCandidates in src/gpu/gpu_plan.cu ── */
+/* ── Full candidate B set; matches kBCandidates in src/gpu/gpu_plan.cu ── */
 static const std::vector<int> kBCandidates = {
     16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 192, 224, 256,
     320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536

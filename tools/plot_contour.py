@@ -3,13 +3,13 @@
 Generate publication plots for ICM benchmark data.
 
 Plots generated:
-  1. contour_1s[_<device>].png      — Serial vs parallel 1-second boundary (CPU)
-  2. parallel_speedup[_<device>].png — Speedup bar chart
-  3. engine_dispatch[_<device>].png  — Engine coloring on contour
-  4. runtime_vs_n_cpu[_<device>].png — Runtime(n) at fixed k values, log-log (CPU)
-  5. runtime_vs_n_gpu.png           — Runtime(n) at fixed k values, log-log (GPU)
-  6. gpu_contour.png                — GPU 1-second contour from heatmap data
-  7. accuracy_convergence.png       — Quadrature accuracy vs Q (log-log)
+  1. contour_1s[_<device>].png      ,  Serial vs parallel 1-second boundary (CPU)
+  2. parallel_speedup[_<device>].png ,  Speedup bar chart
+  3. engine_dispatch[_<device>].png  ,  Engine coloring on contour
+  4. runtime_vs_n_cpu[_<device>].png ,  Runtime(n) at fixed k values, log-log (CPU)
+  5. runtime_vs_n_gpu.png           ,  Runtime(n) at fixed k values, log-log (GPU)
+  6. gpu_contour.png                ,  GPU 1-second contour from heatmap data
+  7. accuracy_convergence.png       ,  Quadrature accuracy vs Q (log-log)
 
 Usage:
   python3 tools/plot_contour.py                        # defaults to zen4
@@ -78,7 +78,7 @@ DEVICE_CONFIGS = {
         'label': 'Ryzen 9 7950X',
         'short': 'Zen 4',
         'n_cores': 16,
-        'output_suffix': '',   # no suffix — root-level names like contour_1s.png
+        'output_suffix': '',   # no suffix ,  root-level names like contour_1s.png
         'serial_csv': 'contour_zen4_serial_q256*.csv',
         'parallel_csv': 'contour_zen4_parallel_q256*.csv',
         'bench_grid': 'bench_grid_zen4_serial*.txt',
@@ -110,7 +110,7 @@ def load_contour(path, max_time_ms=2000):
     """Load contour CSV. Filter out 'ok' points where time > max_time_ms (these
     indicate anomalous bisection search behavior, not real 1s-budget data).
     Always includes the row where n_max <= k (the true n=k crossing) regardless
-    of its measured time, then stops — floor-row probes intentionally use a
+    of its measured time, then stops ,  floor-row probes intentionally use a
     generous timeout to confirm the crossing, so their time is expected to
     exceed max_time_ms and must not be filtered out."""
     k, n, engine = [], [], []
@@ -659,7 +659,7 @@ if __name__ == '__main__':
     else:
         print(f"Skipping CPU contour plots (missing CSV files)")
 
-    # CPU runtime vs n — include fixed k and ratio k (n/4, n/2, n)
+    # CPU runtime vs n ,  include fixed k and ratio k (n/4, n/2, n)
     if bench_full:
         data = extract_runtime_data_from_bench_grid(bench_full)
         if data:
@@ -681,7 +681,7 @@ if __name__ == '__main__':
                               os.path.join(RESULTS, f'runtime_vs_n_cpu{suffix}.png'),
                               k_values=fixed_k + ratio_labels)
 
-    # GPU plots (device-independent — only run in default zen4 mode
+    # GPU plots (device-independent ,  only run in default zen4 mode
     # to avoid overwriting the canonical GPU plots with duplicate runs)
     if args.device == 'zen4':
         if gpu_heatmap:
@@ -718,6 +718,6 @@ if __name__ == '__main__':
         else:
             print("Skipping accuracy_convergence.png (missing accuracy_convergence.csv)")
     else:
-        print("Skipping GPU/accuracy plots (non-zen4 device — only generated for zen4)")
+        print("Skipping GPU/accuracy plots (non-zen4 device ,  only generated for zen4)")
 
     print("\nDone.")

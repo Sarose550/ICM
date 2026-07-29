@@ -1,4 +1,4 @@
-/* bench_block_build.c — isolated microbenchmark for the block-build phase.
+/* bench_block_build.c; isolated microbenchmark for the block-build phase.
  *
  * Directly measures BLOCK_FMA_NS and BLOCK_MEM_NS by timing ONLY the
  * block-build inner loop (verbatim copy of src/cpu/icm.c's engine_hybrid_core
@@ -16,14 +16,14 @@
  *
  * The real inner loop's per-player FMA count is bsize (= B for full blocks),
  * not (B+1)/2.  The model uses (B+1)/2 as its independent variable, so the
- * fitted BLOCK_FMA_NS will absorb that factor-of-~2 discrepancy — it is a
+ * fitted BLOCK_FMA_NS will absorb that factor-of-~2 discrepancy; it is a
  * model coefficient, not a literal per-FMA-instruction latency.
  *
  * Dependency analysis: within a single player, the m-loop iterations are
  * independent (all read P[m],P[m-1] from the *previous* player's output),
  * so the inner loop is throughput-bound (vectorizable).  Between players,
- * there IS a genuine sequential dependency — player j+1 reads all P[m]
- * that player j just wrote.  This microbenchmark preserves the real loop
+ * there IS a genuine sequential dependency; player j+1 reads all P[m]
+ * that player j wrote.  This microbenchmark preserves the real loop
  * structure exactly, so it measures the genuine mix of throughput+latency
  * that the real engine experiences.
  *
@@ -63,7 +63,7 @@ static double now_ns(void) {
  * This is the EXACT loop body from engine_hybrid_core() in src/cpu/icm.c,
  * lines ~1963-1987 (the "Steps 1+2 fused" comment block).  The only
  * adaptation is that P, a, and leaf are passed as parameters instead of
- * being indexed from the HybridCtx struct — the computation is identical.
+ * being indexed from the HybridCtx struct; the computation is identical.
  *
  * Includes:
  *   - memset(P, …) + P[0] = 1.0  (per-block init)

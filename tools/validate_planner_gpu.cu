@@ -1,4 +1,4 @@
-/* validate_planner_gpu.cu — Single-point probe oracle for the GPU planner.
+/* validate_planner_gpu.cu; Single-point probe oracle for the GPU planner.
  *
  * Given ONE (n,k) via CLI args, runs the real GPU hybrid engine at the
  * planner's chosen B (auto) and at every candidate B in the full set,
@@ -15,11 +15,11 @@
  * Output (one line to stdout):
  *   auto_B,auto_ms,best_B,best_ms,gap_pct
  *
- *   auto_B    — planner's chosen B (from gpu_empirical_best_B / gpu_select_best_B_est)
- *   auto_ms   — measured wall-clock time for auto_B (milliseconds)
- *   best_B    — empirically-fastest B from full candidate sweep
- *   best_ms   — measured wall-clock time for best_B (milliseconds)
- *   gap_pct   — (auto_ms - best_ms) / best_ms * 100  (positive = auto slower)
+ *   auto_B   ; planner's chosen B (from gpu_empirical_best_B / gpu_select_best_B_est)
+ *   auto_ms  ; measured wall-clock time for auto_B (milliseconds)
+ *   best_B   ; empirically-fastest B from full candidate sweep
+ *   best_ms  ; measured wall-clock time for best_B (milliseconds)
+ *   gap_pct  ; (auto_ms - best_ms) / best_ms * 100  (positive = auto slower)
  *
  * Build:
  *   make validate_planner_gpu CUDA_ARCH=sm_100 CUFFTDX_INC=-I<path>
@@ -32,7 +32,7 @@
 
 #include "icm_gpu.h"
 
-/* Full candidate B set — must match calibrate_gpu_best_b.cu and
+/* Full candidate B set; must match calibrate_gpu_best_b.cu and
  * kBCandidates in src/gpu/gpu_plan.cu. */
 static const std::vector<int> kBCandidates = {
     16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 192, 224, 256,
@@ -169,7 +169,7 @@ int main(int argc, char **argv) {
                      ? 100.0 * (auto_ms - best_ms) / best_ms
                      : 0.0;
 
-    /* Machine-readable single line to stdout — parsed by
+    /* Machine-readable single line to stdout; parsed by
      * tools/calibrate_block_size.py (A4).
      * Columns: auto_B,auto_ms,best_B,best_ms,gap_pct */
     printf("%d,%.6f,%d,%.6f,%.2f\n",

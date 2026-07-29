@@ -117,7 +117,7 @@ static void test_select_best_B(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Test 4: select_engine dispatch — linear vs hybrid crossover
+   Test 4: select_engine dispatch; linear vs hybrid crossover
    Small k should use linear (return 0), large k should use hybrid.
    ═══════════════════════════════════════════════════════════════ */
 static void test_select_engine(void) {
@@ -131,7 +131,7 @@ static void test_select_engine(void) {
     int B = select_engine(65536, 65536);
     CHECK(B > 0, "n=65536 k=65536 should be hybrid, got B=%d", B);
 
-    /* Sweep k at fixed n=8192 — find crossover */
+    /* Sweep k at fixed n=8192; find crossover */
     int n = 8192;
     int last_engine = 0;
     int crossover_k = -1;
@@ -198,7 +198,7 @@ static void test_tree_ctx_levels(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Test 6: Cost model B sweep — verify model picks reasonable B
+   Test 6: Cost model B sweep; verify model picks reasonable B
    Compare model's best_B against forced-B cost sweep.
    ═══════════════════════════════════════════════════════════════ */
 static void test_b_sweep_cpu(void) {

@@ -1,4 +1,4 @@
-/* bench_schoolbook_tree.c — Direct per-size microbenchmark for schoolbook
+/* bench_schoolbook_tree.c; Direct per-size microbenchmark for schoolbook
  * tree-level primitives: polymul_modk (build/multiply) and correlate_school
  * (propagate/correlate).
  *

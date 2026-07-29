@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# b200_verify_and_sweep.sh — B200 verification & sweep orchestration
+# b200_verify_and_sweep.sh: B200 verification & sweep orchestration
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Runs a gated, 5-stage verification-and-sweep pipeline on a remote B200
 # instance.  Each stage gates on the previous one; first failure stops the
 # whole script with a non-zero exit and a clear [GATE N] FAIL message.
 #
-# The script does NOT rent or destroy the cloud instance — that remains a
+# The script does NOT rent or destroy the cloud instance; that remains a
 # manual, supervisor-only step.  It assumes an already-running, SSH-reachable
 # box.
 #
@@ -77,7 +77,7 @@ gate_fail() {
     shift
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
-    echo "[GATE $gate] FAIL — $*"
+    echo "[GATE $gate] FAIL ,  $*"
     echo "═══════════════════════════════════════════════════════════════"
     echo ""
     exit 1
@@ -117,7 +117,7 @@ START_EPOCH="$(date +%s)"
 LOCAL_RESULTS="results/b200_verify_${START_TIME}"
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "B200 VERIFY & SWEEP — $START_TIME"
+echo "B200 VERIFY & SWEEP: $START_TIME"
 echo "  host:     $B200_HOST"
 echo "  port:     $B200_PORT"
 echo "  remote:   $REMOTE_WORKDIR"
@@ -132,7 +132,7 @@ mkdir -p "$LOCAL_RESULTS"
 LOCAL_TMPDIR="$(mktemp -d)"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# STAGE 0 — remote setup
+# STAGE 0: remote setup
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "=== STAGE 0: remote setup ==="
@@ -176,7 +176,7 @@ echo "[STAGE 0] complete"
 echo ""
 
 # ──────────────────────────────────────────────────────────────────────────────
-# STAGE 1 (Gate 1) — build bench_gpu_fused + verify
+# STAGE 1 (Gate 1): build bench_gpu_fused + verify
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "=== STAGE 1 (Gate 1): build bench_gpu_fused + verify ==="
@@ -204,7 +204,7 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# STAGE 2 (Gate 2) — build & run workspace-repro harness
+# STAGE 2 (Gate 2): build & run workspace-repro harness
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "=== STAGE 2 (Gate 2): build & run gpu_ws_repro ==="
@@ -239,7 +239,7 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# STAGE 3a — run calibrate_gpu, copy new header into place
+# STAGE 3a: run calibrate_gpu, copy new header into place
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "=== STAGE 3a: calibrate_gpu (workspace calibration) ==="
@@ -258,13 +258,13 @@ remote "cd '$REMOTE_WORKDIR' && ICM_GPU_CALIB_WS=1 ./calibrate_gpu devices/b200/
 
 echo "--- calibrate_gpu wrote new header to devices/b200/gpu_fft_config.h ---"
 # calibrate_gpu writes directly to the path given as its first argument
-# (devices/b200/gpu_fft_config.h), which is also its default — no copy needed.
+# (devices/b200/gpu_fft_config.h), which is also its default; no copy needed.
 
 echo "[STAGE 3a] complete"
 echo ""
 
 # ──────────────────────────────────────────────────────────────────────────────
-# STAGE 3b — rebuild bench_gpu_fused against new header, re-verify
+# STAGE 3b: rebuild bench_gpu_fused against new header, re-verify
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "=== STAGE 3b (Gate 3b): rebuild + re-verify against new fft_config.h ==="
@@ -289,7 +289,7 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# STAGE 3c — rebuild & re-run gpu_ws_repro against new header
+# STAGE 3c: rebuild & re-run gpu_ws_repro against new header
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "=== STAGE 3c (Gate 3c): rebuild + re-run gpu_ws_repro ==="
@@ -313,7 +313,7 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# STAGE 4 — heatmap + push_limit sweep
+# STAGE 4: heatmap + push_limit sweep
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "=== STAGE 4: heatmap_gpu + push_limit_gpu ==="
@@ -333,7 +333,7 @@ echo "[STAGE 4] complete"
 echo ""
 
 # ──────────────────────────────────────────────────────────────────────────────
-# STAGE 5 — pull results back to local
+# STAGE 5: pull results back to local
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "=== STAGE 5: rsync results back ==="
@@ -361,23 +361,23 @@ WALL_REM=$((WALL_SEC % 60))
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "ALL GATES PASSED — SWEEP COMPLETE"
+echo "ALL GATES PASSED ,  SWEEP COMPLETE"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "  Gates: 1 2 3b 3c — all PASS"
+echo "  Gates: 1 2 3b 3c ,  all PASS"
 echo "  Wall time: ${WALL_MIN}m ${WALL_REM}s"
 echo "  Local results: $LOCAL_RESULTS/"
 echo "  Contents:"
-echo "    stage1_verify.log       — bench_gpu_fused verify (pre-calibration)"
-echo "    stage2_repro.log         — gpu_ws_repro (pre-calibration)"
-echo "    stage3a_calibrate.log    — calibrate_gpu output"
-echo "    stage3b_verify.log       — bench_gpu_fused verify (post-calibration)"
-echo "    stage3c_repro.log        — gpu_ws_repro (post-calibration)"
-echo "    stage4_heatmap.log       — heatmap_gpu output"
-echo "    stage4_pushlimit.log     — push_limit_gpu output"
-echo "    gpu_fft_config.h         — regenerated calibration header"
+echo "    stage1_verify.log       ,  bench_gpu_fused verify (pre-calibration)"
+echo "    stage2_repro.log         ,  gpu_ws_repro (pre-calibration)"
+echo "    stage3a_calibrate.log    ,  calibrate_gpu output"
+echo "    stage3b_verify.log       ,  bench_gpu_fused verify (post-calibration)"
+echo "    stage3c_repro.log        ,  gpu_ws_repro (post-calibration)"
+echo "    stage4_heatmap.log       ,  heatmap_gpu output"
+echo "    stage4_pushlimit.log     ,  push_limit_gpu output"
+echo "    gpu_fft_config.h         ,  regenerated calibration header"
 echo "    $HEATMAP_CSV"
 echo "    $PUSH_LIMIT_CSV"
 echo ""
-echo "  REMOTE INSTANCE IS STILL RUNNING — destroy it manually when done."
+echo "  REMOTE INSTANCE IS STILL RUNNING ,  destroy it manually when done."
 echo ""

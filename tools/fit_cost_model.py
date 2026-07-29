@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fit_cost_model.py — Assemble cost-model constants for hybrid tree engine.
+fit_cost_model.py: Assemble cost-model constants for hybrid tree engine.
 
 Model (per Q-point):
   T = T_block + T_build + T_prop + T_leaf
@@ -16,18 +16,18 @@ Model (per Q-point):
   T_leaf  = n * max(C_div, 2*B * C_leaf_fma) + (n/B) * C_leaf_block
 
 As of the SPRINT_MICROBENCH_MIGRATION, ALL scalar constants are pinned
-to direct measurements — zero free parameters remain for regression:
+to direct measurements; zero free parameters remain for regression:
 
   WRAP_FMA_NS         → --wrap-ns       (tools/bench_wrap_fma.c)
   FP64_DIV_NS         → --div-ns        (tools/bench_div_chain.c)
   FMA_NS              → --fma-ns        (./bench_grid profile, schoolbook slope)
   PAIRED_CACHED_CORR_RATIO → --paired-cached-ratio  (./bench_grid profile, phase split)
   INDEP_PAIR_RATIO    → --indep-pair-ratio  (./bench_grid profile, phase split)
-  FFT_OVERHEAD_NS     → --overhead-ns    (always 0.0 — redundant with calib_times_ns)
+  FFT_OVERHEAD_NS     → --overhead-ns    (always 0.0; redundant with calib_times_ns)
 
 BLOCK_FMA_NS / BLOCK_MEM_NS / LEAF_FMA_NS / LEAF_BLOCK_NS were
 converted to per-B lookup tables by bench_block_build.c and
-bench_leaf_fma.c — not this script's concern.
+bench_leaf_fma.c; not this script's concern.
 
 When all 6 scalar pins are provided, scipy optimization is skipped
 entirely (a 0-parameter degenerate fit is meaningless).  The script
@@ -180,7 +180,7 @@ def predict_plan(params, plan, calib):
 
 
 def objective(params, plans, calib):
-    """Sum of (log(pred/meas))² — log-space least squares."""
+    """Sum of (log(pred/meas))² ,  log-space least squares."""
     total = 0.0
     for p in plans:
         pred = predict_plan(params, p, calib)
@@ -255,7 +255,7 @@ def report(params, plans, calib, pins=None):
         pinned_note = " (" + ", ".join(
             f"{PARAM_NAMES[i]} pinned at {v:.4f}" for i, v in pins.items()) + ")"
     print(f"\n{'='*70}")
-    print(f"FITTED COST MODEL — {n_plans} plans, {n_free} fitted + "
+    print(f"FITTED COST MODEL: {n_plans} plans, {n_free} fitted + "
           f"{len(pins)} pinned parameters{pinned_note}")
     print(f"RMS log-relative error: {rms:.2f}%")
     print(f"Max log-relative error: {max_err:.2f}%")
@@ -269,20 +269,20 @@ def report(params, plans, calib, pins=None):
 
     print(f"\nPhysics checks:")
     print(f"  C_block_fma = {params[P_BLOCK_FMA]:.4f} ns"
-          f"  (now a per-B lookup table — this scalar is vestigial)")
+          f"  (now a per-B lookup table; this scalar is vestigial)")
     print(f"  C_school    = {params[P_SCHOOL]:.4f} ns"
           f"  (expect ~0.05-0.15 ns on modern cores)")
-    div_source = "pinned (direct microbenchmark)" if P_DIV in pins else "fitted (identifiability risk — prefer --div-ns)"
+    div_source = "pinned (direct microbenchmark)" if P_DIV in pins else "fitted (identifiability risk; prefer --div-ns)"
     print(f"  C_div       = {params[P_DIV]:.3f} ns"
           f"  (expect ~3-6 ns for a dependency-chained FP64 div; {div_source})")
     print(f"  R           = {params[P_R]:.4f}"
           f"  (expect ~1.5 on Apple Silicon, ~1.05 on Zen4)")
-    wrap_source = "pinned (direct microbenchmark)" if P_WRAP in pins else "fitted (identifiability warning — prefer --wrap-ns)"
+    wrap_source = "pinned (direct microbenchmark)" if P_WRAP in pins else "fitted (identifiability warning; prefer --wrap-ns)"
     print(f"  C_wrap      = {params[P_WRAP]:.3f} ns"
           f"  ({wrap_source})")
     leaf_cross_B = params[P_DIV] / (2 * params[P_LEAF_FMA]) if params[P_LEAF_FMA] > 0 else 0
     print(f"  Leaf crossover B = {leaf_cross_B:.0f}"
-          f"  (C_div / 2*C_leaf_fma — vestigial, now per-B table)")
+          f"  (C_div / 2*C_leaf_fma; vestigial, now per-B table)")
 
     # Per-plan breakdown
     print(f"\n{'n':>6s} {'k':>6s} {'B':>3s} {'L':>2s}"
@@ -394,7 +394,7 @@ def write_constants_to_header(params, config_path, indep_pair_ratio=None):
             if old_val is not None:
                 changes.append((macro_name, old_val, new_val, changed))
             else:
-                print(f"  ⚠ WARNING: #ifndef/#define/#endif block for {macro_name} not found — skipping")
+                print(f"  ⚠ WARNING: #ifndef/#define/#endif block for {macro_name} not found ,  skipping")
 
     # Write INDEP_PAIR_RATIO separately (not in params array)
     if indep_pair_ratio is not None:
@@ -403,7 +403,7 @@ def write_constants_to_header(params, config_path, indep_pair_ratio=None):
         if old_val is not None:
             changes.append(('INDEP_PAIR_RATIO', old_val, indep_pair_ratio, changed))
         else:
-            print(f"  ⚠ WARNING: #ifndef/#define/#endif block for INDEP_PAIR_RATIO not found — skipping")
+            print(f"  ⚠ WARNING: #ifndef/#define/#endif block for INDEP_PAIR_RATIO not found ,  skipping")
 
     # Write back
     with open(config_path, 'w') as f:
@@ -411,7 +411,7 @@ def write_constants_to_header(params, config_path, indep_pair_ratio=None):
 
     # Print diff summary
     print(f"\n{'='*70}")
-    print(f"WROTE {config_path} — {len(changes)} macro(s) touched")
+    print(f"WROTE {config_path} ,  {len(changes)} macro(s) touched")
     print(f"{'='*70}")
     for macro_name, old_val, new_val, changed in changes:
         marker = '*' if changed else ' '
@@ -433,20 +433,20 @@ def main():
                         help='Rewrite fft_config.h in-place with constants')
     # ── Scalar pins (all 6) ──
     parser.add_argument('--wrap-ns', type=float, default=None,
-                        help='Pin WRAP_FMA_NS (C_wrap) — from bench_wrap_fma.c')
+                        help='Pin WRAP_FMA_NS (C_wrap) ,  from bench_wrap_fma.c')
     parser.add_argument('--div-ns', type=float, default=None,
-                        help='Pin FP64_DIV_NS (C_div) — from bench_div_chain.c')
+                        help='Pin FP64_DIV_NS (C_div) ,  from bench_div_chain.c')
     parser.add_argument('--fma-ns', type=float, default=None,
-                        help='Pin FMA_NS (C_school) — from ./bench_grid profile, '
+                        help='Pin FMA_NS (C_school) ,  from ./bench_grid profile, '
                              'schoolbook slope between cps=16 and cps=32')
     parser.add_argument('--paired-cached-ratio', type=float, default=None,
-                        help='Pin PAIRED_CACHED_CORR_RATIO (R) — from ./bench_grid '
+                        help='Pin PAIRED_CACHED_CORR_RATIO (R) ,  from ./bench_grid '
                              'profile, phase-split table (f_fwd+2*(f_pw+f_ifft))')
     parser.add_argument('--indep-pair-ratio', type=float, default=None,
-                        help='Pin INDEP_PAIR_RATIO — from ./bench_grid profile, '
+                        help='Pin INDEP_PAIR_RATIO ,  from ./bench_grid profile, '
                              'phase-split table (3*f_fwd+2*(f_pw+f_ifft))')
     parser.add_argument('--overhead-ns', type=float, default=0.0,
-                        help='Pin FFT_OVERHEAD_NS (C_overhead). Default 0.0 — '
+                        help='Pin FFT_OVERHEAD_NS (C_overhead). Default 0.0 ,  '
                              'calib_times_ns already measures the full pipeline; '
                              'this is conceptually redundant.')
     args = parser.parse_args()
@@ -489,7 +489,7 @@ def main():
 
     if all_in_scope_pinned:
         print(f"\n{'='*70}")
-        print(f"ALL IN-SCOPE PARAMETERS PINNED — zero free parameters.")
+        print(f"ALL IN-SCOPE PARAMETERS PINNED: zero free parameters.")
         print(f"Skipping scipy optimization (degenerate 0-parameter fit).")
         print(f"{'='*70}")
 
@@ -511,12 +511,12 @@ def main():
         if indep_pair_ratio is not None:
             print(f"  INDEP_PAIR_RATIO          = {indep_pair_ratio:.4f}")
         else:
-            print(f"  INDEP_PAIR_RATIO          = (not provided — will not be written)")
+            print(f"  INDEP_PAIR_RATIO          = (not provided ,  will not be written)")
 
         # Optionally report against sample_plans for diagnostics
-        # (uses scalar block/leaf model — approximate only)
+        # (uses scalar block/leaf model ,  approximate only)
         if plans:
-            print(f"\n(Reporting against sample_plans for diagnostic purposes —")
+            print(f"\n(Reporting against sample_plans for diagnostic purposes , ")
             print(f" block/leaf constants are per-B lookup tables, not scalars;")
             print(f" the scalar model used here is only approximate.)")
             report(params, plans, calib, pins=pins)
@@ -526,7 +526,7 @@ def main():
                                       indep_pair_ratio=indep_pair_ratio)
             print(f"\n✓ Fully-pinned config written to {config_path}")
         else:
-            print(f"\n(Dry run — use --write to update {config_path})")
+            print(f"\n(Dry run ,  use --write to update {config_path})")
 
         return
 
@@ -547,7 +547,7 @@ def main():
     rms = report(params, plans, calib, pins=pins)
 
     print(f"\n{'='*70}")
-    print(f"SUMMARY — constants for fft_config.h:")
+    print(f"SUMMARY: constants for fft_config.h:")
     print(f"{'='*70}")
     for i in range(N_PARAMS):
         tag = " (pinned)" if i in pins else ""

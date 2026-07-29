@@ -103,7 +103,7 @@ class CustomDist(Distribution):
 
 # Register custom build commands. Must be at module level (not guarded by
 # __name__) so that pip/setuptools.build_meta picks them up during
-# `pip install .` — otherwise the shared library is never compiled.
+# `pip install .`, otherwise the shared library is never compiled.
 setup(
     cmdclass={"build_ext": BuildSharedLib},
     distclass=CustomDist,

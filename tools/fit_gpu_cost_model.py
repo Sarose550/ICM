@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fit_gpu_cost_model.py — GPU cost model with empirical kernel lookups.
+fit_gpu_cost_model.py: GPU cost model with empirical kernel lookups.
 
 Tree costs: calibration tables + measured floors (cuFFT pipeline, fused)
 Non-tree costs: empirical lookup tables from bench_kernels
@@ -93,7 +93,7 @@ def build_kernel_interps(kb):
     ns = np.array([x[1] for x in ac])
     interps['accumulate'] = interp1d(log_n, ns, kind='linear', fill_value='extrapolate')
 
-    # block_build: 2D — group by n, interp on log(B) → ns/qp
+    # block_build: 2D ,  group by n, interp on log(B) → ns/qp
     bb = {}
     for n, B, ns_qp in kb['block_build']:
         bb.setdefault(n, []).append((B, ns_qp))
@@ -452,7 +452,7 @@ def main():
     max_err = np.max(np.abs(log_errs)) * 100
 
     print(f"\n{'='*70}")
-    print(f"GPU COST MODEL — {len(plans)} plans, {N_FIT} fitted + empirical lookups")
+    print(f"GPU COST MODEL: {len(plans)} plans, {N_FIT} fitted + empirical lookups")
     print(f"RMS log-relative error: {rms:.2f}%")
     print(f"Max log-relative error: {max_err:.2f}%")
     print(f"Measurement noise floor: ~0.4% CV")

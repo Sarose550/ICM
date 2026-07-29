@@ -121,7 +121,7 @@ analytical formulas:
    `ILAENV` `NX` parameter).
 2. **Block size B inside the hybrid engine.** `empirical_best_B(n, k)` does a
    2D nearest-neighbor lookup over a calibrated `(n,k,B)` grid, returning one
-   of `{8, 16, 24, 32, 48, 64}`. No interpolation — B is a discrete choice.
+   of `{8, 16, 24, 32, 48, 64}`. No interpolation; B is a discrete choice.
 3. **Per tree level: schoolbook vs FFT, and which FFT size.**
    `best_fft_config()` / `best_fft_config_joint()` compare the real calibrated
    per-size FFT timing (`calib_times_ns[]`) against the schoolbook multiply
@@ -135,7 +135,7 @@ comparison is skipped entirely. The level always uses FFT, picks the
 smallest 7-smooth size at or above the needed convolution length, and
 plans with `FFTW_ESTIMATE` (zero-cost heuristic planning). Results stay
 correct; only optimality is lost. The same guard prevents out-of-bounds
-reads on the crossover and B-selection tables — an uncalibrated device
+reads on the crossover and B-selection tables; an uncalibrated device
 always dispatches hybrid with B=32.
 
 See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for the full dispatch
@@ -258,7 +258,7 @@ data.
 | NVIDIA B200 | Blackwell GPU (sm_100) | cuFFT + cuFFTDx | Calibrated, verified |
 
 An uncalibrated device falls back to `devices/generic/` and still produces
-correct results — every tree level uses FFT with `FFTW_ESTIMATE` plans, the
+correct results; every tree level uses FFT with `FFTW_ESTIMATE` plans, the
 engine always dispatches hybrid with B=32, and a build-time warning is
 printed. Run `./tools/calibrate_full.sh <DEVICE>` to add real calibration for
 your hardware.
@@ -273,7 +273,7 @@ make DEVICE=m3_pro   # or zen4 - whichever matches your machine
 ./bench_grid crossover   # confirm dispatch decisions match measured winners on YOUR unit
 ```
 
-`fftw_wisdom.dat` and the `calib_times_ns[]` table are measured on one specific physical machine. FFTW will happily load wisdom from a different unit of the same CPU model - it just isn't guaranteed to have picked the fastest codelet for *your* silicon, and the nanosecond timings the cost model reads for FFT-vs-schoolbook and engine-dispatch decisions won't necessarily match your machine's actual behavior (different DIMM speed, microcode revision, thermal/boost profile, or memory bandwidth can all shift these numbers). `./bench_grid crossover` is the check that catches this: if every cell's dispatch decision agrees with the measured winner, the shipped calibration is good enough and you're done. Only recalibrate from scratch (below) if it disagrees - and definitely recalibrate if you're on hardware unlike anything already in `devices/`.
+`fftw_wisdom.dat` and the `calib_times_ns[]` table are measured on one specific physical machine. FFTW will happily load wisdom from a different unit of the same CPU model; it is not guaranteed to have picked the fastest codelet for *your* silicon, and the nanosecond timings the cost model reads for FFT-vs-schoolbook and engine-dispatch decisions will not necessarily match your machine's actual behavior (different DIMM speed, microcode revision, thermal/boost profile, or memory bandwidth can all shift these numbers). `./bench_grid crossover` is the check that catches this: if every cell's dispatch decision agrees with the measured winner, the shipped calibration is good enough and you're done. Only recalibrate from scratch (below) if it disagrees, and definitely recalibrate if you're on hardware unlike anything already in `devices/`.
 
 One command runs the whole pipeline (FFTW calibration, hybrid-engine timing,
 and cost-model constant fitting) and finishes with a `verify` + `crossover`
@@ -313,13 +313,13 @@ in the 10-30+ minute range documented above for a full run, and treat
 `--quick` as "less precise, not necessarily much faster." Wall-clock time
 is also sensitive to other load on the machine (FFTW's planner does real
 timing internally, so a busy machine both slows the run down and can
-degrade the calibration quality) - run it on an otherwise-idle machine if
+degrade the calibration quality); run it on an otherwise-idle machine if
 you can. `./tools/calibrate_full.sh` prints real-time progress per step so
-you're never guessing whether it's stuck. If you just want to check
+you are never guessing whether it is stuck. To check
 whether the shipped `m3_pro`/`zen4` calibration already works on your
 unit, skip calibration entirely and run the two commands at the top of
-this section (`make DEVICE=... && ./bench_grid crossover`) instead -
-that's seconds, not minutes.
+this section (`make DEVICE=... && ./bench_grid crossover`) instead;
+that is seconds, not minutes.
 
 **GPU (NVIDIA) devices** calibrate separately from the CPU pipeline - FFT
 timings, B-selection block-size table, and the 4-parameter cost model are

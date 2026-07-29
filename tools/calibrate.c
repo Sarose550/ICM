@@ -1,13 +1,13 @@
 /*
- * calibrate.c — Generate fft_config.h for the current machine.
+ * calibrate.c: generate fft_config.h for the current machine.
  *
  * Produces:
- *   1. fftw_wisdom.dat  — FFTW PATIENT plans for all 7-smooth sizes up to max_size
- *   2. fft_config.h     — C header with calib_sizes[], calib_times_ns[],
+ *   1. fftw_wisdom.dat:  FFTW PATIENT plans for all 7-smooth sizes up to max_size
+ *   2. fft_config.h:     C header with calib_sizes[], calib_times_ns[],
  *                          CALIBRATED_MAX_CONV_LEN, and per-device constants
  *
  * The cost-model *functions* (best_fft_config, best_fft_config_joint) are not
- * generated here — they live once, for all devices, in src/cpu/fft_cost_model.h
+ * generated here; they live once, for all devices, in src/cpu/fft_cost_model.h
  * and consume the data this tool emits.
  *
  * The generated fft_config.h should be placed in devices/<DEVICE>/fft_config.h.
@@ -192,7 +192,7 @@ static void benchmark_sizes(int quick) {
         memset(rbuf, 0, sz * sizeof(double));
         memset(rbuf2, 0, sz * sizeof(double));
 
-        /* Create MEASURE plans (from PATIENT wisdom — instant) */
+        /* Create MEASURE plans (from PATIENT wisdom, instant) */
         fftw_plan fwd = fftw_plan_dft_r2c_1d(sz, rbuf, cbuf, FFTW_MEASURE | FFTW_WISDOM_ONLY);
         fftw_plan inv = fftw_plan_dft_c2r_1d(sz, cbuf, rbuf, FFTW_MEASURE | FFTW_WISDOM_ONLY);
         if (!fwd || !inv) {
@@ -217,7 +217,7 @@ static void benchmark_sizes(int quick) {
 
         /* Full pipeline = memcpy_in + fwd(a) + fwd(b) + pointwise + ifft + scale.
          * This matches what polymul_fft_wrap actually does per parent in the tree.
-         * Measured warm (second pass) — matches 255/256 Q-points. */
+         * Measured warm (second pass), matching 255/256 Q-points. */
 
         /* Warm up (plan + µop cache) */
         for (int r = 0; r < 5; r++) {
@@ -271,7 +271,7 @@ static void write_config(const char *filename) {
     if (!f) { perror(filename); exit(1); }
 
     fprintf(f, "/* Auto-generated FFT configuration from calibrate */\n");
-    fprintf(f, "/* Generated on this machine — do not use on different hardware */\n\n");
+    fprintf(f, "/* Generated on this machine; do not use on different hardware */\n\n");
 
     /* CALIBRATED_MAX_CONV_LEN: largest convolution length the FFT timing
      * table can honestly cover.  Derived from max(calib_sizes):
@@ -312,7 +312,7 @@ static void write_config(const char *filename) {
 " * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.\n"
 " * Wrap correction is modeled separately with WRAP_FMA_NS. */\n"
 "#ifndef FMA_NS\n"
-"#define FMA_NS 0.25  /* ns per scalar FMA — re-measure via ./bench_grid profile */\n"
+"#define FMA_NS 0.25  /* ns per scalar FMA, re-measure via ./bench_grid profile */\n"
 "#endif\n"
 "#ifndef FFT_OVERHEAD_NS\n"
 "#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline) */\n"
@@ -326,32 +326,32 @@ static void write_config(const char *filename) {
 "#ifndef INDEP_PAIR_RATIO\n"
 "#define INDEP_PAIR_RATIO 1.25  /* correlate_fft_pair / full pipeline */\n"
 "#endif\n"
-"/* Hybrid-engine block/leaf constants — placeholders until\n"
+"/* Hybrid-engine block/leaf constants, placeholders until\n"
 " * tools/fit_cost_model.py --write overwrites them with a real fit. */\n"
 "#ifndef FP64_DIV_NS\n"
-"#define FP64_DIV_NS 10.0  /* ns per FP64 division — re-fit via fit_cost_model.py */\n"
+"#define FP64_DIV_NS 10.0  /* ns per FP64 division, re-fit via fit_cost_model.py */\n"
 "#endif\n"
 "#ifndef LEAF_FMA_NS\n"
-"#define LEAF_FMA_NS 0.25  /* ns per FMA in leaf blocks — re-fit via fit_cost_model.py */\n"
+"#define LEAF_FMA_NS 0.25  /* ns per FMA in leaf blocks, re-fit via fit_cost_model.py */\n"
 "#endif\n"
 "#ifndef LEAF_BLOCK_NS\n"
-"#define LEAF_BLOCK_NS 100.0  /* ns per leaf block overhead — re-fit via fit_cost_model.py */\n"
+"#define LEAF_BLOCK_NS 100.0  /* ns per leaf block overhead, re-fit via fit_cost_model.py */\n"
 "#endif\n"
 "#ifndef BLOCK_FMA_NS\n"
-"#define BLOCK_FMA_NS 0.05  /* ns per FMA in block build — re-fit via fit_cost_model.py */\n"
+"#define BLOCK_FMA_NS 0.05  /* ns per FMA in block build, re-fit via fit_cost_model.py */\n"
 "#endif\n"
 "#ifndef BLOCK_MEM_NS\n"
-"#define BLOCK_MEM_NS 0.1  /* ns per block-build memory op — re-fit via fit_cost_model.py */\n"
+"#define BLOCK_MEM_NS 0.1  /* ns per block-build memory op, re-fit via fit_cost_model.py */\n"
 "#endif\n\n");
 
     /* Cache and bandwidth constants */
     fprintf(f,
 "/* ── Cache hierarchy ── */\n"
 "#ifndef L2_CACHE_SIZE\n"
-"#define L2_CACHE_SIZE 1048576  /* per-core L2 in bytes — update for this hardware */\n"
+"#define L2_CACHE_SIZE 1048576  /* per-core L2 in bytes, update for this hardware */\n"
 "#endif\n"
 "#ifndef L3_CACHE_SIZE\n"
-"#define L3_CACHE_SIZE 33554432  /* shared L3 in bytes — update for this hardware */\n"
+"#define L3_CACHE_SIZE 33554432  /* shared L3 in bytes, update for this hardware */\n"
 "#endif\n\n");
 
     /* Bandwidth constants from measurement */

@@ -1,5 +1,5 @@
 /*
- * accuracy_bench.c — Quadrature accuracy benchmark for ICM
+ * accuracy_bench.c; Quadrature accuracy benchmark for ICM
  *
  * Compares Gauss-Legendre (erfc_trap) vs tanh-sinh quadrature at varying Q.
  * Reports convergence of V1 and V2 equities against exact closed-form values.
@@ -46,7 +46,7 @@
  *   equity[i] += w · S_i · v^{S_i} · (1/v) · inner[i]
  *             = w · S_i · v^{S_i - 1} · inner[i]
  *
- * So w is just the tanh-sinh quadrature weight for ∫₀¹ f(v) dv:
+ * So w is the tanh-sinh quadrature weight for ∫₀¹ f(v) dv:
  *   w_j = h · (π/2 · cosh(x_j)) / (2 · cosh²(π/2 · sinh(x_j)))
  */
 static void make_nodes_tanh_sinh(int Q, double Smax, QP *pts) {
@@ -101,7 +101,7 @@ static void make_stacks_adversarial(int n, double *S) {
         S[i] = 1.0;
 }
 
-/* Extreme adversarial: ratio bounded by 1e9 — the practical worst case
+/* Extreme adversarial: ratio bounded by 1e9; the practical worst case
  * that motivated the choice of Gaussian quadrature over tanh-sinh. */
 static void make_stacks_adv_1e9(int n, double *S) {
     S[0] = 1e9;
@@ -131,7 +131,7 @@ static void compute_equity_with_nodes(int n, const double *S, int Q,
     double *a_buf = (double *)malloc(n * sizeof(double));
     double *inner_buf = (double *)malloc(n * sizeof(double));
 
-    /* Use linear engine for these small cases — simple, correct */
+    /* Use linear engine for these small cases; simple, correct */
     LinearCtx *lc = linear_ctx_create(n, k);
 
     for (int q = 0; q < Q; q++) {

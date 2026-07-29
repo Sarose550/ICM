@@ -71,7 +71,7 @@ static void test_tier_never_schoolbook_in_fused_range() {
     /* Above fused range: schoolbook IS allowed if FMA model says so */
     int large = max_conv + 1;
     int tier_large = pick_tier_for_fft_len(next_pow2_int(large), large);
-    /* Just verify it doesn't crash — SCHOOLBOOK may or may not be returned */
+    /* Just verify it doesn't crash; SCHOOLBOOK may or may not be returned */
     CHECK(tier_large == GPU_TIER_SCHOOLBOOK || tier_large == GPU_TIER_CUFFT,
           "pick_tier above fused range returned invalid tier %d", tier_large);
 }
@@ -149,7 +149,7 @@ static void test_fused_preference() {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Test 4: Budget consistency — per_q_bytes includes spec/scratch/cache
+   Test 4: Budget consistency; per_q_bytes includes spec/scratch/cache
    Compute per_q independently and verify it's consistent with
    the cost model's internal calculation.
    ═══════════════════════════════════════════════════════════════ */
@@ -167,7 +167,7 @@ static size_t compute_per_q_model(int n, int k_pad, int B) {
     per_q += (size_t)N * (B + 1) * sizeof(double);
     per_q += 2 * (size_t)n * sizeof(double);
 
-    /* Spec/scratch/cache — must match estimate_candidate_cost */
+    /* Spec/scratch/cache; must match estimate_candidate_cost */
     size_t max_cb_cn = 0, max_pb_cn = 0, max_cb_fft = 0, cache_per_q = 0;
     for (int ell = 1; ell < L; ++ell) {
         int cps_e = psz[ell - 1];
@@ -263,7 +263,7 @@ static void test_budget_consistency() {
         fprintf(stderr, "  n=%d B=%d: model per_q=%.1fMB qb=%d | planner per_q=%.1fMB qb=%d\n",
                 tc.n, best_B, pq_model/1e6, qb_model, pq_planner/1e6, qb_planner);
 
-        /* Allow 20% mismatch — model estimates tier without full plan */
+        /* Allow 20% mismatch; model estimates tier without full plan */
         double ratio = (pq_planner > 0) ? (double)pq_model / (double)pq_planner : 1.0;
         CHECK(ratio > 0.7 && ratio < 1.5,
               "n=%d per_q ratio=%.2f (model=%zu planner=%zu)", tc.n, ratio, pq_model, pq_planner);
@@ -273,7 +273,7 @@ static void test_budget_consistency() {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Test 5: No schoolbook in fused range — plan level check
+   Test 5: No schoolbook in fused range; plan level check
    For any B, build_plan_metadata must not assign SCHOOLBOOK
    to levels where build_conv <= GPU_FUSED_MAX_CONV_LEN.
    ═══════════════════════════════════════════════════════════════ */
@@ -375,7 +375,7 @@ static void test_school_fma_rate() {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Test 8: B selection — best_B must be within 10% of optimal
+   Test 8: B selection; best_B must be within 10% of optimal
    ═══════════════════════════════════════════════════════════════ */
 static void test_b_selection() {
     std::vector<int> smooth;

@@ -1,7 +1,7 @@
-# ICM Equity Computation — Makefile
+# ICM Equity Computation Makefile
 #
 # Usage:
-#   make                    # serial build (bench_grid) — uses devices/generic/
+#   make                    # serial build (bench_grid), uses devices/generic/
 #   make DEVICE=m3_pro      # build for Apple M3 Pro (macOS)
 #   make DEVICE=zen4        # build for AMD Zen 4 (Linux)
 #   make parallel           # OpenMP build (bench_grid)
@@ -21,7 +21,7 @@ DEVICE ?= generic
 # fix it.
 ifeq ($(DEVICE),generic)
 $(info ======================================================================)
-$(info   BUILDING WITH DEVICE=generic — NO CALIBRATION DATA)
+$(info   BUILDING WITH DEVICE=generic: NO CALIBRATION DATA)
 $(info   Results will be CORRECT but UNOPTIMIZED (FFTW_ESTIMATE plans only).)
 $(info   To calibrate for real hardware performance, run:)
 $(info     ./tools/calibrate_full.sh <DEVICE>)

@@ -1,4 +1,4 @@
-/* gpu_dispatch_validate.cu — Standing GPU dispatch-validation harness.
+/* gpu_dispatch_validate.cu; Standing GPU dispatch-validation harness.
  *
  * Analogous to the CPU-side `bench_grid crossover`: for a grid of (n,k)
  * points, measures the ACTUAL wall-clock time of the dispatched
@@ -18,7 +18,7 @@
  *
  * Default grid includes n values both ON and BETWEEN the calibrated
  * B-selection anchor points in devices/b200/gpu_fft_config.h, including
- * points in the n=1,048,576–1,572,864 gap between adjacent anchors.
+ * points in the n=1,048,576 to 1,572,864 gap between adjacent anchors.
  *
  * Build (B200, cuFFTDx-enabled):
  *
@@ -112,7 +112,7 @@ static void nearby_alternatives(int dispatched_B, int n, int k,
     int idx = find_b_index(dispatched_B);
     if (idx < 0) {
         /* Dispatched B not in the candidate table (shouldn't happen);
-         * just test half and double. */
+         * test half and double. */
         int half = dispatched_B / 2;
         int dbl  = dispatched_B * 2;
         if (half > 0 && half != dispatched_B && half <= n && half <= k)
@@ -261,7 +261,7 @@ static int check_b_optimality(int n, int k) {
     nearby_alternatives(dispatched_B, n, k, alts);
     if (alts.empty()) {
         printf("  [%d,%d] no valid alternatives to test (B=%d)\n", n, k, dispatched_B);
-        return 0;  /* vacuously optimal — nothing to compare against */
+        return 0;  /* vacuously optimal; nothing to compare against */
     }
 
     /* Measure each alternative */
@@ -277,7 +277,7 @@ static int check_b_optimality(int n, int k) {
         /* ICM_GPU_FORCE_B is silently ignored by the real dispatch code
          * whenever the requested B exceeds plan->k_pad (gpu_plan.cu:853).
          * If that happened, actual_B == dispatched_B and this "alternative"
-         * is really just a second measurement of the exact same
+         * is a second measurement of the exact same
          * configuration -- comparing against it would produce a false
          * "optimal" verdict instead of a real comparison.  Detect and
          * skip explicitly rather than silently trusting it. */
@@ -343,7 +343,7 @@ static void check_n_monotonicity(const char *label,
         const char *flag = "";
         if (!std::isnan(prev_ms)) {
             double delta = ms - prev_ms;
-            if (delta < -0.005) {  /* more than 5µs drop — real inversion */
+            if (delta < -0.005) {  /* more than 5µs drop; real inversion */
                 flag = "  *** NON-MONOTONIC (drop)";
                 (*inv_count)++;
             }
@@ -362,7 +362,7 @@ struct GridPoint { int n, k; };
 
 /* Build default grid: cover B-selection anchor n-values from
  * devices/b200/gpu_fft_config.h, include points BETWEEN anchors
- * (especially the n=1,048,576–1,572,864 gap), and span small-to-large n.
+ * (especially the n=1,048,576 to 1,572,864 gap), and span small-to-large n.
  *
  * Anchor n-values: 4096, 16384, 65536, 131072, 262144, 524288,
  *                   1048576, 1572864
@@ -377,7 +377,7 @@ static const GridPoint kDefaultGrid[] = {
     {16384,  16384},
     {16384,  8192},
 
-    /* Medium n — on anchor points */
+    /* Medium n; on anchor points */
     {65536,  65536},
     {65536,  32768},
     {131072, 131072},
@@ -407,7 +407,7 @@ static const GridPoint kDefaultGrid[] = {
     {4194304, 256},
     {8388608, 8388608},
     {8388608, 128},      /* k=128: upper B-selection boundary */
-    {16777216, 100},      /* large n, small k — OOM boundary probe */
+    {16777216, 100},      /* large n, small k; OOM boundary probe */
 
     /* k=100 monotonicity sweep (same n as anchors, for cross-n check) */
     {4096,   100},
@@ -464,7 +464,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("gpu_dispatch_validate — reps=%d per measurement, Q=%d\n",
+    printf("gpu_dispatch_validate; reps=%d per measurement, Q=%d\n",
            N_REPS, Q_POINTS);
     printf("plan-based API (icm_gpu_plan_create + icm_gpu_equity_with_plan)\n");
     printf("memory_strategy=0, icm_gpu_release_pooled_memory() between points\n");
@@ -562,7 +562,7 @@ int main(int argc, char **argv) {
     printf("Interpretation:\n");
     printf("  Non-optimal B: dispatch picked a B that is measurably slower than\n");
     printf("    a nearby alternative on real hardware (\"wrong B\" pattern).\n");
-    printf("  Monotonicity inversion: dispatch time drops as n grows — indicates\n");
+    printf("  Monotonicity inversion: dispatch time drops as n grows; indicates\n");
     printf("    a cost-model bug at that (n,k) region (e.g. wrong tier, wrong\n");
     printf("    FFT size, or sparse B-selection grid).\n");
 

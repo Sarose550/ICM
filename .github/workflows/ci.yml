@@ -26,7 +26,7 @@ jobs:
     # builds, so the same binary-level logic runs regardless of the
     # runner's actual microarchitecture.
     #
-    # The `generic` device has no calibration data at all — its dedicated
+    # The `generic` device has no calibration data at all; its dedicated
     # test exercises the uncalibrated-fallback path and finishes in seconds.
     # ──────────────────────────────────────────────────────────────────
 

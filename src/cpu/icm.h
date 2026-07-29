@@ -1,5 +1,5 @@
 /*
- * icm.h — ICM (Independent Chip Model) equity computation library
+ * icm.h: ICM (Independent Chip Model) equity computation library
  *
  * Computes tournament placement equities using generating-function quadrature.
  * Three engines with automatic dispatch: linear (small k), hybrid (large k),

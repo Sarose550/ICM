@@ -32,7 +32,7 @@ ns_vals = np.array([d[2] for d in data])
 
 # Marginal cost: ns/FMA. But small wrap_m has overhead contamination.
 # Use local slope between consecutive points for the marginal cost.
-# Or just compute ns/fma_count as the apparent cost.
+# Or compute ns/fma_count as the apparent cost.
 ns_per_fma = ns_vals / fma_counts
 
 # Compute local slopes (finite differences) - marginal cost

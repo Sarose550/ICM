@@ -1,12 +1,12 @@
-/* bench_div_chain.c — isolated microbenchmark for FP64_DIV_NS.
+/* bench_div_chain.c; isolated microbenchmark for FP64_DIV_NS.
  *
  * Directly measures the cost of an FP64 division embedded in a genuine
  * sequential dependency chain (each division depends on the previous
- * result) — this matches how FP64_DIV_NS is actually used in src/cpu/icm.c's
+ * result); this matches how FP64_DIV_NS is actually used in src/cpu/icm.c's
  * leaf extraction (the bidirectional synthetic-division recurrence,
  * Q_m = (P_m - c*Q_{m-1})/a_j, see icm_paper.tex's Lemma lem:division-
  * stability). An independent/vectorizable division loop measures a very
- * different (much smaller) number — division throughput, not latency —
+ * different (much smaller) number; division throughput, not latency ; 
  * and is NOT representative of this usage. Same rationale as
  * bench_wrap_fma.c: this constant showed the same identifiability
  * failure signature as WRAP_FMA_NS when left to an indirect aggregate

@@ -1,4 +1,4 @@
-/* profile_harness.c — Long-running harness for sampling profiler.
+/* profile_harness.c; Long-running harness for sampling profiler.
  * Runs icm_equity in a tight loop for target wall-clock seconds.
  *
  * Usage: ./tools/profile_harness <n> <k> <B> <Q> <target_seconds>

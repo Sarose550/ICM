@@ -1,10 +1,10 @@
-/* linear_batched_impl.inc — Template for BQ-parameterized batched linear engine.
+/* linear_batched_impl.inc; Template for BQ-parameterized batched linear engine.
  * Included twice from icm.c with different BQ_IMPL values (4 and 8).
  * Do NOT compile this file standalone.
  *
  * Required defines before #include:
- *   BQ_IMPL  — the batch width (4 or 8)
- *   SUFFIX   — function name suffix (_bq4 or _bq8)
+ *   BQ_IMPL ; the batch width (4 or 8)
+ *   SUFFIX  ; function name suffix (_bq4 or _bq8)
  */
 
 #ifndef BQ_IMPL
@@ -290,7 +290,7 @@ static double PASTE(run_linear_batched, SUFFIX)(int n, const double *S, int Q,
     free(t_gstore); free(t_ckpt); free(t_localg); free(t_fbuf0); free(t_fbuf1);
     free(t_R); free(t_abatch); free(t_ibatch); free(t_equity);
 
-#else  /* No OpenMP — serial fallback */
+#else  /* No OpenMP; serial fallback */
     size_t gstride = (size_t)k * BQ_IMPL;
     int use_ckpt = ((size_t)n * k * BQ_IMPL * sizeof(double) > L2_CACHE_SIZE);
     int C = use_ckpt ? PASTE(ckpt_interval_batched, SUFFIX)(n, k) : 0;

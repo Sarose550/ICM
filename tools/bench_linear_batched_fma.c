@@ -1,13 +1,13 @@
-/* bench_linear_batched_fma.c — isolated microbenchmark for the batched
+/* bench_linear_batched_fma.c: isolated microbenchmark for the batched
  * linear engine's inner-loop per-FMA cost (BQ=8 interleaved layout).
  *
  * The cost model in src/cost_model.h predicts linear-engine cost as
  *   4.0 * n * k * FMA_NS  (per quadrature point, × Q=256 total),
  * where FMA_NS=0.0677 (from bench/bench.c's profile mode, measured via
- * a scalar schoolbook polymul_modk — NOT the batched engine's actual
- * inner loop).  Real measured linear-engine times are ~1.73–1.80× higher
+ * a scalar schoolbook polymul_modk, NOT the batched engine's actual
+ * inner loop).  Real measured linear-engine times are ~1.73 to 1.80× higher
  * than the model predicts, with a flat multiplicative bias across all
- * (n,k) — meaning the model's FORM is right but FMA_NS is wrong.
+ * (n,k), meaning the model's FORM is right but FMA_NS is wrong.
  *
  * This benchmark isolates the EXACT inner loops verbatim from
  * src/linear_batched_impl.inc (BQ=8, interleaved a_batch layout):
@@ -16,7 +16,7 @@
  *   2. Backward fused: dot product + suffix update, BQ*(3k-1) FMAs per player
  *
  * Total: BQ*(5k-2) ≈ 5*k*BQ FMAs per player per BQ quadrature points,
- * i.e. ~5*k FMAs per QP.  (The model uses 4*k — a ~25% undercount.)
+ * i.e. ~5*k FMAs per QP.  (The model uses 4*k, a ~25% undercount.)
  *
  * We sweep k ∈ {32, 64, 128, 256, 512} and n ∈ {256, 512, 1024, 2048}
  * to extract the marginal per-FMA cost via linear regression of
@@ -71,8 +71,8 @@ static inline void apply_factor_bq(const double *restrict g_in,
  * FMA count: BQ*(3k-1)
  *   Init: BQ FMAs (eq[qi] = gb[qi] * R[qi])
  *   Loop m=k-1..1: BQ*3 FMAs per m  → (k-1)*3*BQ
- *     eq[qi] += gb[m*BQ+qi] * R[m*BQ+qi]           — 1 FMA
- *     R[m*BQ+qi] = ab[qi]*R[m*BQ+qi] + bb[qi]*R[(m-1)*BQ+qi]  — 2 FMAs
+ *     eq[qi] += gb[m*BQ+qi] * R[m*BQ+qi]              (1 FMA)
+ *     R[m*BQ+qi] = ab[qi]*R[m*BQ+qi] + bb[qi]*R[(m-1)*BQ+qi]  (2 FMAs)
  *   Final: BQ FMAs (R[qi] = ab[qi] * R[qi])
  *   total: BQ + 3*BQ*(k-1) + BQ = BQ*(3k-1)
  */
@@ -514,7 +514,7 @@ int main(void) {
     /* Per-FMA cost from combined k-sweep slope */
     double batched_fma_ns = slope_k;  /* ns per actual FMA in batched engine */
 
-    /* Raw ns/FMA at each k (not regression slope — includes intercept) */
+    /* Raw ns/FMA at each k (not regression slope; includes intercept) */
     double raw_ratios[5];
     for (int i = 0; i < n_k; i++)
         raw_ratios[i] = y_comb[i] / x_comb[i];
@@ -537,10 +537,10 @@ int main(void) {
      *
      * We report TWO constants:
      *
-     * 1. BATCHED_FMA_NS — the raw per-FMA cost of the inner loops
+     * 1. BATCHED_FMA_NS; the raw per-FMA cost of the inner loops
      *    (for a corrected model of the form 5.0*n*k*BATCHED_FMA_NS).
      *
-     * 2. LINEAR_BATCHED_FMA_NS — the effective constant to plug into
+     * 2. LINEAR_BATCHED_FMA_NS; the effective constant to plug into
      *    the EXISTING 4.0*n*k*X formula so it matches the inner-loop
      *    time.  This absorbs the ~25% FMA-count error:
      *      X = BATCHED_FMA_NS * (5k-2) / (4k) ≈ BATCHED_FMA_NS * 1.25
@@ -598,7 +598,7 @@ int main(void) {
     fprintf(stderr, "# ~1.73-1.80× (measured via icm_run_linear_batched at multiple n,k).\n");
     fprintf(stderr, "#\n");
     fprintf(stderr, "# Our inner-loop-only constant (LINEAR_BATCHED_FMA_NS = %.4f) gives\n", linear_batched_fma_ns);
-    fprintf(stderr, "# a ratio of only %.4fx over old FMA_NS — this does NOT close the gap.\n",
+    fprintf(stderr, "# a ratio of only %.4fx over old FMA_NS; this does NOT close the gap.\n",
             linear_batched_fma_ns / old_fma_ns);
     fprintf(stderr, "#\n");
     fprintf(stderr, "# Reason: the inner loops account for ~%d%% of total engine time.\n",
@@ -619,7 +619,7 @@ int main(void) {
     fprintf(stderr, "# ========================================================================\n");
     fprintf(stderr, "#\n");
     fprintf(stderr, "# 1. Introduce a NEW dedicated constant LINEAR_BATCHED_FMA_NS.\n");
-    fprintf(stderr, "#    Do NOT reuse the existing FMA_NS name — the batched engine's\n");
+    fprintf(stderr, "#    Do NOT reuse the existing FMA_NS name; the batched engine's\n");
     fprintf(stderr, "#    inner-loop per-FMA cost (%.4f ns) is structurally different from\n", batched_fma_ns);
     fprintf(stderr, "#    the scalar schoolbook's (%.4f ns), and the existing model formula\n", old_fma_ns);
     fprintf(stderr, "#    4.0*n*k undercounts the actual FMA count by ~25%%.\n");

@@ -1,4 +1,4 @@
-/* calibrate_crossover.c — Direct empirical measurement of the real
+/* calibrate_crossover.c; Direct empirical measurement of the real
  * linear-vs-hybrid crossover point k_cross(n), replacing the summed-
  * constants analytical formula's go/no-go decision with a small,
  * per-device lookup table (LAPACK ILAENV's NX crossover parameter is the
@@ -10,7 +10,7 @@
  * hybrid engine starts winning against the batched linear engine, using
  * real timing (median of several reps) at each candidate k -- exactly
  * what tools/bench.c's "crossover" mode already does on a fixed grid,
- * just refined to the exact boundary via bisection instead of reading it
+ * then refined to the exact boundary via bisection instead of reading it
  * off coarse steps.
  *
  * This is a ONE-TIME, OFFLINE calibration step (like tools/calibrate.c's

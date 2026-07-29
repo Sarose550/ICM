@@ -233,7 +233,7 @@ static void run_heatmap(const char *out_csv, int Q, int fast) {
 
 static void run_nk_threshold(int Q, int fast) {
     double target_ms = 1000.0;
-    double timeout_ms = 2000.0;  /* kill probes beyond 2s — clearly above frontier */
+    double timeout_ms = 2000.0;  /* kill probes beyond 2s; clearly above frontier */
 
     /* Exponential expansion to bracket the frontier */
     int n_lo = 1024;

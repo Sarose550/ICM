@@ -1,4 +1,4 @@
-/* gpu_sample_plans.cu — Sample GPU plans and measure per-Q-point runtime.
+/* gpu_sample_plans.cu; Sample GPU plans and measure per-Q-point runtime.
  *
  * For each (n, k, B) triple, creates a GPU plan, runs icm_gpu_equity,
  * and reports plan structure + measured runtime for cost model fitting.

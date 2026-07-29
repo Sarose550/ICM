@@ -366,7 +366,7 @@ static bool make_plan(cufftHandle *plan, int n, int batch, bool r2c) {
 
 /* Probe cuFFT workspace size (bytes) for a given (n, batch, r2c).  Creates
  * a throwaway plan with auto-allocation disabled, reads work_size from the
- * out-param, then destroys the plan — zero net VRAM committed.  Returns 0
+ * out-param, then destroys the plan; zero net VRAM committed.  Returns 0
  * on any cuFFT error. */
 static size_t probe_plan_ws(int n, int batch, bool r2c) {
     cufftHandle plan = 0;
@@ -821,7 +821,7 @@ int main(int argc, char **argv) {
                            n, batch, ws1_r2c, wsb_r2c, ratio_r2c, ws1_c2r, wsb_c2r, ratio_c2r);
                 }
             } else if (wsb_r2c > 0 && wsb_c2r > 0) {
-                /* batch=1 returned 0 — derive per-batch from timing batch */
+                /* batch=1 returned 0; derive per-batch from timing batch */
                 r2c_ws_bytes[i] = (unsigned long long)((wsb_r2c + (size_t)batch - 1) / (size_t)batch);
                 c2r_ws_bytes[i] = (unsigned long long)((wsb_c2r + (size_t)batch - 1) / (size_t)batch);
                 has_ws_calib = true;

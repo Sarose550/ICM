@@ -2373,7 +2373,7 @@ static const unsigned long long gpu_calib_c2r_ws_bytes[GPU_N_CALIBRATED_SIZES] =
 /* ── Empirical hybrid-engine block-size (B) lookup ────────────────────
  * Measured by tools/calibrate_gpu_best_b.cu (median of 3 reps, Q=256).
  * See src/gpu/gpu_plan.cu's gpu_empirical_best_B() for how this is
- * consulted (2D nearest-neighbor lookup — B is discrete, no
+ * consulted (2D nearest-neighbor lookup, B is discrete, no
  * interpolation). */
 #define GPU_N_BSELECT_POINTS 60
 static const int gbselect_n[GPU_N_BSELECT_POINTS] = {

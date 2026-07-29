@@ -1,4 +1,4 @@
-/* bench_wrap_fma.c — isolated microbenchmark for the wrap-correction loop.
+/* bench_wrap_fma.c; isolated microbenchmark for the wrap-correction loop.
  *
  * Directly measures WRAP_FMA_NS by timing ONLY the wrap-correction inner
  * loop (verbatim copy of src/cpu/icm.c's polymul_fft_wrap correction), sweeping
@@ -6,7 +6,7 @@
  *
  * The indirect regression in tools/fit_cost_model.py is structurally unable
  * to identify WRAP_FMA_NS from full-plan timing data alone (wrap-correction
- * cost never exceeds ~1.5% of any sampled plan's total predicted time — the
+ * cost never exceeds ~1.5% of any sampled plan's total predicted time; the
  * fit has no real signal for it).  This microbenchmark provides a direct,
  * isolated measurement that should be pinned in the fit rather than floated.
  *
@@ -20,7 +20,7 @@
  *
  * Output: CSV on stdout (regime,na,wrap_m,fft_n,fma_count,median_ns_per_call).
  * WRAP_FMA_NS is extracted as a least-squares SLOPE of median_ns_per_call
- * vs. fma_count (see tools/calibrate_full.sh) — NOT a raw ns_per_call /
+ * vs. fma_count (see tools/calibrate_full.sh); NOT a raw ns_per_call /
  * fma_count ratio, which is contaminated by fixed per-call overhead and
  * overestimates the true marginal cost, especially at small fma_count.
  */

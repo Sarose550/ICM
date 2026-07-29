@@ -1,9 +1,9 @@
-/* probe_leaf_extract.c — Measure leaf-extraction cost embedded in real hybrid
+/* probe_leaf_extract.c; Measure leaf-extraction cost embedded in real hybrid
  * engine runs, and compare against the cost-model prediction
  * (leaf_fma_ns_per_player[] + FP64_DIV_NS floor).
  *
  * Methodology: replicates engine_hybrid_core with timing splits at each phase
- * boundary — block_build, tree_build+propagate, leaf_divide. Runs Q=256 points,
+ * boundary; block_build, tree_build+propagate, leaf_divide. Runs Q=256 points,
  * median over N_REPS independent runs. This is the same rigor as
  * probe_tree_levels.c.
  *
@@ -208,7 +208,7 @@ static void probe_phases(int n, const double *S,
         }
 
         /* Must reset workspace between QPs (tree_build_levels and propagate
-         * mutate tc->ws). We just clear it fully. */
+         * mutate tc->ws). */
         memset(hc->tc->ws, 0, hc->tc->ws_size * sizeof(double));
 
         double b_ns, t_ns, l_ns;
@@ -229,7 +229,7 @@ static void probe_phases(int n, const double *S,
     /* Accumulate equity (not strictly needed for timing, but we do it for
      * correctness) */
     for (int i = 0; i < n; i++) equity[i] = 0;
-    /* The quadrature integration is done by run_engine_ctx; here we just
+    /* Quadrature integration is done by run_engine_ctx; here we only
      * measure phases. The timing is per-QP sum, not integrated. */
 
     *block_ns = total_block;
@@ -477,7 +477,7 @@ int main(void) {
         }
 
         printf("\n=== FINAL leaf_fma_ns_per_player[] TABLE ===\n");
-        printf("/* Paste into devices/m3_pro/fft_config.h —\n");
+        printf("/* Paste into devices/m3_pro/fft_config.h ; \n");
         printf("   replace the LEAF_FMA_NS_PER_PLAYER_DEFINED block. */\n");
         printf("static const double leaf_fma_ns_per_player[6] = {\n");
         for (int bi = 0; bi < n_Bvals; bi++) {

@@ -1,8 +1,8 @@
-/* validate_best_b.c — Single-point probe: for a given (n,k), report the
+/* validate_best_b.c: Single-point probe: for a given (n,k), report the
  * cost-model choice (auto_B) vs. the empirically-fastest B (best_B) with
  * timing and gap.
  *
- * This is the "oracle" a later adaptive loop calls per probe — one point
+ * This is the "oracle" a later adaptive loop calls per probe; one point
  * at a time, fast, with machine-parseable output.
  *
  * Usage:
@@ -12,22 +12,22 @@
  *   n,k,auto_B,auto_ms,best_B,best_ms,gap_pct
  *
  * Columns:
- *   n,k       — input parameters (int)
- *   auto_B    — B chosen by icm_select_best_B(n,k) (int)
- *   auto_ms   — median-of-7 timing of hybrid engine at auto_B, in ms (double)
- *   best_B    — empirically-fastest B in {8,16,24,32,48,64} (int)
- *   best_ms   — median-of-7 timing at best_B, in ms (double)
- *   gap_pct   — (auto_ms - best_ms) / best_ms * 100; 0.0 if auto_B == best_B
- *               or auto is faster (double)
+ *   n,k       : input parameters  (int)
+ *   auto_B    : B chosen by icm_select_best_B(n,k)  (int)
+ *   auto_ms   : median-of-7 timing of hybrid engine at auto_B, in ms  (double)
+ *   best_B    : empirically-fastest B in {8,16,24,32,48,64}  (int)
+ *   best_ms   : median-of-7 timing at best_B, in ms  (double)
+ *   gap_pct   : (auto_ms - best_ms) / best_ms * 100; 0.0 if auto_B == best_B
+ *               or auto is faster  (double)
  *
- * All measurements: Q=256, srand(42), payout[m]=n-m, S[i]=100+9900*rand()/RAND_MAX
- * — matching bench_grid crossover and calibrate_best_b conventions exactly.
+ * All measurements: Q=256, srand(42), payout[m]=n-m, S[i]=100+9900*rand()/RAND_MAX,
+ * matching bench_grid crossover and calibrate_best_b conventions exactly.
  *
  * Discovery strategy for best_B:
  *   1 rep per candidate to rank, then 2 more reps on top-2 if within 3%,
  *   median of those 3 determines the winner. (Same as calibrate_best_b.)
  *   Then a fresh median-of-7 for both auto_B and best_B for the final
- *   reported ms values — ensures fair, low-noise head-to-head.
+ *   reported ms values; ensures fair, low-noise head-to-head.
  *
  * Build (macOS M3 Pro):
  *   gcc -O3 -march=native -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
@@ -65,7 +65,7 @@ static double time_one(int n, int k, int B, const double *S,
     void *hc = icm_hybrid_ctx_create(n, S, k, B);
     double t = icm_run_engine(n, S, Q_PROBE, payout, k, equity,
                                icm_engine_hybrid(), hc) / (double)Q_PROBE;
-    /* Deliberately leak hc — this is a short-lived offline calibration
+    /* Deliberately leak hc; this is a short-lived offline calibration
      * tool where getting EngineKind enum wrong for icm_ctx_destroy
      * would segfault. Leaking is safe; guessing the enum wrong isn't. */
     return t;
@@ -212,7 +212,7 @@ int main(int argc, char **argv) {
     double gap_pct = 0.0;
     if (best_ms > 0.0) {
         gap_pct = 100.0 * (auto_ms - best_ms) / best_ms;
-        if (gap_pct < 0.0) gap_pct = 0.0;  /* auto was faster — no gap */
+        if (gap_pct < 0.0) gap_pct = 0.0;  /* auto was faster; no gap */
     }
 
     /* ── Machine-readable output to stdout ────────────────────

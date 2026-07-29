@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# calibrate_full.sh — Full calibration pipeline for a new device.
+# calibrate_full.sh: Full calibration pipeline for a new device.
 #
 # Usage: ./tools/calibrate_full.sh <DEVICE> [--quick]
 #
@@ -12,52 +12,52 @@
 #       find their target patterns (calibrate.c only emits the base
 #       calib_sizes[]/calib_times_ns[] + scalar #defines).
 #   3. Builds and runs tools/sample_plans.c (hybrid engine timing)
-#   4. Builds and runs tools/bench_wrap_fma.c — directly measures WRAP_FMA_NS
+#   4. Builds and runs tools/bench_wrap_fma.c, directly measures WRAP_FMA_NS
 #      (wrap-correction cost) via an isolated microbenchmark.
-#   5. Builds and runs tools/bench_div_chain.c — directly measures
+#   5. Builds and runs tools/bench_div_chain.c, directly measures
 #      FP64_DIV_NS (leaf-extraction division cost) via a dependency-chained
 #      microbenchmark.
-#   6. Builds bench_grid, runs `./bench_grid profile` — extracts FMA_NS
+#   6. Builds bench_grid, runs `./bench_grid profile`, extracts FMA_NS
 #      (schoolbook slope, cps=16→32), PAIRED_CACHED_CORR_RATIO and
 #      INDEP_PAIR_RATIO (phase-split table, fft_n ≥ 4096).
-#   7. Builds and runs tools/bench_block_build.c — directly measures the
+#   7. Builds and runs tools/bench_block_build.c, directly measures the
 #      block-build per-player cost at each candidate B, writes per-B lookup
 #      table into fft_config.h (block_build_ns_per_player[]).
-#   8. Builds and runs tools/probe_leaf_extract.c — measures the leaf-
+#   8. Builds and runs tools/probe_leaf_extract.c, measures the leaf-
 #      extraction per-player cost at each candidate B via the B-sweep phase
-#      (n=8192, k=320, fresh HybridCtx per rep — matches real engine
+#      (n=8192, k=320, fresh HybridCtx per rep, matches real engine
 #      behaviour).  Uses the cheap "zero" branch which dominates real
 #      production data (~99.9% of cases).  Writes the
 #      per-B lookup table leaf_fma_ns_per_player[] into fft_config.h.
-#   9. Builds and runs tools/bench_schoolbook_tree.c — directly measures
+#   9. Builds and runs tools/bench_schoolbook_tree.c, directly measures
 #      polymul_modk() and correlate_school() at each calib_sizes[] entry
 #      (cps ≤ 1024, sentinel -1.0 above).  Writes schoolbook_mul_ns[] and
 #      schoolbook_corr_ns[] lookup tables into fft_config.h.
-#  10. Builds and runs tools/bench_linear_batched_fma.c — directly measures
+#  10. Builds and runs tools/bench_linear_batched_fma.c, directly measures
 #      the batched linear engine's inner-loop per-FMA cost.  Extracts
 #      BATCHED_FMA_NS (regression slope, combined forward+backward k-sweep)
 #      and writes it into fft_config.h.  The cost model in src/cost_model.h
-#      uses this as 5*n*k*BATCHED_FMA_NS (not 4*n*k*FMA_NS — the batched
+#      uses this as 5*n*k*BATCHED_FMA_NS (not 4*n*k*FMA_NS; the batched
 #      engine performs ~5k FMAs per player per QP, not the 4k the old
 #      scalar-schoolbook-based formula assumed).
 #  11. Runs tools/fit_cost_model.py --write with ALL 6 scalar pins
 #      (WRAP_FMA_NS, FP64_DIV_NS, FMA_NS, PAIRED_CACHED_CORR_RATIO,
 #      INDEP_PAIR_RATIO, FFT_OVERHEAD_NS=0.0).  ZERO free parameters remain
-#      — scipy optimization is skipped; the script assembles the fully-pinned
+#      - scipy optimization is skipped; the script assembles the fully-pinned
 #      config directly.
-#  12. Builds and runs tools/calibrate_crossover.c — binary-searches the
+#  12. Builds and runs tools/calibrate_crossover.c, binary-searches the
 #      real linear-vs-hybrid crossover k(n) via direct timing (median of 7
 #      reps, Q=256).  Writes N_CROSSOVER_POINTS/crossover_n[]/crossover_k[]
 #      into fft_config.h.
-#  13. Builds and runs tools/calibrate_best_b.c — times every candidate
+#  13. Builds and runs tools/calibrate_best_b.c, times every candidate
 #      hybrid block size B at a grid of (n,k) points.  Writes
 #      N_BSELECT_POINTS/bselect_n[]/bselect_k[]/bselect_B[] into
 #      fft_config.h.
 #  14. Rebuilds the library with the new device config
 #  15. Verifies correctness (bench_grid verify) and crossover dispatch
 #
-# This can take 15–45+ minutes, dominated by step 1 (FFTW calibration),
-# step 8 (probe_leaf_extract full sweep + B-sweep), and steps 12–13
+# This can take 15 to 45+ minutes, dominated by step 1 (FFTW calibration),
+# step 8 (probe_leaf_extract full sweep + B-sweep), and steps 12 and 13
 # (crossover/best-B timing sweeps).
 set -euo pipefail
 
@@ -67,8 +67,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 usage() {
     echo "Usage: $0 <DEVICE> [--quick]"
-    echo "  DEVICE   — device name (e.g. zen4, m3_pro)"
-    echo "  --quick  — pass to calibrate for a faster (less thorough) FFTW calibration"
+    echo "  DEVICE   : device name (e.g. zen4, m3_pro)"
+    echo "  --quick  : pass to calibrate for a faster (less thorough) FFTW calibration"
     exit 1
 }
 
@@ -104,7 +104,7 @@ case "$OS" in
         if [ -f /usr/local/aocl-fftw/lib/libfftw3.so ]; then
             HOMEBREW_INC="-I/usr/local/aocl-fftw/include"
             HOMEBREW_LIB="-L/usr/local/aocl-fftw/lib -Wl,-rpath,/usr/local/aocl-fftw/lib"
-            echo "  Detected AOCL-FFTW at /usr/local/aocl-fftw — using it for calibration."
+            echo "  Detected AOCL-FFTW at /usr/local/aocl-fftw, using it for calibration."
         else
             HOMEBREW_INC=""
             HOMEBREW_LIB=""
@@ -129,7 +129,7 @@ echo ""
 # Step 1: Build and run calibrate
 # ═══════════════════════════════════════════════════════════════════════
 echo "── Step 1/15: FFTW calibration (tools/calibrate.c) ──"
-echo "  This may take 10–30 minutes..."
+echo "  This may take 10 to 30 minutes..."
 CALIB_BIN="$REPO_ROOT/calibrate"
 gcc -O3 -march=native $HOMEBREW_INC -o "$CALIB_BIN" tools/calibrate.c $HOMEBREW_LIB -lfftw3 -lm
 echo "  Running: $CALIB_BIN $QUICK"
@@ -157,7 +157,7 @@ for f in fft_config.h fftw_wisdom.dat; do
     SRC="$REPO_ROOT/$f"
     DST="$DEVICE_DIR/$f"
     if [ -f "$DST" ]; then
-        echo "  ⚠ WARNING: $DST already exists — overwriting"
+        echo "  ⚠ WARNING: $DST already exists, overwriting"
     fi
     cp "$SRC" "$DST"
     echo "  ✓ Copied $f → devices/$DEVICE/"
@@ -169,7 +169,7 @@ done
 # calibrate.c only emits calib_sizes[]/calib_times_ns[] + scalar
 # #defines.  The measurement steps below (block_build, probe_leaf_extract,
 # bench_schoolbook_tree, bench_linear_batched_fma) all need their target
-# arrays/constants to exist in fft_config.h — both for COMPILATION (tools
+# arrays/constants to exist in fft_config.h: both for COMPILATION (tools
 # that #include "icm.c" reference leaf_fma_ns_per_player[] etc.) and for
 # the inline Python scripts that find-and-replace array contents.
 #
@@ -196,9 +196,9 @@ if idx < 0:
     print("ERROR: could not find Cost model functions anchor in fft_config.h", file=sys.stderr)
     sys.exit(1)
 
-# Check if placeholders already exist (idempotent — don't double-inject)
+# Check if placeholders already exist (idempotent: don't double-inject)
 if 'BATCHED_FMA_NS_PLACEHOLDER_INJECTED' in text:
-    print("  Placeholders already injected — skipping.")
+    print("  Placeholders already injected, skipping.")
     sys.exit(0)
 
 placeholder_block = '''
@@ -207,44 +207,44 @@ placeholder_block = '''
  * k-sweep regression).  The batched engine performs ~5k FMAs per player
  * per QP, not ~4k.  PLACEHOLDER. */
 #ifndef BATCHED_FMA_NS
-#define BATCHED_FMA_NS 999.0  /* PLACEHOLDER — will be overwritten by step 10 */
+#define BATCHED_FMA_NS 999.0  /* PLACEHOLDER, will be overwritten by step 10 */
 #endif
 
 /* ── Hybrid-engine block-build lookup table ────────────────────
  * Directly-measured per-player block-build cost at each candidate B.
- * Generated by tools/bench_block_build.c — step 7.  PLACEHOLDER. */
+ * Generated by tools/bench_block_build.c, step 7.  PLACEHOLDER. */
 #ifndef BLOCK_BUILD_NS_PER_PLAYER_DEFINED
 #define BLOCK_BUILD_NS_PER_PLAYER_DEFINED
 static const double block_build_ns_per_player[6] = {
-    999.0,  /* B=8  — PLACEHOLDER */
-    999.0,  /* B=16 — PLACEHOLDER */
-    999.0,  /* B=24 — PLACEHOLDER */
-    999.0,  /* B=32 — PLACEHOLDER */
-    999.0,  /* B=48 — PLACEHOLDER */
-    999.0   /* B=64 — PLACEHOLDER */
+    999.0,  /* B=8  - PLACEHOLDER */
+    999.0,  /* B=16 - PLACEHOLDER */
+    999.0,  /* B=24 - PLACEHOLDER */
+    999.0,  /* B=32 - PLACEHOLDER */
+    999.0,  /* B=48 - PLACEHOLDER */
+    999.0   /* B=64 - PLACEHOLDER */
 };
 #endif
 
 /* ── Hybrid-engine leaf-extraction lookup table ─────────────────
  * Directly-measured per-player leaf-extraction cost at each candidate B.
- * Generated by tools/probe_leaf_extract.c B-sweep phase — step 8.
+ * Generated by tools/probe_leaf_extract.c B-sweep phase, step 8.
  * PLACEHOLDER. */
 #ifndef LEAF_FMA_NS_PER_PLAYER_DEFINED
 #define LEAF_FMA_NS_PER_PLAYER_DEFINED
 static const double leaf_fma_ns_per_player[6] = {
-    999.0,  /* B=8  — PLACEHOLDER */
-    999.0,  /* B=16 — PLACEHOLDER */
-    999.0,  /* B=24 — PLACEHOLDER */
-    999.0,  /* B=32 — PLACEHOLDER */
-    999.0,  /* B=48 — PLACEHOLDER */
-    999.0   /* B=64 — PLACEHOLDER */
+    999.0,  /* B=8  - PLACEHOLDER */
+    999.0,  /* B=16 - PLACEHOLDER */
+    999.0,  /* B=24 - PLACEHOLDER */
+    999.0,  /* B=32 - PLACEHOLDER */
+    999.0,  /* B=48 - PLACEHOLDER */
+    999.0   /* B=64 - PLACEHOLDER */
 };
 #endif
 
 /* ── Schoolbook cost lookup tables ─────────────────────────────
  * Direct per-size measurements of polymul_modk() and correlate_school()
  * indexed identically to calib_sizes[].  Generated by
- * tools/bench_schoolbook_tree.c — step 9.  PLACEHOLDER.
+ * tools/bench_schoolbook_tree.c, step 9.  PLACEHOLDER.
  *
  * Explicitly filled with a physically-implausible 999.0 sentinel (NOT a
  * bare `static const double x[N];` declaration) -- a bare declaration
@@ -260,7 +260,7 @@ static const double leaf_fma_ns_per_player[6] = {
 static const double schoolbook_mul_ns[N_CALIBRATED_SIZES] = {[0 ... N_CALIBRATED_SIZES-1] = 999.0};
 static const double schoolbook_corr_ns[N_CALIBRATED_SIZES] = {[0 ... N_CALIBRATED_SIZES-1] = 999.0};
 
-/* BATCHED_FMA_NS_PLACEHOLDER_INJECTED — sentinel to detect double-injection */
+/* BATCHED_FMA_NS_PLACEHOLDER_INJECTED, sentinel to detect double-injection */
 '''
 
 text = text[:idx] + placeholder_block + text[idx:]
@@ -283,9 +283,9 @@ config_path = sys.argv[1]
 with open(config_path, 'r') as f:
     text = f.read()
 
-# Check idempotency — don't double-inject
+# Check idempotency: don't double-inject
 if 'CROSSOVER_BSELECT_PLACEHOLDER_INJECTED' in text:
-    print("  Crossover/bselect placeholders already injected — skipping.")
+    print("  Crossover/bselect placeholders already injected ,  skipping.")
     sys.exit(0)
 
 anchor = '/* ── Cost model functions ── */'
@@ -296,7 +296,7 @@ if idx < 0:
 
 placeholder_block = '''
 /* ── Empirical linear-vs-hybrid crossover table ──────────────────────
- * Measured by tools/calibrate_crossover.c — binary search on real
+ * Measured by tools/calibrate_crossover.c ,  binary search on real
  * timing (median of 7 reps, Q=256).  See src/fft_cost_model.h's
  * empirical_crossover_k() for how this is consulted (log-linear
  * interpolation between bracketing n).  PLACEHOLDER. */
@@ -307,7 +307,7 @@ static const int crossover_k[N_CROSSOVER_POINTS] = {999, 999, 999, 999, 999, 999
 #endif
 
 /* ── Empirical hybrid block-size (B) table ───────────────────────────
- * Measured by tools/calibrate_best_b.c — direct timing (median of 7
+ * Measured by tools/calibrate_best_b.c ,  direct timing (median of 7
  * reps, Q=256) of the real hybrid engine at every candidate B, per
  * (n,k) grid point.  See src/fft_cost_model.h's empirical_best_B()
  * for how this is consulted (2D nearest-neighbor).  PLACEHOLDER. */
@@ -318,7 +318,7 @@ static const int bselect_k[N_BSELECT_POINTS] = {[0 ... 33] = 999};
 static const int bselect_B[N_BSELECT_POINTS] = {[0 ... 33] = 999};
 #endif
 
-/* CROSSOVER_BSELECT_PLACEHOLDER_INJECTED — sentinel to detect double-injection */
+/* CROSSOVER_BSELECT_PLACEHOLDER_INJECTED ,  sentinel to detect double-injection */
 '''
 
 text = text[:idx] + placeholder_block + text[idx:]
@@ -367,7 +367,7 @@ echo "  ✓ bench_wrap_fma complete → $WRAP_CSV"
 
 # Extract WRAP_FMA_NS: least-squares SLOPE of median_ns_per_call vs. fma_count
 # over the SMALL_2048 regime, restricted to wrap_m in [64,384] (the realistic
-# decision-relevant range — see scratch/zen4_wrap_investigation/probe_results.txt,
+# decision-relevant range ,  see scratch/zen4_wrap_investigation/probe_results.txt,
 # levels 7-8 of the regressed Zen4 case had wrap_m ~150-200).
 #
 # Must be a SLOPE (regression), not a raw ns_per_call/fma_count ratio: each
@@ -532,7 +532,7 @@ with open(config_path, 'r') as f:
 array_pattern = r'(static const double block_build_ns_per_player\[6\]\s*=\s*\{)'
 match = re.search(array_pattern, text)
 if not match:
-    print('WARNING: block_build_ns_per_player array not found in header — placeholder missing?', file=sys.stderr)
+    print('WARNING: block_build_ns_per_player array not found in header ,  placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 start = match.end()
@@ -578,7 +578,7 @@ gcc -O3 -march=native \
     $ACCEL_FLAGS $VEC_FLAGS
 echo "  ✓ Built probe_leaf_extract"
 
-echo "  Running probe_leaf_extract (full sweep + B-sweep — this takes several minutes)..."
+echo "  Running probe_leaf_extract (full sweep + B-sweep ,  this takes several minutes)..."
 LEAF_PROBE_OUT="$("$LEAF_PROBE_BIN")"
 echo "$LEAF_PROBE_OUT" > "$REPO_ROOT/leaf_probe_${DEVICE}.log"
 echo "  ✓ probe_leaf_extract complete → $REPO_ROOT/leaf_probe_${DEVICE}.log"
@@ -637,7 +637,7 @@ with open(config_path, 'r') as f:
 array_pattern = r'(static const double leaf_fma_ns_per_player\[6\]\s*=\s*\{)'
 match = re.search(array_pattern, text)
 if not match:
-    print('WARNING: leaf_fma_ns_per_player array not found in header — placeholder missing?', file=sys.stderr)
+    print('WARNING: leaf_fma_ns_per_player array not found in header ,  placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 start = match.end()
@@ -740,7 +740,7 @@ if not mul_match:
         # Replace the declaration-only with a full initializer
         pass
     else:
-        print('WARNING: schoolbook_mul_ns array not found in header — placeholder missing?', file=sys.stderr)
+        print('WARNING: schoolbook_mul_ns array not found in header ,  placeholder missing?', file=sys.stderr)
         sys.exit(0)
 
 if mul_match:
@@ -798,7 +798,7 @@ if not corr_match:
     corr_pattern2 = r'(static const double schoolbook_corr_ns\[N_CALIBRATED_SIZES\];)'
     corr_match = re.search(corr_pattern2, text)
     if not corr_match:
-        print('WARNING: schoolbook_corr_ns array not found in header — placeholder missing?', file=sys.stderr)
+        print('WARNING: schoolbook_corr_ns array not found in header ,  placeholder missing?', file=sys.stderr)
         sys.exit(0)
 
 if corr_match:
@@ -899,7 +899,7 @@ pattern = (
 )
 match = re.search(pattern, text)
 if not match:
-    print('WARNING: BATCHED_FMA_NS #ifndef/#define block not found — placeholder missing?', file=sys.stderr)
+    print('WARNING: BATCHED_FMA_NS #ifndef/#define block not found ,  placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 old_val = float(match.group(2))
@@ -916,7 +916,7 @@ PYEOF
         echo "  ✓ BATCHED_FMA_NS written to $CONFIG_H"
     else
         echo "  WARNING: could not extract BATCHED_FMA_NS from bench_linear_batched_fma output"
-        echo "    Leaving placeholder value in $CONFIG_H — manual fix required."
+        echo "    Leaving placeholder value in $CONFIG_H ,  manual fix required."
     fi
 fi
 
@@ -1017,7 +1017,7 @@ with open(config_path, 'r') as f:
 n_pattern = r'(static const int crossover_n\[N_CROSSOVER_POINTS\]\s*=\s*\{)'
 n_match = re.search(n_pattern, text)
 if not n_match:
-    print('WARNING: crossover_n array not found in header — placeholder missing?', file=sys.stderr)
+    print('WARNING: crossover_n array not found in header ,  placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 # Build the array in fixed n-grid order
@@ -1033,7 +1033,7 @@ text = text[:n_match.start()] + new_n_array + text[end:]
 k_pattern = r'(static const int crossover_k\[N_CROSSOVER_POINTS\]\s*=\s*\{)'
 k_match = re.search(k_pattern, text)
 if not k_match:
-    print('WARNING: crossover_k array not found in header — placeholder missing?', file=sys.stderr)
+    print('WARNING: crossover_k array not found in header ,  placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 k_values = [crossover.get(n, 999) for n in n_order]
@@ -1130,7 +1130,7 @@ with open(config_path, 'r') as f:
 n_pattern = r'(static const int bselect_n\[N_BSELECT_POINTS\]\s*=\s*\{)'
 n_match = re.search(n_pattern, text)
 if not n_match:
-    print('WARNING: bselect_n array not found in header — placeholder missing?', file=sys.stderr)
+    print('WARNING: bselect_n array not found in header ,  placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 n_vals = [p[0] for p in points]
@@ -1145,7 +1145,7 @@ text = text[:n_match.start()] + new_n_array + text[end:]
 k_pattern = r'(static const int bselect_k\[N_BSELECT_POINTS\]\s*=\s*\{)'
 k_match = re.search(k_pattern, text)
 if not k_match:
-    print('WARNING: bselect_k array not found in header — placeholder missing?', file=sys.stderr)
+    print('WARNING: bselect_k array not found in header ,  placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 k_vals = [p[1] for p in points]
@@ -1163,7 +1163,7 @@ text = text[:k_match.start()] + new_k_array + text[end:]
 b_pattern = r'(static const int bselect_B\[N_BSELECT_POINTS\]\s*=\s*\{)'
 b_match = re.search(b_pattern, text)
 if not b_match:
-    print('WARNING: bselect_B array not found in header — placeholder missing?', file=sys.stderr)
+    print('WARNING: bselect_B array not found in header ,  placeholder missing?', file=sys.stderr)
     sys.exit(0)
 
 b_vals = [p[2] for p in points]
@@ -1236,7 +1236,7 @@ echo "  Linear log:    $REPO_ROOT/linear_batched_${DEVICE}.log"
 echo "  Crossover log: $REPO_ROOT/crossover_${DEVICE}.log"
 echo "  Best-B log:    $REPO_ROOT/best_b_${DEVICE}.log"
 echo ""
-echo "  All scalar constants pinned — zero free parameters in cost model:"
+echo "  All scalar constants pinned ,  zero free parameters in cost model:"
 echo "    WRAP_FMA_NS               = $WRAP_FMA_NS"
 echo "    FP64_DIV_NS              = ${FP64_DIV_NS:-unpinned}"
 echo "    FMA_NS                    = $FMA_NS"
@@ -1246,7 +1246,7 @@ echo "    FFT_OVERHEAD_NS           = 0.0"
 if [ -n "${BATCHED_FMA_NS:-}" ]; then
     echo "    BATCHED_FMA_NS            = $BATCHED_FMA_NS"
 else
-    echo "    BATCHED_FMA_NS            = (not measured — bench_linear_batched_fma.c missing or failed)"
+    echo "    BATCHED_FMA_NS            = (not measured ,  bench_linear_batched_fma.c missing or failed)"
 fi
 echo ""
 echo "  Lookup tables populated in $CONFIG_H:"

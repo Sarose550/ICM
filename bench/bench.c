@@ -1,9 +1,9 @@
 /*
- * bench.c — ICM benchmark harness, correctness verification, and tuning tools
+ * bench.c: ICM benchmark harness, correctness verification, and tuning tools
  *
  * This file includes icm.c directly (single compilation unit) so it can
  * access internal types (TreeCtx, HybridCtx, FFTCache, etc.) for per-engine
- * benchmarking and FFT profiling. This is the only file that does this —
+ * benchmarking and FFT profiling. This is the only file that does this;
  * all other tools link against libicm.a and use only the icm.h public API.
  *
  * Compile (serial, macOS / Apple Silicon):
@@ -41,7 +41,7 @@
    ══════════════════════════════════════════════════════════════ */
 
 /* Format a millisecond timing to 3 significant figures in fixed-point
- * notation (never scientific) — e.g. 3 -> "3.00", 16 -> "16.0", 4392 -> "4390". */
+ * notation (never scientific); e.g. 3 -> "3.00", 16 -> "16.0", 4392 -> "4390". */
 static void fmt_ms_3sf(double v, char *buf, size_t bufsz) {
     if (v <= 0) { snprintf(buf, bufsz, "0.00"); return; }
     int exp = (int)floor(log10(v));
@@ -88,7 +88,7 @@ static void make_stacks(int n, int dist, double *S) {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   PROFILING MODE — time individual phases
+   PROFILING MODE; time individual phases
    ══════════════════════════════════════════════════════════════ */
 
 /* Measure per-call FFT overhead: time actual polymul calls vs calibrated FFT cost.
@@ -323,7 +323,7 @@ static void run_profile(void) {
             hybrid_ctx_destroy(hctx);
         }
 
-        /* Linear (always batched BQ=8 — matches icm_equity() behavior) */
+        /* Linear (always batched BQ=8; matches icm_equity() behavior) */
         if ((double)n * k < 1e8) {
             LinearCtx *lc = linear_ctx_create(n, k);
             memset(eq, 0, n * sizeof(double));
@@ -580,7 +580,7 @@ int main(int argc, char **argv) {
             for (int m = 0; m < k; m++) payout[m] = (double)(n - m);
             double *equity = (double *)calloc(n, sizeof(double));
 
-            /* Time full icm_equity (same n,k for all ratios — done once per n) */
+            /* Time full icm_equity (same n,k for all ratios; done once per n) */
             /* warmup */
             icm_equity(n, S, Q, payout, k, equity);
             double full_samples[BENCH_REPS];
@@ -650,7 +650,7 @@ int main(int argc, char **argv) {
         n_vn = n_vn_full;
         /* ICM_VERIFY_MAX_N caps the largest n in CI verify runs so the
          * per-PR gate finishes in 1-2 minutes.  n=65536 is the main
-         * offender — n=4096-16384 already exercises every engine, every
+         * offender; n=4096-16384 already exercises every engine, every
          * tier decision, and every cross-check.  When unset (local runs),
          * the full set is always used and behaviour is unchanged. */
         char *max_n_str = getenv("ICM_VERIFY_MAX_N");
@@ -682,7 +682,7 @@ int main(int argc, char **argv) {
             v1_exact(n, S, v1);
 
             /* Test each engine against V1 at k=n.
-             * Skip naive for n > 256 (O(n^2) — V1 closed form is the reference).
+             * Skip naive for n > 256 (O(n^2); V1 closed form is the reference).
              * Skip linear for n > 4096 (O(nk) at k=n is very slow). */
             typedef struct { const char *name; EquityEngine fn; void *ctx; } VE;
             TreeCtx *tc = tree_ctx_create(n, n);
@@ -867,7 +867,7 @@ int main(int argc, char **argv) {
             double times[4] = {-1, -1, -1, -1};
             const char *names[4] = {"T", "N", "L", "H"};
 
-            /* Tree (pure, for comparison) — median of BENCH_REPS */
+            /* Tree (pure, for comparison); median of BENCH_REPS */
             if ((double)n * k < 5e9) {
                 TreeCtx *tc = tree_ctx_create(n, k);
                 double samples[BENCH_REPS];
@@ -884,7 +884,7 @@ int main(int argc, char **argv) {
                 tree_ctx_destroy(tc);
             }
 
-            /* Hybrid — median of BENCH_REPS */
+            /* Hybrid; median of BENCH_REPS */
             if ((double)n * k < 5e9 && n >= 16) {
                 HybridCtx *hctx = hybrid_ctx_create(n, S, k, select_best_B(n, k));
                 double samples[BENCH_REPS];

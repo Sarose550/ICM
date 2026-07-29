@@ -1,5 +1,5 @@
 /*
- * cost_model.h — Shared roofline cost model utilities for ICM engine dispatch.
+ * cost_model.h: shared roofline cost model utilities for ICM engine dispatch.
  *
  * Used by both CPU (icm.c) and GPU (icm_gpu.cu) dispatch functions.
  * The blended_bw() function computes effective streaming bandwidth for a
@@ -26,7 +26,7 @@
  * This follows from: total_time = hit_bytes/hit_bw + miss_bytes/miss_bw.
  *
  * Requires: L2_CACHE_SIZE, L3_CACHE_SIZE (bytes),
- *           L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS (GB/s) — defined by caller.
+ *           L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS (GB/s), defined by caller.
  */
 static inline double blended_bw(double bytes) {
     if (bytes <= (double)L2_CACHE_SIZE)
@@ -71,7 +71,7 @@ static inline double linear_roofline_cost(int n, int k, int batch_width) {
     if (C < 1) C = 1;
 
     if (C >= n) {
-        /* No checkpointing — everything fits in L2, pure compute bound. */
+        /* No checkpointing, everything fits in L2, pure compute bound. */
         return compute_ns;
     }
 

@@ -26,7 +26,7 @@ build/
 # Generated data (from calibration/benchmarking)
 # fft_config.h / fftw_wisdom.dat are ignored at repo root (raw ./calibrate
 # output before being copied to a device dir) but tracked under devices/*/
-# — those are the hand-validated, committed source of truth per device.
+# Those are the hand-validated, committed source of truth per device.
 calibration.csv
 fft_config.h
 fftw_wisdom.dat
