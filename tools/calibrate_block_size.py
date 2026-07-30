@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Optional
 
 
@@ -434,6 +435,19 @@ def main() -> None:
     parser.add_argument("--skeleton-ratio", type=float, default=None)
     parser.add_argument("--config-header", type=str, default=None,
                         help="Override path to config header (for testing).")
+    parser.add_argument("--skip-base-sweep", action="store_true",
+                        help="Skip Step 2 entirely; only run Step 4's adaptive "
+                             "per-band refinement against whatever is already "
+                             "in the config header (Step 0). Useful for a cheap "
+                             "spot-check of a region you already believe is "
+                             "roughly right, without paying for a resweep.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the skeleton/band scope and a rough cost "
+                             "estimate, then exit before Step 2. Use this to "
+                             "size a run before spending any GPU time -- "
+                             "there is no other cost estimate before this "
+                             "point, and Step 2's default full sweep is the "
+                             "single most expensive thing this script can do.")
     args = parser.parse_args()
 
     device = args.device
@@ -497,23 +511,57 @@ def main() -> None:
     print(f"  Skeleton: {len(skeleton_points)} points across {len(bands)} bands")
     print()
 
+    if args.dry_run:
+        # Every skeleton point costs one full-candidate measurement if Step 2
+        # runs (that IS what "calibrate" means, there is no cheaper honest
+        # variant, see the note on --skip-base-sweep). Every Step 4 probe
+        # costs the same again per point actually sampled, bounded by
+        # max_probes_per_band * len(bands) in the worst case (no early
+        # convergence). Print the two numbers and let the caller size a
+        # --skeleton-lo/--skeleton-hi/--max-probes-per-band combination
+        # against their actual budget before spending anything.
+        worst_case_probes = args.max_probes_per_band * len(bands)
+        print(f"  Would run Step 2 over {len(skeleton_points)} skeleton points "
+              f"(skip with --skip-base-sweep).")
+        print(f"  Step 4 adaptive refinement: up to {worst_case_probes} probes "
+              f"worst case ({args.max_probes_per_band} x {len(bands)} bands), "
+              f"fewer if bands converge early via --clean-streak-target "
+              f"({args.clean_streak_target}).")
+        print(f"  Each point/probe costs one full candidate-set measurement "
+              f"at that (n,k) regardless of which step it's in; cost scales "
+              f"with n (see VERDICTS.md V6/V7 for measured per-cell times at "
+              f"this device's largest n). --dry-run stops here, nothing was "
+              f"measured.")
+        return
+
     # ── Step 2: Base-table sweep ───────────────────────────────────────
-    print("── Step 2: Base-table sweep (calibrate binary on full skeleton) ──")
-    skel_fd, skel_csv_path = tempfile.mkstemp(suffix=".csv", prefix="skel_")
-    os.close(skel_fd)
-    with open(skel_csv_path, "w") as f:
-        f.write("n,k\n")
-        for n, k in skeleton_points:
-            f.write(f"{n},{k}\n")
+    if args.skip_base_sweep:
+        print("── Step 2: SKIPPED (--skip-base-sweep) ──")
+        print(f"  Relying on Step 0's {len(existing_table)} pre-existing "
+              f"points plus Step 4's adaptive sampling below. This trades "
+              f"'every skeleton point measured' for 'statistical coverage "
+              f"via random per-band sampling, full measurement wherever a "
+              f"gap is actually found' -- an honest cost/confidence "
+              f"tradeoff, not a guess about any specific answer.")
+        base_table: list[tuple[int, int, int]] = []
+        print()
+    else:
+        print("── Step 2: Base-table sweep (calibrate binary on full skeleton) ──")
+        skel_fd, skel_csv_path = tempfile.mkstemp(suffix=".csv", prefix="skel_")
+        os.close(skel_fd)
+        with open(skel_csv_path, "w") as f:
+            f.write("n,k\n")
+            for n, k in skeleton_points:
+                f.write(f"{n},{k}\n")
 
-    base_fd, base_csv_path = tempfile.mkstemp(suffix=".csv", prefix="base_")
-    os.close(base_fd)
+        base_fd, base_csv_path = tempfile.mkstemp(suffix=".csv", prefix="base_")
+        os.close(base_fd)
 
-    base_table = run_calibrate_sweep(calibrate_bin, skel_csv_path,
-                                     base_csv_path, is_gpu)
-    print(f"  Base table: {len(base_table)} points")
-    os.unlink(skel_csv_path)
-    os.unlink(base_csv_path)
+        base_table = run_calibrate_sweep(calibrate_bin, skel_csv_path,
+                                         base_csv_path, is_gpu)
+        print(f"  Base table: {len(base_table)} points")
+        os.unlink(skel_csv_path)
+        os.unlink(base_csv_path)
 
     # Merge the fresh base sweep on top of whatever was already calibrated
     # (fresh measurements win on exact (n,k) overlap; everything else,
@@ -540,6 +588,8 @@ def main() -> None:
     calib_set: set[tuple[int, int]] = set(live_table.keys())
 
     per_band_results: list[dict] = []
+    step4_start = time.monotonic()
+    total_probes_so_far = 0
 
     for band in bands:
         band_id = band["band_id"]
@@ -563,48 +613,47 @@ def main() -> None:
             probes_in_band += 1
 
             # Probe with validate binary
+            probe_start = time.monotonic()
             probe = run_validate_probe(validate_bin, n, k, is_gpu)
+            probe_elapsed = time.monotonic() - probe_start
+            total_probes_so_far += 1
+            elapsed_total = time.monotonic() - step4_start
+            avg_probe_s = elapsed_total / total_probes_so_far
+            print(f"      ({probe_elapsed:.1f}s this probe, "
+                  f"{elapsed_total/60:.1f}m elapsed, "
+                  f"{avg_probe_s:.1f}s/probe avg over {total_probes_so_far})")
             gap_pct = probe["gap_pct"]
 
             # Compare gap_pct (percent) against gap_threshold*100
             if gap_pct > gap_threshold * 100.0:
-                # Gap exceeds threshold, refine this point
-                auto_B = probe["auto_B"]
+                # Gap exceeds threshold. validate_best_b/validate_planner_gpu
+                # ALREADY computed best_B via a full candidate search as part
+                # of this exact probe (that is how gap_pct was derived) --
+                # use it directly. An earlier version of this loop called
+                # calibrate_*_best_b again here with --narrow-around auto_B,
+                # which was wrong twice over: it re-paid for a search the
+                # probe had already done (redundant cost), AND it narrowed
+                # around the dispatch's own already-known-wrong answer,
+                # which can miss a true optimum more than one candidate step
+                # away (observed in practice: measured true B=48 several
+                # steps from a dispatched B=64/128 in the same session that
+                # motivated this fix, see VERDICTS.md V7). No second binary
+                # call needed; the probe's best_B is already a real,
+                # full-search, ungessed measurement.
+                new_b = probe["best_B"]
                 print(f"    [{probes_in_band}] n={n} k={k} gap={gap_pct:.2f}% "
-                      f"> {gap_threshold*100:.1f}% → refining near auto_B={auto_B}")
+                      f"> {gap_threshold*100:.1f}% (auto_B={probe['auto_B']}) "
+                      f"→ best_B={new_b} from the probe itself")
 
-                # Call calibrate binary with --narrow-around for this point
-                narrow_fd, narrow_in_path = tempfile.mkstemp(
-                    suffix=".csv", prefix="narrow_")
-                os.close(narrow_fd)
-                with open(narrow_in_path, "w") as f:
-                    f.write("n,k\n")
-                    f.write(f"{n},{k}\n")
+                live_table[(n, k)] = new_b
+                calib_set.add((n, k))
+                points_added += 1
 
-                narrow_out_fd, narrow_out_path = tempfile.mkstemp(
-                    suffix=".csv", prefix="narrow_out_")
-                os.close(narrow_out_fd)
-
-                new_rows = run_calibrate_sweep(
-                    calibrate_bin, narrow_in_path, narrow_out_path,
-                    is_gpu, narrow_around=[auto_B])
-
-                os.unlink(narrow_in_path)
-                os.unlink(narrow_out_path)
-
-                if new_rows:
-                    new_b = new_rows[0][2]
-                    live_table[(n, k)] = new_b
-                    calib_set.add((n, k))
-                    points_added += 1
-
-                    # IMMEDIATE re-injection
-                    inject_table(meta["config_header"], meta,
-                                 [(pn, pk, live_table[(pn, pk)])
-                                  for pn, pk in calib_set])
-                    print(f"      → best_B={new_b}, injected immediately")
-                else:
-                    print(f"      → calibrate returned no result, skipping")
+                # IMMEDIATE re-injection
+                inject_table(meta["config_header"], meta,
+                             [(pn, pk, live_table[(pn, pk)])
+                              for pn, pk in calib_set])
+                print(f"      → injected immediately")
 
                 clean_streak = 0
             else:
