@@ -134,6 +134,8 @@ test_uncalibrated_fallback
 !results/accuracy_convergence.csv
 !results/b_optimal_sweep_*.csv
 !results/wrap_fma_bench_*.csv
+!results/crossover_*.txt
+!results/subset_speed_*.txt
 .dsar/
 
 # AI agent project instructions -- not for public repo view
