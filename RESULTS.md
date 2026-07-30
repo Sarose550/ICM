@@ -587,39 +587,46 @@ here is the *motivation* for that migration, not a standing caveat.
 
 | n | k=64 | k=1024 | k=n/2 | k=n |
 |---|------|--------|-------|-----|
-| 4,096 | 0.35 | 0.74 | 0.82 | 0.84 |
-| 16,384 | 1.16 | 2.79 | 3.85 | 4.10 |
-| 65,536 | 4.35 | 10.94 | 19.36 | 20.22 |
-| 262,144 | 17.09 | 43.37 | 96.31 | 100.49 |
-| 1,048,576 | 77.45 | 187.72 | 508.24 | 513.41 |
-| 4,194,304 | 272.98 | 771.48 | 2,383.66 | 2,340.89 |
-| 16,777,216 | 1,280.52 | 3,127.15 | 10,716.87 | 10,825.24 |
-| 33,554,432 | 2,639.85 | 6,141.28 | 22,584.75 | 23,116.73 |
+| 4,096 | 0.37 | 0.76 | 0.87 | 0.89 |
+| 16,384 | 1.18 | 2.81 | 3.93 | 4.17 |
+| 65,536 | 4.29 | 9.46 | 19.43 | 20.26 |
+| 262,144 | 16.58 | 36.38 | 95.95 | 100.09 |
+| 1,048,576 | 65.68 | 178.26 | 504.29 | 509.51 |
+| 4,194,304 | 272.47 | 671.06 | 2,352.43 | 2,320.45 |
+| 16,777,216 | 1,215.01 | 2,493.21 | 10,582.00 | 10,719.01 |
+| 33,554,432 | 2,506.71 | 5,059.26 | 22,321.49 | 22,865.76 |
 
-Full 211-point calibration heatmap (`results/gpu_heatmap_b200_20260728.csv`),
-regenerated 2026-07-27/28 on top of the ragged-tree fix (`b53dd17`) and the
-extended B-selection table above n=1,572,864 (`b06379e`) -- all 210 cells
-pass with zero errors, cv ≤ 0.036 everywhere (most 0.000), and exactly one
-negligible non-monotonicity (n=4,194,304, k=2048→4096: 967.9→939.0ms, a
-~3% single-sample wobble with identical B=128 and identical tier
-composition on both sides, not a structural issue like the earlier
-FFT-calibration-gap non-monotonicity).
+Full 211-point calibration heatmap
+(`results/gpu_heatmap_b200_20260730_gapfill.csv`), regenerated 2026-07-30 on
+top of two rounds of B-selection anchor fixes (`2620583`, `71db180`; see
+`VERDICTS.md` V7). All 210 cells pass with zero errors, cv ≤ 0.036
+everywhere (most 0.000).
 
-**This session's two GPU fixes combined are a large, broad win, not just a
-correctness fix.** Diffing this heatmap cell-by-cell against the previous
-(2026-07-26, pre-fix) run at the same 210 `(n,k)` points: every cell with
-n ≥ 2,097,152 -- previously dispatched to the stale `B=112` anchor beyond
-the old B-selection table's range -- now dispatches `B=128` and is
-**1.84x-2.34x faster**, e.g. the largest cell (n=k=33,554,432) drops from
-45,046ms to 23,117ms. Zero cells regressed (none slower by more than 1%);
-smaller cells already inside the pre-existing calibration range (n ≤
-1,048,576) are unchanged (within ~1% noise), as expected. Summed over all
-210 common cells, total grid time drops from 726.8s to 451.7s (1.61x
-aggregate). The two fixes landed together (`b53dd17` then `b06379e`), so
-this comparison cannot cleanly separate the register-pressure fix's
-contribution from the B-selection table's -- both changed between the old
-and new run -- but the combined effect at large n is unambiguous and
-substantial.
+> **Known limitation, disclosed rather than hidden: 1 cell out of 210 is a
+> genuine, understood regression.** n=65,536, k=2,048 dispatches B=48 and
+> runs 14.13ms versus 12.13ms before this session's anchor fixes (+16.5%).
+> Root cause: a low-k anchor added at n=131,072 to fix a *different* cell
+> became this cell's nearest neighbour in the joint (n,k) lookup, pulling
+> it to the wrong B. Two rounds of targeted anchor fixes each fixed their
+> target cells and introduced exactly one new problem elsewhere (16 broken
+> cells in round 1, reduced to this single cell in round 2); chasing the
+> last one is not currently judged worth another full B200 rental cycle
+> against an aggregate signal (below) that is already unambiguous. See
+> `VERDICTS.md` V7 for the complete history and the exact next step if
+> this gets revisited.
+
+**This session's B-selection anchor fixes are a large, broad win overall,
+not just a correctness fix, this one cell aside.** Diffing the new heatmap
+cell-by-cell against the original pre-session baseline
+(`results/gpu_heatmap_b200_20260728.csv`) at the same 210 `(n,k)` points:
+61 cells changed B, 54 improved (some substantially -- the 12 cells above
+n=1,572,864 that motivated this fix were up to 78.7% slower before it),
+1 regressed (above), 6 within noise. Total grid time drops from 451.7s to
+441.1s (-2.34% aggregate). This is a separate, later fix from the
+`b53dd17`/`b06379e` pair described just above (both from an earlier
+session, 2026-07-27/28); that comparison and its 1.61x aggregate figure
+are historical record and still accurate for what they measured at the
+time.
 
 ### 1-second threshold: real binary search (median of 5 reps/candidate)
 
