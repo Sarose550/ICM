@@ -84,6 +84,29 @@ point-list CSVs, single-point probes, `--narrow-around`, and resumability).
 Only *this project's own B200 data* is a deliberate targeted subset. Say so in
 any writeup; do not imply the GPU received the CPU's full adaptive treatment.
 
+**Correction, 2026-07-30 (same day as V7's two-round anchor fill).**
+`calibrate_block_size.py` had apparently never actually been run for this
+project's own B200 data (its adaptive Step 4 loop, if run, would very
+plausibly have caught V7's regressions itself via random per-band sampling,
+rather than needing a human-driven audit to find them). Reviewing it while
+answering "what's the reproducible way to land these points" found a real
+bug: Step 4's refinement re-called `calibrate_gpu_best_b --narrow-around
+auto_B` on a gap, which (a) re-paid for a full candidate search that
+`validate_planner_gpu`'s probe had *already done* to compute the same
+point's `best_B` (used to derive `gap_pct` in the first place), and (b)
+narrowed around the dispatch's own already-wrong answer, which can miss a
+true optimum more than one candidate step away -- exactly what V7 observed.
+Fixed to use the probe's own `best_B` directly: no second binary call, no
+narrowing, no guessing. `tools/splice_calib_points.py` (new) is now the
+reproducible way to land a `--narrow-around` measurement into a config
+header, replacing hand-edited C arrays; `--skip-base-sweep` and `--dry-run`
+were added to `calibrate_block_size.py` so a caller can see cost (skeleton
+size, worst-case probe count) before spending any GPU time, and choose
+statistical-sampling coverage over a full skeleton sweep as an explicit,
+transparent tradeoff rather than an implicit one. See the tooling commit
+for the full detail. Not yet run for real on B200 (would need funding);
+this is a tooling fix, not a claim that V7's remaining cell is now closed.
+
 ## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: down to 1 known regression from 16, chasing to zero has diminishing returns)
 
 **Recorded:** 2026-07-30. **Evidence:** `b06379e` read against the 2026-07-30
