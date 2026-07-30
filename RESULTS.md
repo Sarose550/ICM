@@ -416,9 +416,26 @@ fft_n    fwd(ns)  pw(ns)   ifft(ns) f_fwd  f_pw   f_ifft
 
 ## Cost-Model Constants
 
-These constants drive `select_engine()`, `select_best_B()`, per-level FFT-vs-schoolbook
-decisions, and the m-wrap correction cost model. They live in `devices/<device>/fft_config.h`
-and were refit on real hardware via `tools/fit_cost_model.py`.
+They live in `devices/<device>/fft_config.h`.
+
+> **Superseded framing, corrected 2026-07-30.** The tables in this section, and
+> the "Calibration methodology" section below, describe a nonlinear-least-squares
+> fit with an RMS-error caveat. **That regression no longer exists.**
+> `tools/fit_cost_model.py` skips scipy entirely when all six scalar pins are
+> supplied ("a 0-parameter degenerate fit is meaningless") and simply writes the
+> measured values through. Every constant is now a direct microbenchmark, a
+> measured per-size or per-B table, or a hardware fact.
+>
+> Also note `select_engine()` and `select_best_B()` are **not** driven by these
+> constants at all any more; both are empirical lookup tables. The constants'
+> surviving role is pricing wrap correction, plus two scalars multiplying
+> measured FFT times.
+>
+> Several constants below (`FMA_NS`, `FP64_DIV_NS`, `LEAF_*`, `BLOCK_*`,
+> `FFT_OVERHEAD_NS`, the `*_BW_GBS` trio) are **read by nothing in `libicm.a`**;
+> they are emitted leftovers awaiting deletion. `CLAUDE.md`'s constants table has
+> the audited live/dead split; `HANDOFF.md` has the deletion plan. Values below
+> are retained as a historical record, not as a description of live behaviour.
 
 ### M3 Pro (Apple Silicon, ARM64)
 
@@ -544,16 +561,18 @@ regression for exactly this reason.
 Both tools are wired into `tools/calibrate_full.sh` as standard pipeline steps
 for all future device ports.
 
-### Known limitation
+### Known limitation (resolved; retained as history)
 
-Pinning both constants can raise the fit's RMS log-relative error if the
-`sample_plans` training data doesn't cleanly separate their effects from
-other parameters. Observed on M3 Pro (10.2% RMS error with both pinned, vs.
-6.57% unpinned; `FFT_OVERHEAD_NS` pushed to a physically odd 631ns to
-compensate). This is a collinearity limitation in the current training-data
-coverage, not a correctness issue, `./bench_grid verify` still passes ALL
-TESTS and dispatch decisions remain sound. Improving `sample_plans.c`'s B/n
-coverage to break this collinearity is flagged as real, open follow-up work.
+Pinning constants used to raise the fit's RMS log-relative error where the
+`sample_plans` training data didn't cleanly separate their effects. Observed on
+M3 Pro: 10.2% RMS with both pinned vs. 6.57% unpinned, with `FFT_OVERHEAD_NS`
+pushed to a physically odd 631 ns to compensate.
+
+**This limitation no longer applies.** The regression it describes was removed;
+all six scalar constants are now pinned from direct microbenchmarks and the
+optimizer is skipped, so there is no fit whose RMS error could degrade.
+`FFT_OVERHEAD_NS` is 0.0 on every device. The identifiability failure recorded
+here is the *motivation* for that migration, not a standing caveat.
 
 ---
 
