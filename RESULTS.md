@@ -444,11 +444,11 @@ They live in `devices/<device>/fft_config.h`.
 | `FMA_NS` | 0.0500 | Scalar FMA cost. Fit lower bound, hit its limit when `WRAP_FMA_NS` and `FP64_DIV_NS` were pinned; see caveat below. |
 | `WRAP_FMA_NS` | 0.4942 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c`. |
 | `FP64_DIV_NS` | 3.4890 | FP64 divide latency. **Directly measured** via `tools/bench_div_chain.c` (dependency-chained, not throughput). |
-| `BLOCK_FMA_NS` | 0.4027 | FMA cost inside block build/divide. 7-param fit (both pins active). |
+| `BLOCK_FMA_NS` | 0.4027 | FMA cost inside block build/divide. Superseded by the per-B `block_build_ns_per_player[]` table; dead in `libicm.a`. |
 | `BLOCK_MEM_NS` | 0.1000 | Memory cost per element in block build/divide. |
 | `PAIRED_CACHED_CORR_RATIO` | 1.9080 | Paired cached correlate cost / full FFT pipeline cost. |
 | `INDEP_PAIR_RATIO` | 1.9080 | Independent pair correlate cost / full FFT pipeline cost. Equal to PAIRED, likely a fitting artifact (solver couldn't separate them). |
-| `LEAF_FMA_NS` | 0.0727 | FMA cost at tree-leaf schoolbook multiplies. 7-param fit. |
+| `LEAF_FMA_NS` | 0.0727 | FMA cost at tree-leaf schoolbook multiplies. Superseded by the per-B `leaf_fma_ns_per_player[]` table; dead in `libicm.a`. |
 | `LEAF_BLOCK_NS` | 48.1032 | Per-block overhead at leaf level. |
 | `FFT_OVERHEAD_NS` | 631.0974 | Per-call FFT overhead. Physically odd value, pushed here to compensate when both pins are active; see caveat. |
 
@@ -476,7 +476,7 @@ They live in `devices/<device>/fft_config.h`.
 | `BLOCK_MEM_NS` | 0.1 | Memory cost per element in block build/divide. |
 | `PAIRED_CACHED_CORR_RATIO` | 1.8287 | Paired cached correlate cost / full FFT pipeline cost. |
 | `INDEP_PAIR_RATIO` | 1.8287 | Independent pair correlate cost / full FFT pipeline cost. |
-| `LEAF_FMA_NS` | 0.1610 | FMA cost at tree-leaf schoolbook multiplies. 7-param fit. |
+| `LEAF_FMA_NS` | 0.1610 | FMA cost at tree-leaf schoolbook multiplies. Superseded by the per-B `leaf_fma_ns_per_player[]` table; dead in `libicm.a`. |
 | `LEAF_BLOCK_NS` | 61.3029 | Per-block overhead at leaf level. |
 | `FFT_OVERHEAD_NS` | 0.0 | Per-call FFT overhead (baked into `calib_times_ns[]`, not double-counted). |
 
