@@ -191,20 +191,37 @@ PATIENT calibration from scratch. Verified working again 2026-07-30.
 
 ---
 
+## V15. Dispatch tables are calibrated serial and reused for parallel
+
+**Decided:** before 2026-07-30, clarified by the user 2026-07-30.
+**Evidence:** the code itself.
+
+Both dispatch decisions are **thread-count-blind**: `select_best_B(int n, int k)`
+and `empirical_crossover_k(int n)` take no thread count, and
+`tools/calibrate_best_b.c` / `tools/calibrate_crossover.c` measure
+single-threaded. The only thread-awareness in `src/cpu/icm.c` is parallelising
+over Q (quadrature points), not dispatch. So the same tables serve both modes.
+
+**This is deliberate.** Re-calibrating a separate parallel B table was judged not
+worth the effort; the serial optimum is accepted as a good-enough heuristic for
+the parallel case. It is a **known possible suboptimality**, not an oversight.
+
+**This does NOT mean parallel sweeps are skipped.** Parallel grids and parallel
+contour sweeps are run and are required for the paper's figures and tables. Only
+the *calibration* of the dispatch tables is serial-only.
+
+**Supporting evidence to generate:** measured parallel dispatch accuracy is the
+test of whether the heuristic holds. If serial-calibrated tables dispatch
+correctly on nearly all parallel cells, the heuristic is validated. That artifact
+does not exist yet and is queued; it also backs the paper's dispatch-accuracy
+claims. **Disclose this scoping decision in the paper** rather than leaving a
+reviewer to discover it.
+
 ## Unverified recollections
 
-Recorded so the next agent knows they are **not** substantiated, rather than
-rediscovering the ambiguity.
-
-- **"We deliberately skipped the full parallel sweep on Zen 4 and stopped at
-  serial."** Recalled by the user 2026-07-30. **Not corroborated by the repo.**
-  Searched commit messages, `RESULTS.md`, and deleted `HANDOFF.md` revisions.
-  Contrary evidence: full parallel grid *and* parallel contour data exist for the
-  current reference box (`bench_grid_zen4_parallel_20260727.txt`,
-  `contour_zen4_parallel_q256_20260727.csv`) and both are published in
-  `RESULTS.md`. The nearest real scope decisions are V10 and CLAUDE.md's note
-  that contour sweeps stall at k >= 200,000 and yield partial data through
-  ~k=100K. If the user reaffirms this verdict, record it here properly.
+None outstanding. (The Zen 4 parallel-sweep item previously recorded here was
+clarified by the user on 2026-07-30 and promoted to V15; the original wording
+misread a calibration-scope decision as a data-collection-scope decision.)
 
 ## Known data-hygiene issues, not yet resolved
 
