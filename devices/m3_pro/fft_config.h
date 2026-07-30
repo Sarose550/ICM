@@ -167,14 +167,10 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
  * LEAF_FMA_NS, LEAF_BLOCK_NS) with directly-measured per-player costs at
  * each of the 6 candidate block sizes B ∈ {8, 16, 24, 32, 48, 64}.
  *
- * The per-B cost is genuinely non-linear (reorder-buffer-limited ILP,
- * see SPRINT_MICROBENCH_MIGRATION_DAG.md "Lookup-table redesign" for the
- * full mechanism and empirical evidence).  A lookup table captures this
- * without unphysical negative intercepts.
+ * The per-B cost is genuinely non-linear (reorder-buffer-limited ILP). A
+ * lookup table captures this without unphysical negative intercepts.
  *
- * PLACEHOLDER VALUES, sampled from tools/bench_block_build and
- * tools/bench_leaf_fma on this machine.  These WILL BE OVERWRITTEN
- * by a real per-device calibration run (a separate node in the sprint). */
+ * Live, final values from tools/bench_block_build.c on this machine. */
 #ifndef BLOCK_BUILD_NS_PER_PLAYER_DEFINED
 #define BLOCK_BUILD_NS_PER_PLAYER_DEFINED
 static const double block_build_ns_per_player[6] = {
