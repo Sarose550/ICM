@@ -217,6 +217,35 @@ does not exist yet and is queued; it also backs the paper's dispatch-accuracy
 claims. **Disclose this scoping decision in the paper** rather than leaving a
 reviewer to discover it.
 
+## V16. Zen4 CPU bselect table is systematically wrong at k=10 (OPEN, unfixed)
+
+**Recorded:** 2026-07-30. **Evidence:** `tools/sweep_best_b.sh --device zen4`,
+first run ever on real hardware, `results/b_optimal_sweep_zen4_2026-07-30.csv`.
+
+Every one of the 11 tested `n` values (64 through 65536) at `k=10` dispatches
+`B=8` while the directly-measured best is `B=32`, a 37-44% gap at every single
+point (worst: n=65536, 44.4%; best: n=32768, 34.0%). No other `k` value shows
+this pattern this consistently; the next-worst offenders are scattered
+one-offs at 15-27%.
+
+This is not the V11/V7 joint-NN shadowing bug: `test_bselect_lookup.c` passes
+113/113 on this exact box at this exact commit, so the lookup algorithm is
+correctly finding its nearest calibrated anchor. The defect, if there is one,
+is upstream: either the calibration table (`bselect_*` in
+`devices/zen4/fft_config.h`, built by `tools/calibrate_best_b.c`) has bad data
+at low k, or `tools/calibrate_best_b.c` and `tools/validate_best_b.c` (the
+sweep's single-point oracle) measure this regime differently and one of them
+is wrong. Both are plausible; neither is diagnosed yet.
+
+**Do not patch this by hand-editing the table.** Same rule as everywhere else
+in this file: find the mechanism first. Likely next step: rerun
+`calibrate_best_b.c` at k=10 specifically with elevated rep count and compare
+against `validate_best_b.c`'s reps/methodology to see where they disagree.
+
+**Not yet checked on M3 Pro or GPU.** This may be Zen4-specific, or may be a
+property of k=10 as a boundary case (smallest k in the grid) that reproduces
+everywhere.
+
 ## Unverified recollections
 
 None outstanding. (The Zen 4 parallel-sweep item previously recorded here was
@@ -230,5 +259,7 @@ misread a calibration-scope decision as a data-collection-scope decision.)
   `20260727` file. Serial is clean (all 66 cells match).
 - The Zen 4 1-second threshold (n=17,984) has no saved artifact, unlike the GPU
   one.
-- `tools/sweep_best_b.sh` has never been run on hardware, so the B-optimality
-  artifact whose absence hid V11's bug still does not exist.
+- `tools/sweep_best_b.sh` has now been run on Zen4 (2026-07-30, full grid,
+  `results/b_optimal_sweep_zen4_2026-07-30.csv`), closing this gap on one
+  platform; it surfaced V16 (open). Not yet run on M3 Pro (blocked, see
+  HANDOFF.md) or as a GPU analogue.
