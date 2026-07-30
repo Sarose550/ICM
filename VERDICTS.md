@@ -84,7 +84,7 @@ point-list CSVs, single-point probes, `--narrow-around`, and resumability).
 Only *this project's own B200 data* is a deliberate targeted subset. Say so in
 any writeup; do not imply the GPU received the CPU's full adaptive treatment.
 
-## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (FIXED)
+## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: original 12 cells fixed, fix introduced 16 new ones elsewhere)
 
 **Recorded:** 2026-07-30. **Evidence:** `b06379e` read against the 2026-07-30
 heatmap comparison.
@@ -110,7 +110,7 @@ failed, the same 5 pre-existing failures as before the fix, all below the
 frontier and already explained in HANDOFF.md -- no new failures from the
 new anchors).
 
-**Fully closed, 2026-07-30 (later the same day, after a vast.ai top-up).**
+**Second attempt, 2026-07-30 (later the same day, after a vast.ai top-up).**
 Rented a second B200 (contract `46322663`, different host than the first)
 and reran the full 210-cell heatmap regen to completion:
 `results/gpu_heatmap_b200_20260730_postfix2.csv`. This run also carries the
@@ -133,10 +133,52 @@ The other two (n=256 k=128->256; n=512 k=64->128) have **identical B in
 both the pre-fix baseline and this run** (B=64, unchanged) and sit at
 0.08-0.11ms, a regime where GPU launch overhead dominates and cv jumped
 from ~1-3% to ~5-10% between runs at the same cells -- machine noise, not
-a B-selection effect. **Zero of the 3 violations are attributable to
-either fix.** Confirmed via `bench_gpu_fused verify` (0 FAIL) and
-`test_gpu_cost_model` (483 passed, 5 failed, identical pre-existing
-failure set both before and after).
+a B-selection effect. **Zero of the 3 monotonicity violations are
+attributable to either fix.** Confirmed via `bench_gpu_fused verify` (0
+FAIL) and `test_gpu_cost_model` (483 passed, 5 failed, identical
+pre-existing failure set both before and after).
+
+**The monotonicity gate passing is not the same as "no regressions,"
+and it missed one.** A full cell-by-cell diff against the original
+`results/gpu_heatmap_b200_20260728.csv` baseline (not just the 12
+originally-targeted cells, not just the monotonicity check) turned up
+**16 newly-regressed cells the 12-point narrow-around fill never touched
+directly**: n in {131072, 262144, 524288, 1048576} (below the frontier)
+plus n in {2097152, 4194304} at k=64 (above it), all previously B=64 or
+B=32, now B=128, up to +17.3% slower (n=131072/262144/524288/2097152/
+4194304, all k=64). Verified these are genuinely new, not inherited from
+V11: replayed the joint-NN lookup against `results/gpu_heatmap_b200_
+20260730.csv` (V11 applied, anchors not yet filled) and every one of these
+16 cells was still correctly B=64/B=32 there, matching the pre-V11
+baseline almost exactly. **Only the anchor addition changed them.**
+
+**Root cause: the 12-point `--narrow-around` fill was too narrow.** It
+added low-k anchors only at n >= 2,097,152, on the assumption that the
+table's low-k sparsity was specifically an "above the frontier" problem
+(per the original diagnosis). It is not -- the table was already sparse
+at low k across a much wider n range (at least 131,072 through
+4,194,304). Adding anchors far away in n but close in k gave the
+joint-NN log-space distance a new "nearest neighbour" for several
+medium-n queries that previously had no nearby competitor, and for those
+cells the new large-n anchor's B is measurably wrong.
+
+**Net effect is still a small aggregate win** (total time across all 210
+common cells: 451.7s -> 444.3s, -1.6%; the originally-targeted 12 cells:
+-1.5% net, back to roughly their pre-V11 baseline; the 16 newly-regressed
+cells: +11.3% within that subset). But "aggregate is still positive"
+does not make 16 individual regressions acceptable, especially since
+several are worse than 15%.
+
+**NOT YET FIXED.** The correct fix, following the same methodology as
+the original fill: measure real B directly (`calibrate_gpu_best_b
+--narrow-around`) at the 16 regressed cells (or more broadly, sweep low-k
+anchors across n in {131072, 262144, 524288, 1048576} the way the
+original fix did for n >= 2,097,152), splice in, and rerun the full
+heatmap + cell-by-cell diff again -- including this same check against
+ALL 210 cells, not just the newly-touched ones, since this exact mistake
+(narrow, targeted fix; broad, untargeted side effect) could repeat.
+**Blocked on funding**: this session's B200 credit ran out (~$0.75 left)
+before this was caught.
 
 ## V8. Past the calibration ceiling, use fixed fallbacks, never extrapolation
 
