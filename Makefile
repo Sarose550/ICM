@@ -265,7 +265,12 @@ test_cpu_cost_model: tools/test_cpu_cost_model.c src/cpu/icm.c src/cpu/icm.h dev
 	# codebase are legitimately unreferenced from this translation unit.
 	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -o $@ tools/test_cpu_cost_model.c $(LDFLAGS)
 
-.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model campaign_b200 calibrate_gpu_best_b
+test_bselect_lookup: tools/test_bselect_lookup.c src/cpu/fft_cost_model.h devices/$(DEVICE)/fft_config.h
+	# -Wno-unused-function: fft_cost_model.h defines three static
+	# functions; this test only calls empirical_best_B.
+	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -o $@ tools/test_bselect_lookup.c $(LDFLAGS)
+
+.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model test_bselect_lookup campaign_b200 calibrate_gpu_best_b
 
 campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	bash tools/run_b200_campaign.sh
@@ -274,6 +279,6 @@ campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate
 
 clean:
 	rm -f $(OUT) calibrate contour_1s contour_1s_par accuracy_bench
-	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model
+	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model test_bselect_lookup
 	rm -rf $(BUILD_DIR)
 	rm -rf python/*.egg-info python/build python/dist

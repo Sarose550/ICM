@@ -77,3 +77,11 @@ jobs:
       - name: Build libicm.so (generic)
         if: matrix.device == 'generic'
         run: make libicm.so DEVICE=generic CFLAGS="$SAFE_CFLAGS"
+
+      # ── bselect lookup regression test (all devices) ──────────
+
+      - name: Build test_bselect_lookup (${{ matrix.device }})
+        run: make test_bselect_lookup DEVICE=${{ matrix.device }} CFLAGS="$SAFE_CFLAGS"
+
+      - name: Run test_bselect_lookup (${{ matrix.device }})
+        run: ./test_bselect_lookup

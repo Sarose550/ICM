@@ -82,9 +82,10 @@ static double empirical_crossover_k(int n) {
  * Unlike the crossover table (a continuous threshold, log-linearly
  * interpolated), B is a discrete/categorical choice -- there is no
  * meaningful interpolation between B=32 and B=64. Lookup is nearest-
- * neighbor over a 2D (n,k) grid instead (log-distance on each axis):
- * find the calibrated n closest to the query, then among that n's
- * entries, the calibrated k closest to the query.
+ * neighbor over a 2D (n,k) grid instead, joint (n,k) in log space,
+ * single pass:
+ *   d_i = hypot(log n - log bselect_n[i], log k - log bselect_k[i])
+ * B is taken from the calibration point minimizing this joint distance.
  *
  * Requires (from fft_config.h): N_BSELECT_POINTS, bselect_n[],
  * bselect_k[], bselect_B[] (flat parallel arrays from
@@ -98,21 +99,16 @@ static int empirical_best_B(int n, int k) {
     if (N_BSELECT_POINTS == 0) return 32;
 
     double log_n = log((double)n);
-    int best_n = bselect_n[0];
-    double best_n_dist = fabs(log_n - log((double)bselect_n[0]));
-    for (int i = 1; i < N_BSELECT_POINTS; i++) {
-        double d = fabs(log_n - log((double)bselect_n[i]));
-        if (d < best_n_dist) { best_n_dist = d; best_n = bselect_n[i]; }
-    }
     double log_k = log((double)k);
-    int best_B = 32; /* sane fallback; overwritten below as long as the table is non-empty */
-    double best_k_dist = 1e18;
-    for (int i = 0; i < N_BSELECT_POINTS; i++) {
-        if (bselect_n[i] != best_n) continue;
-        double d = fabs(log_k - log((double)bselect_k[i]));
-        if (d < best_k_dist) { best_k_dist = d; best_B = bselect_B[i]; }
+    int best_i = 0;
+    double best_dist = hypot(log_n - log((double)bselect_n[0]),
+                             log_k - log((double)bselect_k[0]));
+    for (int i = 1; i < N_BSELECT_POINTS; i++) {
+        double d = hypot(log_n - log((double)bselect_n[i]),
+                         log_k - log((double)bselect_k[i]));
+        if (d < best_dist) { best_dist = d; best_i = i; }
     }
-    return best_B;
+    return bselect_B[best_i];
 }
 
 /* Joint optimization of build + paired cached correlate at one shared FFT size.

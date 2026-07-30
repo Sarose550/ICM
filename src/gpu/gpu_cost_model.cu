@@ -822,28 +822,29 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
 
 /* ── B selection / engine dispatch ─────────────────────────────── */
 
-/* 2D nearest-neighbor lookup over the calibrated (n,k,B) grid
+/* Joint (n,k) nearest-neighbor lookup over the calibrated (n,k,B) grid
  * in devices/<DEVICE>/gpu_fft_config.h (gbselect_n[]/gbselect_k[]/
- * gbselect_B[], produced by tools/calibrate_gpu_best_b.c).
- * B is a discrete choice among kBCandidates, so nearest-neighbor
- * (not interpolation) is the right lookup. */
+ * gbselect_B[], produced by tools/calibrate_gpu_best_b.c), single pass
+ * in log space. B is a discrete choice among kBCandidates, so
+ * nearest-neighbor (not interpolation) is the right lookup. */
 int gpu_empirical_best_B(int n, int k) {
+    /* Empty-table guard: when no GPU B-selection calibration data exists
+     * (uncalibrated device), return the fixed uncalibrated default B=64.
+     * This also fixes the out-of-bounds read on gbselect_n[0] when
+     * GPU_N_BSELECT_POINTS == 0. */
+    if (GPU_N_BSELECT_POINTS == 0) return 64;
+
     double log_n = log((double)n);
-    int best_n = gbselect_n[0];
-    double best_n_dist = fabs(log_n - log((double)gbselect_n[0]));
-    for (int i = 1; i < GPU_N_BSELECT_POINTS; i++) {
-        double d = fabs(log_n - log((double)gbselect_n[i]));
-        if (d < best_n_dist) { best_n_dist = d; best_n = gbselect_n[i]; }
-    }
     double log_k = log((double)k);
-    int best_B = 64; /* sane fallback; overwritten below as long as the table is non-empty */
-    double best_k_dist = 1e18;
-    for (int i = 0; i < GPU_N_BSELECT_POINTS; i++) {
-        if (gbselect_n[i] != best_n) continue;
-        double d = fabs(log_k - log((double)gbselect_k[i]));
-        if (d < best_k_dist) { best_k_dist = d; best_B = gbselect_B[i]; }
+    int best_i = 0;
+    double best_dist = hypot(log_n - log((double)gbselect_n[0]),
+                             log_k - log((double)gbselect_k[0]));
+    for (int i = 1; i < GPU_N_BSELECT_POINTS; i++) {
+        double d = hypot(log_n - log((double)gbselect_n[i]),
+                         log_k - log((double)gbselect_k[i]));
+        if (d < best_dist) { best_dist = d; best_i = i; }
     }
-    return best_B;
+    return gbselect_B[best_i];
 }
 
 int gpu_select_best_B_est(int n, int k_pad, const std::vector<int> &smooth) {

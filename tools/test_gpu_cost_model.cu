@@ -450,9 +450,223 @@ static void test_fused_calibration_coverage() {
     }
 }
 
+/* ── Reference: true joint nearest-neighbour in log space (GPU) ── */
+
+static int reference_gpu_best_B(int n, int k) {
+    if (GPU_N_BSELECT_POINTS == 0) return 64;
+    double log_n = std::log((double)n);
+    double log_k = std::log((double)k);
+    int best_i = 0;
+    double best_dist = std::hypot(log_n - std::log((double)gbselect_n[0]),
+                                  log_k - std::log((double)gbselect_k[0]));
+    for (int i = 1; i < GPU_N_BSELECT_POINTS; i++) {
+        double d = std::hypot(log_n - std::log((double)gbselect_n[i]),
+                              log_k - std::log((double)gbselect_k[i]));
+        if (d < best_dist) { best_dist = d; best_i = i; }
+    }
+    return gbselect_B[best_i];
+}
+
+static int reference_gpu_best_index(int n, int k, double *out_dist) {
+    if (GPU_N_BSELECT_POINTS == 0) { *out_dist = 0; return -1; }
+    double log_n = std::log((double)n);
+    double log_k = std::log((double)k);
+    int best_i = 0;
+    double best_dist = std::hypot(log_n - std::log((double)gbselect_n[0]),
+                                  log_k - std::log((double)gbselect_k[0]));
+    for (int i = 1; i < GPU_N_BSELECT_POINTS; i++) {
+        double d = std::hypot(log_n - std::log((double)gbselect_n[i]),
+                              log_k - std::log((double)gbselect_k[i]));
+        if (d < best_dist) { best_dist = d; best_i = i; }
+    }
+    *out_dist = best_dist;
+    return best_i;
+}
+
+/* Replicate the buggy two-pass lookup to find which index it picks. */
+static int buggy_gpu_selected_index(int n, int k, double *out_dist) {
+    if (GPU_N_BSELECT_POINTS == 0) { *out_dist = 0; return -1; }
+    double log_n = std::log((double)n);
+    int best_n = gbselect_n[0];
+    double best_n_dist = std::fabs(log_n - std::log((double)gbselect_n[0]));
+    for (int i = 1; i < GPU_N_BSELECT_POINTS; i++) {
+        double d = std::fabs(log_n - std::log((double)gbselect_n[i]));
+        if (d < best_n_dist) { best_n_dist = d; best_n = gbselect_n[i]; }
+    }
+    double log_k = std::log((double)k);
+    int best_i = 0;
+    double best_k_dist = 1e18;
+    int found = 0;
+    for (int i = 0; i < GPU_N_BSELECT_POINTS; i++) {
+        if (gbselect_n[i] != best_n) continue;
+        double d = std::fabs(log_k - std::log((double)gbselect_k[i]));
+        if (d < best_k_dist) { best_k_dist = d; best_i = i; found = 1; }
+    }
+    if (!found) {
+        *out_dist = std::hypot(log_n - std::log((double)gbselect_n[0]),
+                               log_k - std::log((double)gbselect_k[0]));
+        return 0;
+    }
+    *out_dist = std::hypot(log_n - std::log((double)gbselect_n[best_i]),
+                           log_k - std::log((double)gbselect_k[best_i]));
+    return best_i;
+}
+
 /* ═══════════════════════════════════════════════════════════════
-   Test 10: Level-by-level cost dump for a specific case
-   Diagnostic: shows per-level tier assignment and costs.
+   Test 10: B-select agreement sweep (GPU)
+   Sweep n across the calibrated GPU range and k in a spread
+   including k=n and small k.  Compare gpu_empirical_best_B()
+   against the reference joint-NN.  Report (n_i,k_i) of both
+   selected and reference points on mismatch.
+   ═══════════════════════════════════════════════════════════════ */
+static void test_gpu_bselect_agreement_sweep(void) {
+    int ns[] = {4096, 16384, 65536, 131072, 262144, 524288,
+                1048576, 1572864, 2097152, 4194304, 8388608};
+    int n_ns = sizeof(ns) / sizeof(ns[0]);
+    int ks_base[] = {2, 8, 64, 256, 1024, 4096, 16384};
+    int n_ks_base = sizeof(ks_base) / sizeof(ks_base[0]);
+
+    for (int ni = 0; ni < n_ns; ni++) {
+        int n = ns[ni];
+        for (int ki = 0; ki < n_ks_base; ki++) {
+            int k = ks_base[ki];
+            if (k > n || k == n) continue;
+            int got = gpu_empirical_best_B(n, k);
+            int want = reference_gpu_best_B(n, k);
+
+            if (got != want) {
+                double buggy_d, ref_d;
+                int buggy_i = buggy_gpu_selected_index(n, k, &buggy_d);
+                int ref_i   = reference_gpu_best_index(n, k, &ref_d);
+                fprintf(stderr,
+                        "  MISMATCH n=%d k=%d got_B=%d want_B=%d\n"
+                        "    buggy  -> (n=%d, k=%d, B=%d, dist=%.4f)\n"
+                        "    ref    -> (n=%d, k=%d, B=%d, dist=%.4f)\n",
+                        n, k, got, want,
+                        (buggy_i >= 0) ? gbselect_n[buggy_i] : -1,
+                        (buggy_i >= 0) ? gbselect_k[buggy_i] : -1,
+                        (buggy_i >= 0) ? gbselect_B[buggy_i] : -1,
+                        buggy_d,
+                        (ref_i >= 0) ? gbselect_n[ref_i] : -1,
+                        (ref_i >= 0) ? gbselect_k[ref_i] : -1,
+                        (ref_i >= 0) ? gbselect_B[ref_i] : -1,
+                        ref_d);
+            }
+            CHECK(got == want,
+                  "n=%d k=%d got_B=%d want_B=%d", n, k, got, want);
+        }
+        /* k=n */
+        {
+            int k = n;
+            int got = gpu_empirical_best_B(n, k);
+            int want = reference_gpu_best_B(n, k);
+            if (got != want) {
+                double buggy_d, ref_d;
+                int buggy_i = buggy_gpu_selected_index(n, k, &buggy_d);
+                int ref_i   = reference_gpu_best_index(n, k, &ref_d);
+                fprintf(stderr,
+                        "  MISMATCH n=%d k=%d got_B=%d want_B=%d\n"
+                        "    buggy  -> (n=%d, k=%d, B=%d, dist=%.4f)\n"
+                        "    ref    -> (n=%d, k=%d, B=%d, dist=%.4f)\n",
+                        n, k, got, want,
+                        (buggy_i >= 0) ? gbselect_n[buggy_i] : -1,
+                        (buggy_i >= 0) ? gbselect_k[buggy_i] : -1,
+                        (buggy_i >= 0) ? gbselect_B[buggy_i] : -1,
+                        buggy_d,
+                        (ref_i >= 0) ? gbselect_n[ref_i] : -1,
+                        (ref_i >= 0) ? gbselect_k[ref_i] : -1,
+                        (ref_i >= 0) ? gbselect_B[ref_i] : -1,
+                        ref_d);
+            }
+            CHECK(got == want,
+                  "n=%d k=%d got_B=%d want_B=%d", n, k, got, want);
+        }
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Test 11: B-select shadowing invariant (GPU)
+   For each query, the point whose B was returned must be a joint
+   nearest neighbour: no calibration point is strictly closer in
+   joint log distance.  Ties do not produce false failures.
+   ═══════════════════════════════════════════════════════════════ */
+static void test_gpu_bselect_shadowing_invariant(void) {
+    int ns[] = {4096, 16384, 65536, 131072, 262144, 524288,
+                1048576, 1572864, 2097152, 4194304, 8388608};
+    int n_ns = sizeof(ns) / sizeof(ns[0]);
+    int ks_base[] = {2, 8, 64, 256, 1024, 4096, 16384};
+    int n_ks_base = sizeof(ks_base) / sizeof(ks_base[0]);
+
+    if (GPU_N_BSELECT_POINTS == 0) {
+        CHECK(1, "empty table: shadowing invariant vacuous");
+        return;
+    }
+
+    for (int ni = 0; ni < n_ns; ni++) {
+        int n = ns[ni];
+        for (int ki = 0; ki < n_ks_base; ki++) {
+            int k = ks_base[ki];
+            if (k > n || k == n) continue;
+            int got_B = gpu_empirical_best_B(n, k);
+            double ref_dist;
+            reference_gpu_best_index(n, k, &ref_dist);
+
+            double log_n = std::log((double)n);
+            double log_k = std::log((double)k);
+            int any_nn = 0;
+            for (int i = 0; i < GPU_N_BSELECT_POINTS; i++) {
+                if (gbselect_B[i] != got_B) continue;
+                double d = std::hypot(log_n - std::log((double)gbselect_n[i]),
+                                      log_k - std::log((double)gbselect_k[i]));
+                if (d <= ref_dist + 1e-12) { any_nn = 1; break; }
+            }
+            CHECK(any_nn,
+                  "n=%d k=%d got_B=%d: no point with this B is a joint NN "
+                  "(ref dist=%.4f)", n, k, got_B, ref_dist);
+        }
+        /* k=n */
+        {
+            int k = n;
+            int got_B = gpu_empirical_best_B(n, k);
+            double ref_dist;
+            reference_gpu_best_index(n, k, &ref_dist);
+            double log_n = std::log((double)n);
+            double log_k = std::log((double)k);
+            int any_nn = 0;
+            for (int i = 0; i < GPU_N_BSELECT_POINTS; i++) {
+                if (gbselect_B[i] != got_B) continue;
+                double d = std::hypot(log_n - std::log((double)gbselect_n[i]),
+                                      log_k - std::log((double)gbselect_k[i]));
+                if (d <= ref_dist + 1e-12) { any_nn = 1; break; }
+            }
+            CHECK(any_nn,
+                  "n=%d k=%d got_B=%d: no point with this B is a joint NN "
+                  "(ref dist=%.4f)", n, k, got_B, ref_dist);
+        }
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Test 12: B-select empty-table guard (GPU)
+   When GPU_N_BSELECT_POINTS == 0, gpu_empirical_best_B must
+   return 64 without reading gbselect_n[0].
+   ═══════════════════════════════════════════════════════════════ */
+static void test_gpu_bselect_empty_table_guard(void) {
+    if (GPU_N_BSELECT_POINTS == 0) {
+        int B = gpu_empirical_best_B(4096, 4096);
+        CHECK(B == 64, "empty table: B=%d expected 64", B);
+        B = gpu_empirical_best_B(1, 1);
+        CHECK(B == 64, "empty table n=1 k=1: B=%d expected 64", B);
+        B = gpu_empirical_best_B(65536, 65536);
+        CHECK(B == 64, "empty table n=65536: B=%d expected 64", B);
+    } else {
+        CHECK(1, "non-empty table: guard test N/A (skip)");
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Diagnostic: Level-by-level cost dump for a specific case
+   Shows per-level tier assignment and costs.
    ═══════════════════════════════════════════════════════════════ */
 static void dump_level_costs(int n, int B) {
     std::vector<int> smooth;
@@ -532,6 +746,15 @@ int main() {
 
     fprintf(stderr, "--- 9. Fused calibration coverage ---\n");
     test_fused_calibration_coverage();
+
+    fprintf(stderr, "--- 10. B-select agreement sweep (GPU) ---\n");
+    test_gpu_bselect_agreement_sweep();
+
+    fprintf(stderr, "--- 11. B-select shadowing invariant (GPU) ---\n");
+    test_gpu_bselect_shadowing_invariant();
+
+    fprintf(stderr, "--- 12. B-select empty-table guard (GPU) ---\n");
+    test_gpu_bselect_empty_table_guard();
 
     fprintf(stderr, "\n--- Diagnostic: level costs for key cases ---\n");
     dump_level_costs(65536, 64);
