@@ -95,8 +95,41 @@ them and return B=128 above the frontier. When the lookup changed to joint
 queries began matching smaller-n points carrying smaller B. Result: 12 cells
 regressed, every one of them `B 128->64` or `128->48`, all above n=1,572,864.
 
-**This is the open item.** The data must be extended to support the new lookup;
-see the handoff. Do not "fix" it by reverting the lookup without reading V11.
+**Partially closed, 2026-07-30.** `calibrate_gpu_best_b --narrow-around
+96,112,128,144` measured all 12 regressed cells directly on a rented B200
+(contract 46316595) and the results were spliced into
+`devices/b200/gpu_fft_config.h` (`GPU_N_BSELECT_POINTS` 60 -> 72). Mostly
+confirms B=128 as the correct anchor, but not uniformly: n=4194304,k=1024
+measured B=112 and n=8388608,k=128/1024 measured B=80/96, so this is real
+per-point data, not an assumption that 128 is always right above the
+frontier.
+
+**Confirmed clean with the new anchors, same box, same session:**
+`bench_gpu_fused verify` (0 FAIL) and `test_gpu_cost_model` (483 passed, 5
+failed, the same 5 pre-existing failures as before the fix, all below the
+frontier and already explained in HANDOFF.md -- no new failures from the
+new anchors).
+
+**Not yet confirmed: the acceptance gate itself (V12).** The full 210-cell
+heatmap regen was ~191/211 through (partway into n=33,554,432) when the
+rented instance's container exited unexpectedly and the box became
+unrecoverable; the vast.ai account had no remaining credit to rent a
+replacement. The partial CSV was not preserved (a clean rerun on fresh
+hardware is the right move anyway, per this project's own
+machine-drift-control practice of not mixing partial runs across
+instances). Peak VRAM was climbing steeply through that region (154.8 GB
+of 183 GB total at n=33554432,k=8192, still rising) right before the
+crash; possibly a real VRAM ceiling at extreme sizes rather than
+infrastructure noise, but there is not enough evidence to call it either
+way -- no OOM was captured in the container logs, just an unexplained
+`exited` status.
+
+**Remaining work, blocked on funding:** rerun the full 210-cell heatmap
+regen on a fresh B200 instance and check the V12 monotonicity gate
+(currently unconfirmed post-fix; pre-fix baseline was 1 violation, the
+broken-anchor run had 8). Do not consider V7 fully resolved until that
+gate is checked. Do not "fix" the underlying lookup by reverting it
+without reading V11.
 
 ## V8. Past the calibration ceiling, use fixed fallbacks, never extrapolation
 
