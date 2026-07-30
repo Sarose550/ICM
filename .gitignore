@@ -119,6 +119,8 @@ results_b200_optimized/
 # Compiled test binaries (leaked to repo root)
 test_cpu_cost_model
 test_cpu_cost_model_*
+test_bselect_lookup
+test_uncalibrated_fallback
 
 # Jupyter artifacts
 .ipynb_checkpoints/
