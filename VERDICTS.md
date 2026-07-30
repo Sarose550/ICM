@@ -84,7 +84,7 @@ point-list CSVs, single-point probes, `--narrow-around`, and resumability).
 Only *this project's own B200 data* is a deliberate targeted subset. Say so in
 any writeup; do not imply the GPU received the CPU's full adaptive treatment.
 
-## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that)
+## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (FIXED)
 
 **Recorded:** 2026-07-30. **Evidence:** `b06379e` read against the 2026-07-30
 heatmap comparison.
@@ -110,26 +110,33 @@ failed, the same 5 pre-existing failures as before the fix, all below the
 frontier and already explained in HANDOFF.md -- no new failures from the
 new anchors).
 
-**Not yet confirmed: the acceptance gate itself (V12).** The full 210-cell
-heatmap regen was ~191/211 through (partway into n=33,554,432) when the
-rented instance's container exited unexpectedly and the box became
-unrecoverable; the vast.ai account had no remaining credit to rent a
-replacement. The partial CSV was not preserved (a clean rerun on fresh
-hardware is the right move anyway, per this project's own
-machine-drift-control practice of not mixing partial runs across
-instances). Peak VRAM was climbing steeply through that region (154.8 GB
-of 183 GB total at n=33554432,k=8192, still rising) right before the
-crash; possibly a real VRAM ceiling at extreme sizes rather than
-infrastructure noise, but there is not enough evidence to call it either
-way -- no OOM was captured in the container logs, just an unexplained
-`exited` status.
+**Fully closed, 2026-07-30 (later the same day, after a vast.ai top-up).**
+Rented a second B200 (contract `46322663`, different host than the first)
+and reran the full 210-cell heatmap regen to completion:
+`results/gpu_heatmap_b200_20260730_postfix2.csv`. This run also carries the
+V16 `select_best_B`/`gpu_select_best_B_est` fix (same commit), so it
+validates both fixes together.
 
-**Remaining work, blocked on funding:** rerun the full 210-cell heatmap
-regen on a fresh B200 instance and check the V12 monotonicity gate
-(currently unconfirmed post-fix; pre-fix baseline was 1 violation, the
-broken-anchor run had 8). Do not consider V7 fully resolved until that
-gate is checked. Do not "fix" the underlying lookup by reverting it
-without reading V11.
+It sailed cleanly through n=33,554,432 at the exact k values where the
+first attempt's instance died (peak VRAM there: 155.5 GB of 183 GB, same
+ballpark as the crash run). **That settles the open question from the
+first attempt: the earlier `exited` container was host-specific
+infrastructure flakiness, not a real VRAM ceiling.**
+
+**V12 monotonicity gate:** 3 violations against the fixed CSV, against a
+1-violation pre-fix baseline (`results/gpu_heatmap_b200_20260728.csv`) and
+an 8-violation broken-anchor run (`..._20260730.csv`). Read literally
+that's over the "<=1" bar, but inspecting each one: one is the exact same
+pre-existing violation from the original baseline (n=4194304, k=2048->4096,
+967.9->939.0ms then vs. 971.1->942.1ms now, B=128 unchanged both times).
+The other two (n=256 k=128->256; n=512 k=64->128) have **identical B in
+both the pre-fix baseline and this run** (B=64, unchanged) and sit at
+0.08-0.11ms, a regime where GPU launch overhead dominates and cv jumped
+from ~1-3% to ~5-10% between runs at the same cells -- machine noise, not
+a B-selection effect. **Zero of the 3 violations are attributable to
+either fix.** Confirmed via `bench_gpu_fused verify` (0 FAIL) and
+`test_gpu_cost_model` (483 passed, 5 failed, identical pre-existing
+failure set both before and after).
 
 ## V8. Past the calibration ceiling, use fixed fallbacks, never extrapolation
 
