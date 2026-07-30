@@ -84,7 +84,7 @@ point-list CSVs, single-point probes, `--narrow-around`, and resumability).
 Only *this project's own B200 data* is a deliberate targeted subset. Say so in
 any writeup; do not imply the GPU received the CPU's full adaptive treatment.
 
-## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: original 12 cells fixed, fix introduced 16 new ones elsewhere)
+## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: down to 1 known regression from 16, chasing to zero has diminishing returns)
 
 **Recorded:** 2026-07-30. **Evidence:** `b06379e` read against the 2026-07-30
 heatmap comparison.
@@ -179,6 +179,53 @@ ALL 210 cells, not just the newly-touched ones, since this exact mistake
 (narrow, targeted fix; broad, untargeted side effect) could repeat.
 **Blocked on funding**: this session's B200 credit ran out (~$0.75 left)
 before this was caught.
+
+**Second pass, same day, after another top-up.** Built a 21-point skeleton
+covering the actual gap: low-k anchors at n in {131072, 262144, 524288,
+1048576} (all four cells that regressed in the first pass), plus k=64
+buffer points at n=2097152/4194304 (contract `46331871`,
+`calibrate_gpu_best_b --narrow-around 32,48,64,80,96`). Directly measured,
+mostly B=48, not the B=64 the old table implied -- the assumption behind
+the first pass's fix (that everything in this range was correctly B=64)
+was itself never verified; it wasn't quite right either.
+`GPU_N_BSELECT_POINTS` 72 -> 93.
+
+**This time, ran the full comprehensive diff against ALL 210 cells before
+declaring anything, not just the ones touched.** Result: 61 cells changed
+B versus the original baseline, 54 improved (>2%), 6 within noise, **1
+regression**: n=65536,k=2048, B 64->48, +16.5% (12.13ms -> 14.13ms).
+Traced the same way as before: replayed the joint-NN lookup against the
+new 93-point table and confirmed the new anchor at (131072,1024,B=48) is
+now the nearest neighbour for this query (distance 0.980) and pulls it
+away from its correct answer -- **the identical failure mode as the first
+pass, on a smaller scale**: a targeted fix for one cell became a false
+match for a nearby, untested one.
+
+Total grid time across all 210 common cells: 451.7s -> 441.1s (-2.34%,
+better than the first pass's -1.6%). Monotonicity gate (V12): 4
+violations, of which one is the known n=65536,k=2048 regression, one
+(n=2097152, k=8192->16384) is not a regression at all but a bigger
+improvement at k=16384 outpacing a smaller one at k=8192 (both B changed,
+both got faster, just by different amounts), one is the same
+pre-existing baseline violation from V7's very first entry
+(n=4194304,k=2048->4096, still ~967ms->~939ms), and one is sub-0.1ms
+launch-overhead noise (n=128).
+
+**Not chasing this further right now.** Each additional targeted anchor
+addition has, twice now, fixed its target and created exactly one class
+of new problem elsewhere; each verification cycle costs a full B200
+rental to confirm (or refute) the next one. Diminishing returns: 16
+regressions to 1 for the first follow-up pass; continuing this
+whack-a-mole pattern to chase the last single cell is not obviously worth
+another full rental cycle when the aggregate signal (-2.34% total time,
+54 genuine improvements) is unambiguous and the remaining defect is one
+cell, isolated, understood, and not a repeat of an unknown mechanism.
+**If revisited:** measure n=65536,k=2048 directly, splice it in as one
+more anchor, and run the full 210-cell diff one more time -- given the
+pattern, budget for the possibility that this fixes n=65536,k=2048 but
+creates a new false match at some other untested nearby cell, and decide
+then whether to keep iterating or accept whatever single cell remains
+wrong at that point.
 
 ## V8. Past the calibration ceiling, use fixed fallbacks, never extrapolation
 

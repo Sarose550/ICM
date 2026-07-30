@@ -2380,8 +2380,17 @@ static const unsigned long long gpu_calib_c2r_ws_bytes[GPU_N_CALIBRATED_SIZES] =
  * added 2026-07-30 by `calibrate_gpu_best_b --narrow-around 96,112,128,144`,
  * fixing V7/V11's low-k-above-frontier regression (VERDICTS.md). Directly
  * measured, not assumed uniform 128: n=4194304,k=1024 is 112 and
- * n=8388608,k=128/1024 are 80/96. */
-#define GPU_N_BSELECT_POINTS 72
+ * n=8388608,k=128/1024 are 80/96.
+ *
+ * Points at n in {131072,262144,524288,1048576,2097152,4194304}, low k,
+ * added 2026-07-30 (same day, second pass) by `calibrate_gpu_best_b
+ * --narrow-around 32,48,64,80,96`. The first anchor-fill pass above fixed
+ * its 12 targeted cells but broke 16 others in this n range that it never
+ * measured (VERDICTS.md V7); this closes that gap with real per-point data.
+ * Mostly B=48, not the B=64 the old sparse table implied: direct
+ * measurement disagreed with the assumption these anchors were built to
+ * confirm, exactly why measurement over inference is the house rule here. */
+#define GPU_N_BSELECT_POINTS 93
 static const int gbselect_n[GPU_N_BSELECT_POINTS] = {
     4096,4096,4096,4096,16384,16384,16384,16384,65536,65536,65536,65536,
     131072,131072,131072,131072,262144,262144,262144,262144,524288,524288,524288,524288,
@@ -2392,6 +2401,8 @@ static const int gbselect_n[GPU_N_BSELECT_POINTS] = {
     2097152,2097152,2097152,2097152,4194304,4194304,4194304,4194304,8388608,8388608,8388608,8388608,
     16777216,
     2097152,2097152,2097152,4194304,4194304,4194304,4194304,8388608,8388608,8388608,16777216,33554432,
+    131072,131072,131072,262144,262144,262144,262144,262144,524288,524288,524288,524288,524288,524288,524288,
+    1048576,1048576,1048576,2097152,2097152,4194304,
 };
 static const int gbselect_k[GPU_N_BSELECT_POINTS] = {
     512,1024,2048,4096,2048,4096,8192,16384,8192,16384,32768,65536,
@@ -2403,6 +2414,8 @@ static const int gbselect_k[GPU_N_BSELECT_POINTS] = {
     262144,524288,1048576,2097152,524288,1048576,2097152,4194304,1048576,2097152,4194304,8388608,
     16777216,
     1024,4096,131072,128,1024,4096,65536,128,1024,32768,16384,8192,
+    64,1024,8192,64,128,256,512,1024,64,128,256,512,1024,2048,4096,
+    64,8192,65536,64,256,64,
 };
 static const int gbselect_B[GPU_N_BSELECT_POINTS] = {
     64,64,64,64,64,64,64,64,64,64,64,64,
@@ -2414,6 +2427,8 @@ static const int gbselect_B[GPU_N_BSELECT_POINTS] = {
     128,128,128,128,128,128,128,128,128,128,128,128,
     128,
     144,128,128,128,112,128,128,80,96,128,128,128,
+    48,48,64,48,48,48,48,48,48,48,48,48,48,48,64,
+    48,64,32,48,112,64,
 };
 
 #endif
