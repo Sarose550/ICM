@@ -250,7 +250,7 @@ does not exist yet and is queued; it also backs the paper's dispatch-accuracy
 claims. **Disclose this scoping decision in the paper** rather than leaving a
 reviewer to discover it.
 
-## V16. Zen4 CPU bselect table is systematically wrong at k=10 (OPEN, unfixed)
+## V16. select_best_B() discarded the calibration table's answer whenever k was small (FIXED)
 
 **Recorded:** 2026-07-30. **Evidence:** `tools/sweep_best_b.sh --device zen4`,
 first run ever on real hardware, `results/b_optimal_sweep_zen4_2026-07-30.csv`.
@@ -261,23 +261,48 @@ point (worst: n=65536, 44.4%; best: n=32768, 34.0%). No other `k` value shows
 this pattern this consistently; the next-worst offenders are scattered
 one-offs at 15-27%.
 
-This is not the V11/V7 joint-NN shadowing bug: `test_bselect_lookup.c` passes
-113/113 on this exact box at this exact commit, so the lookup algorithm is
-correctly finding its nearest calibrated anchor. The defect, if there is one,
-is upstream: either the calibration table (`bselect_*` in
-`devices/zen4/fft_config.h`, built by `tools/calibrate_best_b.c`) has bad data
-at low k, or `tools/calibrate_best_b.c` and `tools/validate_best_b.c` (the
-sweep's single-point oracle) measure this regime differently and one of them
-is wrong. Both are plausible; neither is diagnosed yet.
+This was not the V11/V7 joint-NN shadowing bug: `test_bselect_lookup.c` passed
+113/113 on this exact box, so the table lookup itself was fine. Confirmed by
+reproducing the raw joint-NN lookup in Python directly against
+`devices/zen4/fft_config.h`: at k=10, the table's real answer is B=16 or B=32
+for essentially every n tested. The table was never wrong.
 
-**Do not patch this by hand-editing the table.** Same rule as everywhere else
-in this file: find the mechanism first. Likely next step: rerun
-`calibrate_best_b.c` at k=10 specifically with elevated rep count and compare
-against `validate_best_b.c`'s reps/methodology to see where they disagree.
+**Root cause: `select_best_B()` (`src/cpu/icm.c`) discarded that answer before
+ever checking it.** Its candidate-validity filter was `if (B > k || B > n)
+continue;` over candidates `{8,16,24,32,48,64}`. Since 16 is the second-smallest
+candidate, any `k < 16` eliminates every candidate except 8, so the function
+returned B=8 unconditionally for k<16, regardless of what the table said. The
+`B > k` clause was a straight carryover from the pre-empirical analytical
+version of this function (`d128bca2`, March 2026) that nobody revisited when
+`c70ca4e` (July 22) swapped in the calibration-table lookup. It was never a
+correctness requirement: `tree_ctx_create_ex2()` already caps each tree
+level's working polynomial size at `min(B * 2^level, k)`, so B > k is
+structurally fine.
 
-**Not yet checked on M3 Pro or GPU.** This may be Zen4-specific, or may be a
-property of k=10 as a boundary case (smallest k in the grid) that reproduces
-everywhere.
+**Fixed:** removed the `B > k` clause (kept `B > n`, which guards a different,
+still-real case: nearest-neighbor answers that don't fit tiny n, e.g. B=32 for
+n=20). The identical bug existed in the GPU path
+(`gpu_select_best_B_est()`, `src/gpu/gpu_cost_model.cu`) and got the same fix.
+
+**Re-verified on Zen4** (`tools/sweep_best_b.sh --force`, full grid): exact
+`auto_B == best_B` matches rose from 23/65 to 31/65, within-3% from 28/65 to
+38/65, and the k=10 column is gone from the worst-offenders list entirely
+(remaining worst offenders are unrelated large-k cells at 14-22%, pre-existing
+ordinary nearest-neighbor imprecision, not this bug).
+
+**Practically low-stakes for full-equity CPU dispatch**, worth noting: the
+crossover table (`crossover_n[]`/`crossover_k[]`) never returns a threshold
+below k~249 anywhere (clamped at both ends), and doesn't depend on
+`select_best_B()` at all. So for `icm_equity()`'s normal full-equity path,
+linear always wins below k~250 regardless of this bug -- B gets computed and
+silently discarded in that branch. The bug mattered for: subset-query dispatch
+(a different code path, `n_targets > 0`, not gated by the same crossover
+table), any tool or caller that forces/queries the hybrid engine directly at
+low k (which is exactly how `sweep_best_b.sh`'s `validate_best_b.c` found it),
+and the GPU path where the equivalent crossover gate does not exist. Not yet
+checked whether M3 Pro's table shows the same k<16 pattern -- expected to,
+since the bug is in shared `src/cpu/icm.c`, not per-device data, but unverified
+(M3 Pro out of scope this session).
 
 ## Unverified recollections
 

@@ -848,11 +848,18 @@ int gpu_empirical_best_B(int n, int k) {
 }
 
 int gpu_select_best_B_est(int n, int k_pad, const std::vector<int> &smooth) {
+    /* B need NOT be <= k_pad: build_tree_geometry() already caps each
+     * level's polynomial size at k_pad (see its "boundary level" comment),
+     * so a block size larger than k_pad is structurally fine. A `B > k_pad`
+     * filter here mirrors a CPU bug fixed the same day (VERDICTS.md V16,
+     * src/cpu/icm.c's select_best_B()): it silently discarded the
+     * calibration table's answer whenever k_pad was small, since every
+     * GPU candidate above 16 exceeds any k_pad < 24. Removed. */
     int emp_B = gpu_empirical_best_B(n, k_pad);
     int largest_valid = -1;
     for (int i = 0; i < MAX_B_CANDIDATES; ++i) {
         int B = kBCandidates[i];
-        if (B > n || B > k_pad) continue;
+        if (B > n) continue;
         if (B == emp_B) return B;
         if (B > largest_valid) largest_valid = B;
     }

@@ -2702,18 +2702,27 @@ static int select_best_B(int n, int k) {
      * empirical_best_B(): B is a discrete choice, not a continuous
      * threshold, so nearest-neighbor, not interpolation.
      *
-     * The calibration grid starts at n=512, k=150; for values outside
-     * that practical range the nearest-neighbor lookup can still return
-     * a B that doesn't fit this specific (n,k) (e.g. B=32 for n=20) --
-     * fall back to the largest valid candidate at or below n and k in
-     * that case, never invalid. */
+     * B need NOT be <= k: tree_ctx_create_ex2() already caps each level's
+     * working polynomial size at min(B * 2^level, k), so a block size
+     * larger than k is structurally fine, not a correctness hazard. A
+     * `B > k` filter here used to silently discard the table's answer
+     * whenever k was small (every candidate above 8 exceeds any k < 16),
+     * forcing B=8 regardless of what was actually fastest -- found via
+     * tools/sweep_best_b.sh, VERDICTS.md V16, 37-44% slower than the
+     * measured optimum at k=10 across every n tested. Removed.
+     *
+     * B > n is a different case: the calibration grid starts at n=512,
+     * so for small n outside that practical range the nearest-neighbor
+     * lookup can still return a B that doesn't fit (e.g. B=32 for n=20) --
+     * fall back to the largest valid candidate at or below n in that
+     * case, never invalid. */
     int candidates[] = {8, 16, 24, 32, 48, 64};
     int n_cand = 6;
     int emp_B = empirical_best_B(n, k);
     int largest_valid = -1;
     for (int ci = 0; ci < n_cand; ci++) {
         int B = candidates[ci];
-        if (B > k || B > n) continue;
+        if (B > n) continue;
         if (B == emp_B) return B;
         if (B > largest_valid) largest_valid = B;
     }
