@@ -392,8 +392,12 @@ to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 - BQ=8 batched linear with interleaved layout (native AVX-512 width)
 - L2-aware checkpointing with 1MB per-core L2
 - B=24/32, cost model adapts to Zen 4's wider schoolbook-FFT crossover.
-  Empirical B-selection table in `devices/zen4/fft_config.h`: B=32 in 21/34 grid points,
-  B=24 in the remaining 13 (see `results/b_optimal_report_zen4.md`).
+  Empirical B-selection table in `devices/zen4/fft_config.h`. Note
+  `results/b_optimal_report_zen4.md` is a **superseded historical artifact**: it
+  validated the analytical `select_best_B` that was replaced by the empirical
+  table one commit later, and its 21/34 split refers to that earlier, much
+  smaller grid. The current table holds 1944 points. See the header of that
+  report and `VERDICTS.md` V11.
 
 ## FFT Phase Split (Zen 4 7950X)
 

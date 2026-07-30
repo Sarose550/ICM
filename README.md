@@ -120,8 +120,13 @@ analytical formulas:
    determined by direct timing on the target machine (precedent: LAPACK's
    `ILAENV` `NX` parameter).
 2. **Block size B inside the hybrid engine.** `empirical_best_B(n, k)` does a
-   2D nearest-neighbor lookup over a calibrated `(n,k,B)` grid, returning one
-   of `{8, 16, 24, 32, 48, 64}`. No interpolation; B is a discrete choice.
+   single-pass **joint** `(n,k)` nearest-neighbor lookup in log space
+   (`hypot(log n - log n_i, log k - log k_i)`) over a calibrated `(n,k,B)`
+   grid, returning one of `{8, 16, 24, 32, 48, 64}`. No interpolation; B is a
+   discrete choice. The word "joint" is load-bearing: resolving nearest `n`
+   first and nearest `k` second is a different and wrong answer, because
+   sparse calibration points then shadow dense grid rows.
+   `tools/test_bselect_lookup.c` pins this in CI.
 3. **Per tree level: schoolbook vs FFT, and which FFT size.**
    `best_fft_config()` / `best_fft_config_joint()` compare the real calibrated
    per-size FFT timing (`calib_times_ns[]`) against the schoolbook multiply

@@ -1,6 +1,25 @@
 # D12: Empirically-Optimal Block Size B as a Function of k (and n)
 
-**Date:** 2025-07-22
+> **SUPERSEDED. Read this before trusting anything below.**
+>
+> This report validated the **analytical** `select_best_B()`, and it was
+> correct at the time. That formula was replaced by an empirical lookup table
+> in commit `c70ca4e`, **the same day**, and the table was regenerated with an
+> adaptive skeleton in `7157cc7`. The "effectively perfect, 94/95 cells"
+> conclusion below therefore describes code that no longer exists.
+>
+> This artifact is the reason a real B-selection defect went unnoticed for a
+> week: it created justified confidence in a component that had since been
+> rewritten, and no equivalent validation was run against the replacement. The
+> defect (sequential rather than joint nearest-neighbour lookup, costing 24% at
+> n=4096, k=4096 on M3 Pro) was found on 2026-07-30 and fixed in `bf2886b`.
+>
+> Kept, not deleted: the measurements are real and the methodology is sound.
+> Do not cite it as evidence about current behaviour. Current status lives in
+> `VERDICTS.md` (V11), and the standing validation tool is
+> `tools/sweep_best_b.sh`, which has **not yet been run on hardware**.
+
+**Date:** 2026-07-22
 **Hardware:** AMD Zen4 (EPYC, 185.8.107.239), governor=performance
 **Status:** Complete
 
