@@ -6,8 +6,9 @@
  * machine-readable line to stdout.
  *
  * The orchestration of which points to probe is handled by
- * tools/calibrate_block_size.py (A4), which calls this binary
- * one point at a time as its oracle.
+ * tools/calibrate_adaptive.py, which calls this binary one point at a
+ * time as its oracle (its own best_B, already computed here, is taken
+ * directly -- no second measurement).
  *
  * Usage:
  *   ./validate_planner_gpu <n> <k> [Q]
@@ -170,7 +171,7 @@ int main(int argc, char **argv) {
                      : 0.0;
 
     /* Machine-readable single line to stdout; parsed by
-     * tools/calibrate_block_size.py (A4).
+     * tools/calibrate_adaptive.py (calib_common.run_validate_probe()).
      * Columns: auto_B,auto_ms,best_B,best_ms,gap_pct */
     printf("%d,%.6f,%d,%.6f,%.2f\n",
            auto_B, auto_ms, best_B, best_ms, gap_pct);

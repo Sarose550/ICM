@@ -278,7 +278,7 @@ def main() -> None:
         '--hi', type=int, default=None,
         help='Maximum n (inclusive).  CPU default 65536 (keeps the k=n root-level '
              'FFT length 2n-1 within the calibrated FFT table, which caps at '
-             '131072); GPU default 4194304.'
+             '131072); GPU default 33554432.'
     )
     parser.add_argument(
         '--ratio', type=float, default=None,
@@ -305,7 +305,7 @@ def main() -> None:
     if lo is None:
         lo = 1024 if is_gpu else 256
     if hi is None:
-        hi = 4194304 if is_gpu else 65536
+        hi = 33554432 if is_gpu else 65536
     if ratio is None:
         ratio = 1.8 if is_gpu else 1.6
 

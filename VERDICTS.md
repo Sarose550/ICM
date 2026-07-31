@@ -107,6 +107,29 @@ transparent tradeoff rather than an implicit one. See the tooling commit
 for the full detail. Not yet run for real on B200 (would need funding);
 this is a tooling fix, not a claim that V7's remaining cell is now closed.
 
+**Superseded, same day.** The user asked for a fully non-discretionary,
+one-command production tool -- patching `calibrate_block_size.py`'s
+Step 2/Step 4 split still left real hand-tuned knobs (`--skeleton-lo/hi`,
+`--clean-streak-target`, `--max-probes-per-band`) a fresh device port
+would have to guess at. Replaced entirely with
+`tools/calibrate_adaptive.py` (+ shared `tools/calib_common.py`):
+priority-queue refinement scored by the same joint-log-distance metric
+the production lookup itself uses (plus a disagreement-with-neighbors
+bonus), a single required `--budget` knob (probe count or wall-clock
+time), and a convergence stopping rule (top-of-queue score below
+threshold on a fresh sample) instead of per-band random walks.
+`calibrate_block_size.py` is deleted. `gen_calib_skeleton.py`'s GPU
+domain default was also fixed while doing this (was `4194304`, real
+GPU usage per `heatmap_gpu.cu` goes to `33554432`) -- an 8x undershoot
+that had been silently baked into every prior calibration default.
+`--skeleton-lo/hi` remain as an explicit opt-in narrowing (used for this
+project's own targeted fixes); the unscoped default is the full domain,
+so a fresh device port gets real coverage with zero required judgment
+calls. See the tooling commit for the full design rationale. Not yet
+run for real on any device (needs a CPU smoke test first, then funded
+runs on both platforms) -- this closes the "how do we reproduce this"
+question, not V7's remaining cell.
+
 ## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: down to 1 known regression from 16, chasing to zero has diminishing returns)
 
 **Recorded:** 2026-07-30. **Evidence:** `b06379e` read against the 2026-07-30

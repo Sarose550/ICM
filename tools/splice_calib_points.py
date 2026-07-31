@@ -7,7 +7,7 @@ This is the canonical, reproducible second half of V6's targeted-anchor
 methodology (VERDICTS.md): measure specific (n,k) points directly with
 --narrow-around (cheap, avoids the full 48-candidate sweep that VERDICTS.md
 V6 measured at ~$28/4.5h for the B200's large-n region), then land the
-result. Reuses calibrate_block_size.py's inject_table()/read_existing_table()
+result. Reuses calib_common.py's inject_table()/read_existing_table()
 so there is exactly one implementation of "safely merge a new (n,k,B) point
 into the live table" in the repo, not one written by hand at each call site.
 Hand-editing devices/<device>/*fft_config.h directly is what this replaces;
@@ -35,25 +35,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from calibrate_block_size import DEVICE_META, inject_table, read_existing_table  # noqa: E402
-
-
-def read_points_csv(path: str) -> list[tuple[int, int, int]]:
-    points: list[tuple[int, int, int]] = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("n,k"):
-                continue
-            parts = line.split(",")
-            if len(parts) != 3:
-                continue
-            try:
-                n, k, b = int(parts[0]), int(parts[1]), int(parts[2])
-            except ValueError:
-                continue
-            points.append((n, k, b))
-    return points
+from calib_common import (DEVICE_META, inject_table, read_existing_table,  # noqa: E402
+                          read_points_csv)
 
 
 def main() -> None:
