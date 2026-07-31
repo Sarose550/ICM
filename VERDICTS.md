@@ -125,10 +125,87 @@ that had been silently baked into every prior calibration default.
 `--skeleton-lo/hi` remain as an explicit opt-in narrowing (used for this
 project's own targeted fixes); the unscoped default is the full domain,
 so a fresh device port gets real coverage with zero required judgment
-calls. See the tooling commit for the full design rationale. Not yet
-run for real on any device (needs a CPU smoke test first, then funded
-runs on both platforms) -- this closes the "how do we reproduce this"
-question, not V7's remaining cell.
+calls. See the tooling commit for the full design rationale.
+
+**First real run, 2026-07-31: found a serious design flaw, reverted,
+nothing shipped.** Ran `calibrate_adaptive.py --device b200
+--skeleton-lo 1024 --skeleton-hi 524288 --budget 20m` for real (contract
+`46358305`). It worked as designed and found far more real disagreement
+than expected: 520 probes in 20 minutes, most landing well off the
+standard heatmap grid (random log-uniform points like n=1980, n=90283,
+n=411295 -- points nobody had ever measured before), many with large
+gaps (39-87%). This itself is a genuine, valuable discovery: the old
+table was only ever validated against a fixed grid of "nice" n values;
+between those points its true accuracy had never been measured and
+turns out to be much worse than assumed.
+
+**But applying all 520 fixes together made the table measurably worse
+on the standard grid it's actually judged against.** A `heatmap_gpu
+--fast` diff (n=64-524288, the grid `bench_gpu`/`heatmap_gpu` actually
+test) against the pre-run baseline showed 36 regressions out of 84
+cells, several catastrophic (n=1024,k=64 B64->384 +96%; n=16384,k=64
+B64->1024 +260%; n=2048,k=512 B64->1280 +281%), and the grid's total
+time got **worse**, not better (+4.57% vs the pre-run baseline).
+Independently re-confirmed two of the worst with direct, freshly-built
+`validate_planner_gpu` probes to rule out a stale-binary artifact (there
+was actually a real one mid-session -- see below -- but it does not
+explain this): `n=2048,k=512` now dispatched B=1280 when direct
+measurement said B=64 is right (gap 292.75%); `n=16384,k=64` dispatched
+B=1024 against a true B=48 (gap 265.32%). Both are real, not measurement
+noise, and both are much worse than what the *unmodified* baseline
+already had at those same cells (63.04% and 7.31% gaps respectively --
+the baseline was already imperfect there, but nowhere near this badly).
+
+**Root cause: pure joint-log-distance nearest-neighbor is not a safe
+table-construction strategy for this function.** Two compounding
+factors, both real: (1) `B*(n,k)` is far noisier / more locally variable
+than the "smooth regions with occasional cliffs" model implicit in
+nearest-neighbor lookup assumes -- confirmed by how much real
+disagreement 520 essentially-random samples turned up. (2)
+`validate_planner_gpu`/`validate_best_b` measure with a single rep, no
+repeats -- confirmed contaminating results directly: one probe during
+the run reported `auto_B=64, best_B=64, gap=21.44%` for the *same* B,
+which can only be timing noise between two separate single-shot runs.
+Combined, a single new point -- possibly itself noisy -- can become the
+nearest neighbor for many nearby *unmeasured* queries and silently pull
+them to a worse answer, exactly the V7 failure mode, but now happening
+at the scale of hundreds of essentially-random points instead of a
+handful of deliberately-chosen ones.
+
+**Reverted in full.** `devices/b200/gpu_fft_config.h` was restored to
+the exact committed state (93 points, `md5 d23ad491...`) before
+rebuilding and destroying the instance. Nothing from this run shipped,
+including the one manually re-derived point (`65536,2048,B=80`) that
+*was* correctly measured -- it's real and could be re-added on its own,
+but landing it alone, separately from the broken bulk run, was judged
+not worth a special-cased partial commit tonight. `results/gpu_heatmap_
+b200_20260731_adaptive.csv` and `..._final.csv` are kept as evidence of
+this finding, not as usable calibration data -- do not treat either as
+a baseline.
+
+**Also found and fixed mid-session (operational, not a data problem):**
+`validate_planner_gpu`'s default binary path
+(`./build/validate_planner_gpu`) doesn't match where the Makefile
+actually places it (repo root, `./validate_planner_gpu`); worked around
+with an explicit `--validate-bin` flag, needs a real default-path fix
+(see the flag-rename item below, batch it in). Separately, a real
+stale-binary trap: rebuilding one target (e.g. `make validate_planner_
+gpu`) does NOT relink other already-built executables (`heatmap_gpu`)
+even when their shared `.o` dependencies changed underneath them --
+always rebuild every binary you're about to run after any config
+change, not just the one you think you need.
+
+**Do not run `calibrate_adaptive.py` again as a table-construction tool
+until this is fixed.** It remains an excellent, honest *discovery* tool
+(the disagreement rate it found is itself useful signal about the old
+table's real coverage gaps). As a tool that *writes* the live table, it
+needs at least one of: multi-rep/median measurement in
+`validate_best_b`/`validate_planner_gpu` to kill single-shot noise, and
+a smarter merge strategy than raw nearest-neighbor (e.g. require a
+confirmation probe on nearby *existing* points before accepting a new
+one, or a distance-weighted local fit instead of pure NN) so one new
+point can't silently override answers for queries it was never actually
+tested against.
 
 ## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: down to 1 known regression from 16, chasing to zero has diminishing returns)
 
