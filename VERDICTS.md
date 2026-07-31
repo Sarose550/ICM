@@ -273,6 +273,104 @@ now report a low, stable gap_pct against the known-good B; only after
 that spot check passes is a real re-run over the broken domain
 (n=1,024-524,288) worth funding.
 
+**Spot check executed, confirmed the fix, same night.** Rented a fresh
+B200 (contract `46367689`), rebuilt with the fix, re-probed the three
+cells directly: n=2048,k=512 gap collapsed 292.75% -> -0.10%;
+n=16384,k=64 collapsed 265.32% -> 0.34%; n=65536,k=2048 (the one
+already-known-real regression, unrelated to the noise bug) stayed at
+17.76%, essentially unchanged from its documented 16.5%. Exactly the
+right signature: fake noise-driven signal collapsed to zero, real
+signal stayed real. The timing-noise root cause is confirmed correct.
+
+**Same night, M3 Pro (real hardware, CPU side): clean, real result,
+shipped.** `calibrate_adaptive.py --device m3_pro --budget 25m` with
+the fixed `validate_best_b`: 92 probes, 2466 -> 2558 points,
+budget-capped but nearly converged (top score 0.1453 vs 0.15
+threshold). Gaps modest throughout (0-8%), no wild swings -- CPU's
+narrower 8x B-candidate range (vs GPU's 96x) is much less exposed to
+the mechanism above, and the fix confirms that empirically as well as
+analytically. `bench_grid verify` PASSED, `bench_grid crossover` sane,
+`libicm.a`/`libicm.dylib` both build clean. Committed `af219d0`.
+
+**Same night, real full re-run over the broken GPU domain: found a
+SECOND, separate failure mode, not shipped.** With the noise bug fixed
+and individually confirmed correct, ran
+`calibrate_adaptive.py --device b200 --n-min 1024 --n-max 524288
+--budget 20m` for real (contract `46367689` again) -- the actual
+domain round 3 broke. 252 probes, 93 -> 345 points, budget-capped
+(top score 1.31, well above threshold -- lots of genuine signal in
+this newly-explored region). `bench_gpu_fused verify` (0 FAIL) and
+`test_gpu_cost_model` (483/5, identical pre-existing failures) both
+clean.
+
+**But the mandatory full diff against the original `..._20260728.csv`
+baseline showed 40 regressions out of 84 `--fast`-range cells, some
+catastrophic** (n=1024,k=128: B64->1024, +402.7%; n=65536,k=128:
+B64->1536, +329.3%; n=32768,k=256: B64->1536, +275.1%), **total time
++5.23% worse than the original baseline** -- materially worse than
+round 3's own 36/84 disaster, despite every individual measurement now
+being genuinely correct (spot-checked above). This is NOT the noise
+bug reappearing. It is a second, separate, previously-undiagnosed
+mechanism:
+
+**Root cause: correct individual measurements do not make a sparse
+nearest-neighbor table safe.** B*(n,k) has real local structure in
+this small-n region (unlike the large-n region rounds 1-2 touched,
+which already had reasonably dense prior coverage). Populating a
+previously-empty region from scratch via priority-queue sampling
+means every injected point becomes the nearest neighbor for a
+*neighborhood* of never-directly-probed queries, and nothing checks
+whether the neighborhood actually agrees with the one point that got
+measured. `calibrate_adaptive.py`'s original design (this session,
+`b8a68f3`) deliberately removed the old orchestrator's dense
+base-sweep step as "redundant, adaptive refinement finds gaps on its
+own" -- that judgment was wrong for genuinely unexplored regions. The
+base sweep wasn't just expensive waste; it also guaranteed the
+baseline local density nearest-neighbor lookup implicitly assumes.
+Removing it without replacing that guarantee is what let this ship
+undetected tonight, exactly as removing per-candidate noise robustness
+let round 3 ship undetected.
+
+**Not shipped.** `devices/b200/gpu_fft_config.h` was never touched
+locally (`live_table` only lived on the remote instance, an important
+accident of this session's architecture); nothing to revert. The
+broken 345-point table is preserved as
+`results/gpu_fft_config_20260731_run2_BROKEN_evidence.h`, and its
+heatmap as `results/gpu_heatmap_b200_20260731_run2_final.csv`, both
+evidence, neither usable calibration data. Instance destroyed
+(`46367689`).
+
+**Fix, built and validated the same night: a canary safety net in
+`calibrate_adaptive.py` itself (commit follows this entry), not a
+heuristic wrapper.** Before any run, snapshot the config header byte-
+for-byte and measure a small, fixed, held-out canary set (3 k-fractions
+per landmark n-anchor, deliberately disjoint from the landmark and
+adaptive-refinement k-fractions) using the exact same converged
+oracle (`run_validate_probe`) everything else in this session already
+trusts. After the run, rebuild `validate_bin` against the new table
+(the caller MUST supply `--rebuild-cmd`; there is no safe default --
+GPU needs an environment-specific `CUFFTDX_INC`, and `validate_best_b`
+has no Makefile target at all, so a guessed default risked silently
+verifying against a stale binary, exactly the trap that caused a
+`test_gpu_cost_model`/`heatmap_gpu` staleness bug earlier this same
+session) and re-measure the same canaries. Auto-revert to the exact
+pre-run snapshot if the aggregate regresses >2% or any single canary
+regresses >5%; otherwise keep. Validated three ways before trusting
+it: (1) a real, live M3 Pro run through the full pass path, confirmed
+by direct md5sum that nothing changed when canaries agreed; (2) a
+real, live run with a deliberately broken `--rebuild-cmd`, confirmed
+by direct md5sum that the file was restored byte-for-byte; (3) direct
+unit tests of the comparison logic against synthetic data, including a
+literal replay of tonight's own worst cell (n=1024,k=128,
++402.7%) to confirm it fails exactly the way it should. This closes
+the fail-safe gap that let tonight's run and round 3 both ship
+undetected -- it does not fix the underlying density assumption (see
+above), which remains a real, disclosed limitation: `--budget` alone
+still can't guarantee a new region gets dense enough coverage for
+nearest-neighbor to be locally valid, only that whatever the run does
+produce is net-positive on the canaries actually checked, before it's
+trusted.
+
 ## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: down to 1 known regression from 16, chasing to zero has diminishing returns)
 
 **Recorded:** 2026-07-30. **Evidence:** `b06379e` read against the 2026-07-30

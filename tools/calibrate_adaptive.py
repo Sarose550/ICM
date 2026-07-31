@@ -15,6 +15,24 @@ Key fixes over the old orchestrator:
      to, and the old approach assumed the true answer was close to the
      (known-wrong) dispatched answer, which real data disproved.
 
+Canary safety net (2026-07-31, see VERDICTS.md V6): even with every
+individual measurement now correct (no single-rep noise), a run that
+populates a previously-sparse region from scratch can STILL make things
+worse in aggregate. B*(n,k) has real local structure; a nearest-neighbor
+answer measured at one point can be the wrong answer for a nearby,
+never-probed query even when the measurement itself is perfectly honest.
+Proven twice on real B200 data: once with the noise bug present, once
+after fixing it. This is a second, separate failure mode from measurement
+noise, not fixed by the median/cv-convergence fix above.
+
+The fix here is NOT a heuristic — it re-runs the exact same trustworthy,
+converged measurement (run_validate_probe) at a fixed, held-out canary
+set, before and after the run, and auto-reverts the entire config header
+to its pre-run snapshot if the canaries got worse. No back-and-forth: the
+tool decides for itself whether its own work was net-positive before
+committing to it. See --skip-canary-check to bypass (testing only; a
+production run should never need to).
+
 Usage:
   python3 tools/calibrate_adaptive.py --device m3_pro --budget 100
   python3 tools/calibrate_adaptive.py --device b200 --budget 30m
@@ -167,6 +185,89 @@ def _run_skeleton_for_landmarks(
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Canary safety net
+# ────────────────────────────────────────────────────────────────────────────
+
+CANARY_K_FRACTIONS = (6, 3, 1.5)  # n/6, n/3, 2n/3 — deliberately NOT the
+                                   # landmark k-fractions (2, 16, n/8, n/4,
+                                   # n/2, n), so canaries are genuinely
+                                   # held-out, not just re-checking points
+                                   # the run already probed directly.
+CANARY_REGRESSION_TOLERANCE = 0.05  # per-cell: >5% slower fails a canary
+CANARY_AGGREGATE_TOLERANCE = 0.02   # total time: >2% slower fails the run
+
+
+def _generate_canaries(landmark_ns: list[int]) -> list[tuple[int, int]]:
+    """
+    Fixed, held-out (n,k) set for the before/after safety check: 3 k
+    fractions per landmark n-anchor, chosen to avoid the landmark
+    points' own k-fraction set (see CANARY_K_FRACTIONS comment).
+    """
+    canaries: list[tuple[int, int]] = []
+    for n in landmark_ns:
+        seen: set[int] = set()
+        for frac in CANARY_K_FRACTIONS:
+            k = max(2, min(n, int(n / frac)))
+            if k not in seen:
+                seen.add(k)
+                canaries.append((n, k))
+    return canaries
+
+
+def _measure_canary_set(validate_bin: str, canaries: list[tuple[int, int]],
+                        is_gpu: bool) -> dict[tuple[int, int], float]:
+    """
+    Measure auto_ms (current dispatch's own converged timing) at every
+    canary point. Reuses run_validate_probe -- the same adaptive
+    median/cv-convergence oracle everything else in this tool trusts,
+    not a separate ad-hoc timing path.
+    """
+    times: dict[tuple[int, int], float] = {}
+    for n, k in canaries:
+        probe = run_validate_probe(validate_bin, n, k, is_gpu)
+        times[(n, k)] = probe["auto_ms"]
+    return times
+
+
+def _compare_canaries(
+        before: dict[tuple[int, int], float],
+        after: dict[tuple[int, int], float]
+) -> tuple[bool, str]:
+    """
+    Compare before/after canary timings. Returns (passed, report_text).
+    FAILS if any single canary regressed beyond CANARY_REGRESSION_TOLERANCE
+    or if the aggregate total regressed beyond CANARY_AGGREGATE_TOLERANCE.
+    """
+    lines = []
+    total_before = 0.0
+    total_after = 0.0
+    worst_regressions: list[tuple[tuple[int, int], float]] = []
+    for key in before:
+        tb = before[key]
+        ta = after.get(key, tb)
+        total_before += tb
+        total_after += ta
+        if tb > 0:
+            pct = (ta - tb) / tb
+            if pct > CANARY_REGRESSION_TOLERANCE:
+                worst_regressions.append((key, pct))
+    worst_regressions.sort(key=lambda x: -x[1])
+
+    agg_pct = (total_after - total_before) / total_before if total_before > 0 else 0.0
+    lines.append(f"  Canary cells:          {len(before)}")
+    lines.append(f"  Total time before:     {total_before:.3f}")
+    lines.append(f"  Total time after:      {total_after:.3f}  ({agg_pct*100:+.2f}%)")
+    lines.append(f"  Cells regressed >{CANARY_REGRESSION_TOLERANCE*100:.0f}%:    {len(worst_regressions)}")
+    for (n, k), pct in worst_regressions[:10]:
+        lines.append(f"    n={n} k={k}: {pct*100:+.1f}%")
+    if len(worst_regressions) > 10:
+        lines.append(f"    ... and {len(worst_regressions) - 10} more")
+
+    passed = (agg_pct <= CANARY_AGGREGATE_TOLERANCE) and (len(worst_regressions) == 0)
+    return passed, "\n".join(lines)
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Budget parsing
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -243,7 +344,40 @@ def main() -> None:
                         help="Run Step 1 skeleton generation only, print "
                              "a domain summary, then exit before any "
                              "measurement.")
+    parser.add_argument("--skip-canary-check", action="store_true",
+                        help="Skip the before/after canary safety net (see "
+                             "module docstring). Testing only -- a "
+                             "production run should never need this, and "
+                             "skipping it means a net-negative run can ship "
+                             "silently, exactly what caused the regression "
+                             "this check exists to catch (VERDICTS.md V6).")
+    parser.add_argument("--rebuild-cmd", type=str, default=None,
+                        help="Shell command that rebuilds --validate-bin "
+                             "from the config header this run writes to. "
+                             "REQUIRED unless --skip-canary-check is set: "
+                             "validate_bin is a compiled binary with the "
+                             "config #include'd at build time, so the "
+                             "post-run canary re-measurement is silently "
+                             "meaningless (reads the OLD table) without a "
+                             "real rebuild in between. There is no safe "
+                             "default -- GPU builds need an environment- "
+                             "specific CUFFTDX_INC path, and validate_best_b "
+                             "has no Makefile target at all (manual gcc "
+                             "only, see its own docstring), so a guessed "
+                             "default here could silently build nothing "
+                             "or the wrong thing. Example (GPU): "
+                             "'make validate_planner_gpu CUDA_ARCH=sm_100 "
+                             "CUFFTDX_INC=-I/path/to/mathdx/include'.")
     args = parser.parse_args()
+
+    if not args.skip_canary_check and args.rebuild_cmd is None and not args.dry_run:
+        parser.error(
+            "--rebuild-cmd is required (or pass --skip-canary-check to "
+            "explicitly opt out, testing only). The canary safety net "
+            "re-measures dispatch after this run's changes, which needs "
+            "validate_bin rebuilt against the NEW config header first -- "
+            "otherwise the 'after' measurement silently reads the OLD "
+            "table and the whole check is meaningless. See --help.")
 
     device = args.device
     meta = dict(DEVICE_META[device])  # shallow copy so we can override
@@ -327,6 +461,22 @@ def main() -> None:
         print(f"── Step 0: Loaded {len(live_table)} pre-existing calibrated "
               f"points from {meta['config_header']} (will be preserved) ──")
         print()
+
+    # ── Step 0b: Snapshot config header + measure canary baseline ──────
+    # Snapshot BEFORE anything is written, so a revert is a byte-exact
+    # restore, not a reconstruction. Canaries measured now, at the
+    # current (pre-run) dispatch, using the same converged oracle
+    # everything else here trusts -- see module docstring.
+    canaries = _generate_canaries(landmark_ns)
+    header_snapshot: Optional[str] = None
+    canary_before: dict[tuple[int, int], float] = {}
+    if not args.skip_canary_check:
+        with open(meta["config_header"], "r") as f:
+            header_snapshot = f.read()
+        print(f"── Step 0b: Measuring {len(canaries)} held-out canary "
+              f"cells (pre-run baseline) ──")
+        canary_before = _measure_canary_set(validate_bin, canaries, is_gpu)
+        print(f"  Baseline captured.\n")
 
     # ── Step 1 (continued): Probe landmark points ──────────────────────
     # Skip any landmark (n,k) already in the existing table
@@ -543,6 +693,60 @@ def main() -> None:
     else:
         print(f"  Status:               STOPPED (unexpected exit)")
 
+    print()
+
+    # ── Step 4: Canary safety net ───────────────────────────────────────
+    if args.skip_canary_check:
+        print("── Step 4: Canary check SKIPPED (--skip-canary-check) ──")
+        print("  Not verified against a real regression. Do not treat "
+              "this run's table changes as trustworthy without a manual "
+              "check.")
+        print()
+        return
+
+    if total_points_added == 0:
+        print("── Step 4: Canary check SKIPPED (nothing was added) ──")
+        print()
+        return
+
+    print("── Step 4: Rebuilding validate_bin against the new table ──")
+    print(f"  Running: {args.rebuild_cmd}")
+    rebuild = subprocess.run(args.rebuild_cmd, shell=True,
+                             capture_output=True, text=True)
+    if rebuild.returncode != 0:
+        print(f"  REBUILD FAILED (exit {rebuild.returncode}). Cannot "
+              f"verify -- reverting to the pre-run snapshot out of an "
+              f"abundance of caution (an unverifiable change is treated "
+              f"the same as a failed one).")
+        print(rebuild.stderr[-2000:])
+        with open(meta["config_header"], "w") as f:
+            f.write(header_snapshot)
+        print(f"  Reverted {meta['config_header']} to its pre-run state.")
+        print()
+        return
+    print("  Rebuild OK.\n")
+
+    print(f"── Step 4 (continued): Re-measuring {len(canaries)} canary "
+          f"cells (post-run) ──")
+    canary_after = _measure_canary_set(validate_bin, canaries, is_gpu)
+    passed, report = _compare_canaries(canary_before, canary_after)
+    print(report)
+    print()
+
+    if passed:
+        print("  → CANARY CHECK PASSED. Keeping this run's changes.")
+    else:
+        print("  → CANARY CHECK FAILED. This run made things worse on "
+              "held-out cells it never directly probed -- the exact "
+              "failure mode this check exists to catch (VERDICTS.md V6: "
+              "correct individual measurements do not guarantee a safe "
+              "nearest-neighbor table when a sparse region is populated "
+              "from scratch). Reverting to the pre-run snapshot.")
+        with open(meta["config_header"], "w") as f:
+            f.write(header_snapshot)
+        print(f"  Reverted {meta['config_header']} to its pre-run state "
+              f"({len(live_table)} points discarded). Rebuild validate_bin "
+              f"again before trusting it reflects the reverted table.")
     print()
 
 
