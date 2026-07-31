@@ -7,10 +7,17 @@
  * constants).
  *
  * UPGRADED (A3): reads skeleton CSV from gen_calib_skeleton.py instead of
- * hardcoded n_grid/k_grid; uses 1-rep-rank + confirm-if-close-top-2
- * timing instead of median-of-3-on-every-candidate; supports
- * --narrow-around for single-point refinement; supports resumability
- * (skips already-computed rows in the output CSV on restart).
+ * hardcoded n_grid/k_grid; supports --narrow-around for single-point
+ * refinement; supports resumability (skips already-computed rows in
+ * the output CSV on restart).
+ *
+ * Timing methodology: every candidate B gets its own adaptive
+ * median-of-N measurement (3 reps minimum, up to 15 until cv<=3%), then
+ * argmin. An earlier "1-rep-rank + confirm-if-close-top-2" scheme was
+ * replaced after it caused a 281% regression on B200 -- a noise fluke
+ * at sub-few-ms problem sizes mis-ranked the true winner outside the
+ * top-2, where the confirmation step never got a chance to catch it.
+ * See VERDICTS.md V6.
  *
  * This is a ONE-TIME, OFFLINE calibration step; it never runs in
  * production.
@@ -22,6 +29,7 @@
  *   ./calibrate_gpu_best_b skeleton_b200.csv gpu_best_b_b200.csv --narrow-around 64,128
  */
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -83,72 +91,81 @@ static double time_one_rep(int n, int k, int Q, int force_B) {
     return stats.total_ns / 1e6;
 }
 
-/* Median of three values. */
-static double median3(double a, double b, double c) {
-    if (a > b) { double t = a; a = b; b = t; }
-    if (b > c) { double t = b; b = c; c = t; }
-    if (a > b) { double t = a; a = b; b = t; }
-    return b;
+static double median_of(std::vector<double> &x) {
+    if (x.empty()) return -1.0;
+    std::sort(x.begin(), x.end());
+    return x[x.size() / 2];
 }
 
-/* ── 1-rep-rank + confirm-if-close-top-2 search ──────────────────────── */
+static double cv_of(const std::vector<double> &x) {
+    if (x.size() < 2) return 0.0;
+    double mean = 0.0;
+    for (double v : x) mean += v;
+    mean /= (double)x.size();
+    if (mean <= 0.0) return 0.0;
+    double var = 0.0;
+    for (double v : x) {
+        double d = v - mean;
+        var += d * d;
+    }
+    var /= (double)(x.size() - 1);
+    return sqrt(var) / mean;
+}
+
+/* Adaptive median-of-N timing for one (n,k,Q,B) case: 3 reps minimum,
+ * extended up to 15 until cv<=3%. Ported from validate_planner_gpu.cu's
+ * run_case_median() / heatmap_gpu.cu's gpu_time_ms() (see VERDICTS.md
+ * V6). Replaces the old "1-rep-rank, runoff only on the top-2" scheme:
+ * a noise fluke that mis-ranked the true winner outside the top-2 was
+ * never corrected, since the runoff only ever compared the (already
+ * wrong) top-2 against each other -- exactly what caused a 281%
+ * regression at sub-few-ms problem sizes. */
+static double time_adaptive_ms(int n, int k, int Q, int B) {
+    double first = time_one_rep(n, k, Q, B);
+    if (first < 0.0) return -1.0;
+    int reps = 3;
+    if (first < 10.0) reps = 10;
+    else if (first > 100.0) reps = 1;
+    int max_reps = 15;
+    std::vector<double> samples;
+    samples.push_back(first);
+    for (int r = 1; r < reps; ++r) {
+        double t = time_one_rep(n, k, Q, B);
+        if (t < 0.0) break;
+        samples.push_back(t);
+    }
+    while ((int)samples.size() < max_reps) {
+        if (cv_of(samples) <= 0.03) break;
+        double t = time_one_rep(n, k, Q, B);
+        if (t < 0.0) break;
+        samples.push_back(t);
+    }
+    return median_of(samples);
+}
 
 struct CandidateTiming {
     int B;
     double t_ms;
 };
 
-/* Find the empirically-fastest B among candidates using:
- *   1. 1 rep per candidate → rank by time
- *   2. If top 2 are within 3% of each other: run 2 more reps on each,
- *      take median of all 3 for each, pick winner by median.
- *   3. Otherwise: the 1-rep winner is the answer.
- *
- * Returns best_B, or -1 if every candidate failed. */
+/* Find the empirically-fastest B among candidates: every candidate gets
+ * its own adaptive median-of-N measurement (time_adaptive_ms above),
+ * then argmin. Returns best_B, or -1 if every candidate failed. */
 static int find_best_B(int n, int k, int Q,
                        const std::vector<int> &candidates) {
     std::vector<CandidateTiming> results;
-
-    /* Phase 1: 1 rep per candidate */
     for (int B : candidates) {
         if (B > n) continue;
-        double t = time_one_rep(n, k, Q, B);
+        double t = time_adaptive_ms(n, k, Q, B);
         if (t < 0.0) continue;
         results.push_back({B, t});
     }
     if (results.empty()) return -1;
 
-    /* Sort ascending by time */
-    std::sort(results.begin(), results.end(),
-              [](const CandidateTiming &a, const CandidateTiming &b) {
-                  return a.t_ms < b.t_ms;
-              });
-
-    int best_B;
-    if (results.size() >= 2) {
-        double gap = (results[1].t_ms - results[0].t_ms) / results[0].t_ms;
-        if (gap < 0.03) {
-            /* Phase 2: confirm top-2 with 2 more reps each (total 3). */
-            double s0[3] = {results[0].t_ms, -1.0, -1.0};
-            double s1[3] = {results[1].t_ms, -1.0, -1.0};
-            int n0 = 1, n1 = 1;
-            for (int r = 0; r < 2; r++) {
-                double t0 = time_one_rep(n, k, Q, results[0].B);
-                double t1 = time_one_rep(n, k, Q, results[1].B);
-                if (t0 >= 0.0) s0[n0++] = t0;
-                if (t1 >= 0.0) s1[n1++] = t1;
-            }
-            /* Median of collected reps (2 or 3). */
-            double med0 = (n0 >= 3) ? median3(s0[0], s0[1], s0[2])
-                        : (n0 == 2) ? ((s0[0] + s0[1]) * 0.5) : s0[0];
-            double med1 = (n1 >= 3) ? median3(s1[0], s1[1], s1[2])
-                        : (n1 == 2) ? ((s1[0] + s1[1]) * 0.5) : s1[0];
-            best_B = (med0 <= med1) ? results[0].B : results[1].B;
-        } else {
-            best_B = results[0].B;
-        }
-    } else {
-        best_B = results[0].B;
+    int best_B = results[0].B;
+    double best_t = results[0].t_ms;
+    for (const auto &r : results) {
+        if (r.t_ms < best_t) { best_t = r.t_ms; best_B = r.B; }
     }
     return best_B;
 }
@@ -305,7 +322,7 @@ int main(int argc, char **argv) {
     if (!file_exists) {
         fprintf(fout,
                 "# Direct empirical GPU best-B measurement "
-                "(1-rep-rank + confirm-if-close-top-2, Q=%d)\n", Q);
+                "(adaptive median-of-N per candidate, cv<=3%%, Q=%d)\n", Q);
         fprintf(fout, "# n,k,best_B\n");
     }
 

@@ -26,6 +26,7 @@
  *   make validate_planner_gpu CUDA_ARCH=sm_100 CUFFTDX_INC=-I<path>
  */
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -87,6 +88,60 @@ static double run_case(int n, int k, int Q, int force_B, int *out_B) {
     return stats.total_ns / 1e6;
 }
 
+static double median_of(std::vector<double> &x) {
+    if (x.empty()) return -1.0;
+    std::sort(x.begin(), x.end());
+    return x[x.size() / 2];
+}
+
+static double cv_of(const std::vector<double> &x) {
+    if (x.size() < 2) return 0.0;
+    double mean = 0.0;
+    for (double v : x) mean += v;
+    mean /= (double)x.size();
+    if (mean <= 0.0) return 0.0;
+    double var = 0.0;
+    for (double v : x) {
+        double d = v - mean;
+        var += d * d;
+    }
+    var /= (double)(x.size() - 1);
+    return sqrt(var) / mean;
+}
+
+/* Adaptive median-of-N timing for one (n,k,force_B) case: more reps for
+ * fast/noisy cases, fewer for slow ones, extending until cv<=3% or
+ * max_reps. Ported verbatim from heatmap_gpu.cu's gpu_time_ms() loop
+ * (already shipped, already proven) rather than invented -- see
+ * VERDICTS.md V6. A single-rep sweep across 24 candidates spanning
+ * B=16..1536 was picking spurious "fastest" B purely from launch-jitter
+ * noise at sub-few-ms problem sizes; this closes that gap the same way
+ * the production heatmap tool already does. */
+static double run_case_median(int n, int k, int Q, int force_B, int *out_B) {
+    double first_ms = run_case(n, k, Q, force_B, out_B);
+    if (first_ms < 0.0) return -1.0;
+
+    int reps = 3;
+    if (first_ms < 10.0) reps = 10;
+    else if (first_ms > 100.0) reps = 1;
+    int max_reps = 15;
+
+    std::vector<double> samples;
+    samples.push_back(first_ms);
+    for (int r = 1; r < reps; ++r) {
+        double t = run_case(n, k, Q, force_B, nullptr);
+        if (t < 0.0) break;
+        samples.push_back(t);
+    }
+    while ((int)samples.size() < max_reps) {
+        if (cv_of(samples) <= 0.03) break;
+        double t = run_case(n, k, Q, force_B, nullptr);
+        if (t < 0.0) break;
+        samples.push_back(t);
+    }
+    return median_of(samples);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
@@ -139,7 +194,7 @@ int main(int argc, char **argv) {
 
     /* ── Auto (planner's choice) ── */
     int auto_B = 0;
-    double auto_ms = run_case(n, k, Q, 0, &auto_B);
+    double auto_ms = run_case_median(n, k, Q, 0, &auto_B);
     if (auto_ms < 0.0) {
         fprintf(stderr, "auto run failed: %s\n", icm_gpu_last_error());
         icm_gpu_shutdown();
@@ -151,7 +206,7 @@ int main(int argc, char **argv) {
     int best_B = 0;
     for (int B : kBCandidates) {
         if (B > n) continue;
-        double t_ms = run_case(n, k, Q, B, nullptr);
+        double t_ms = run_case_median(n, k, Q, B, nullptr);
         if (t_ms < 0.0) continue;
         if (t_ms < best_ms) {
             best_ms = t_ms;

@@ -14,9 +14,9 @@
  * Columns:
  *   n,k       : input parameters  (int)
  *   auto_B    : B chosen by icm_select_best_B(n,k)  (int)
- *   auto_ms   : median-of-7 timing of hybrid engine at auto_B, in ms  (double)
+ *   auto_ms   : adaptive median-of-N (3-15, cv<=3%) timing at auto_B, in ms  (double)
  *   best_B    : empirically-fastest B in {8,16,24,32,48,64}  (int)
- *   best_ms   : median-of-7 timing at best_B, in ms  (double)
+ *   best_ms   : adaptive median-of-N (3-15, cv<=3%) timing at best_B, in ms  (double)
  *   gap_pct   : (auto_ms - best_ms) / best_ms * 100; 0.0 if auto_B == best_B
  *               or auto is faster  (double)
  *
@@ -24,10 +24,16 @@
  * matching bench_grid crossover and calibrate_best_b conventions exactly.
  *
  * Discovery strategy for best_B:
- *   1 rep per candidate to rank, then 2 more reps on top-2 if within 3%,
- *   median of those 3 determines the winner. (Same as calibrate_best_b.)
- *   Then a fresh median-of-7 for both auto_B and best_B for the final
- *   reported ms values; ensures fair, low-noise head-to-head.
+ *   Every candidate (and, in Phase 2, auto_B/best_B) is measured with an
+ *   adaptive median-of-N: start at 3 reps, extend up to 15 until
+ *   cv<=3%. Replaces an earlier "1-rep-rank, runoff only on the top-2"
+ *   scheme, which had a real gap: a noise fluke that mis-ranked the true
+ *   winner outside the top-2 was never corrected, since the runoff only
+ *   ever compared the (already wrong) top-2 against each other. Found
+ *   and fixed on the GPU side first (VERDICTS.md V6, a 281% regression
+ *   on B200 traced to exactly this at sub-few-ms problem sizes); ported
+ *   here for CPU/GPU parity even though CPU's narrower 6-candidate,
+ *   8x-range B set makes it much less exposed in practice.
  *
  * Build (macOS M3 Pro):
  *   gcc -O3 -march=native -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
@@ -47,9 +53,10 @@
 #include <math.h>
 
 #define Q_PROBE        256
-#define N_REPS_FINAL   7
 #define N_CANDIDATES   6
-#define RUNOFF_PCT     3.0
+#define N_REPS_MIN     3
+#define N_REPS_MAX     15
+#define CONVERGE_CV    0.03
 
 static const int B_candidates[N_CANDIDATES] = {8, 16, 24, 32, 48, 64};
 
@@ -71,16 +78,37 @@ static double time_one(int n, int k, int B, const double *S,
     return t;
 }
 
-/* ── Median-of-7 timing ────────────────────────────────────────── */
-
-static double time_median7(int n, int k, int B, const double *S,
-                           const double *payout, double *equity) {
-    double samples[N_REPS_FINAL];
-    for (int r = 0; r < N_REPS_FINAL; r++) {
-        samples[r] = time_one(n, k, B, S, payout, equity);
+static double cv_of(const double *x, int count) {
+    if (count < 2) return 0.0;
+    double mean = 0.0;
+    for (int i = 0; i < count; i++) mean += x[i];
+    mean /= (double)count;
+    if (mean <= 0.0) return 0.0;
+    double var = 0.0;
+    for (int i = 0; i < count; i++) {
+        double d = x[i] - mean;
+        var += d * d;
     }
-    qsort(samples, N_REPS_FINAL, sizeof(double), cmp_double);
-    return samples[N_REPS_FINAL / 2];
+    var /= (double)(count - 1);
+    return sqrt(var) / mean;
+}
+
+/* ── Adaptive median-of-N timing ──────────────────────────────────
+ * Start at N_REPS_MIN reps, extend up to N_REPS_MAX until cv<=3%.
+ * Replaces the old fixed-count time_one()/time_median7() split: every
+ * candidate (Phase 1) and the final auto/best comparison (Phase 2) now
+ * go through this one converging measurement, closing the mis-ranking
+ * gap described above the includes. */
+static double time_adaptive(int n, int k, int B, const double *S,
+                            const double *payout, double *equity) {
+    double samples[N_REPS_MAX];
+    int count = 0;
+    for (; count < N_REPS_MIN; count++)
+        samples[count] = time_one(n, k, B, S, payout, equity);
+    while (count < N_REPS_MAX && cv_of(samples, count) > CONVERGE_CV)
+        samples[count++] = time_one(n, k, B, S, payout, equity);
+    qsort(samples, count, sizeof(double), cmp_double);
+    return samples[count / 2];
 }
 
 /* ── Main ───────────────────────────────────────────────────────── */
@@ -138,7 +166,10 @@ int main(int argc, char **argv) {
     /* ── auto_B from cost model ──────────────────────────────── */
     int auto_B = icm_select_best_B(n, k);
 
-    /* ── Phase 1: 1 rep per candidate to find best_B ────────── */
+    /* ── Phase 1: adaptive median-of-N per candidate to find best_B ──
+     * Every candidate gets its own converged measurement (see
+     * time_adaptive() above); no separate runoff needed since there's
+     * no single noisy rep left to mis-rank. */
     double t1[N_CANDIDATES];
     int    valid[N_CANDIDATES];
     int    n_valid = 0;
@@ -148,7 +179,7 @@ int main(int argc, char **argv) {
         if (B > n) { valid[bi] = 0; continue; }
         valid[bi] = 1;
         n_valid++;
-        t1[bi] = time_one(n, k, B, S, payout, equity);
+        t1[bi] = time_adaptive(n, k, B, S, payout, equity);
     }
 
     if (n_valid == 0) {
@@ -158,55 +189,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Find top-2 */
-    int    best_idx = -1, second_idx = -1;
-    double best_t = 1e18, second_t = 1e18;
-
+    int    best_idx = -1;
+    double best_t = 1e18;
     for (int bi = 0; bi < N_CANDIDATES; bi++) {
         if (!valid[bi]) continue;
         if (t1[bi] < best_t) {
-            second_t   = best_t;
-            second_idx = best_idx;
-            best_t     = t1[bi];
-            best_idx   = bi;
-        } else if (t1[bi] < second_t) {
-            second_t   = t1[bi];
-            second_idx = bi;
+            best_t   = t1[bi];
+            best_idx = bi;
         }
     }
+    int best_B = B_candidates[best_idx];
 
-    int best_B;
-
-    if (n_valid == 1) {
-        best_B = B_candidates[best_idx];
-    } else {
-        /* Check if runoff needed */
-        int do_runoff = 0;
-        if (best_idx >= 0 && second_idx >= 0 && best_t > 0.0) {
-            double pct = 100.0 * (second_t - best_t) / best_t;
-            if (pct <= RUNOFF_PCT) do_runoff = 1;
-        }
-
-        if (do_runoff) {
-            double a_s[3], b_s[3];
-            a_s[0] = t1[best_idx];
-            b_s[0] = t1[second_idx];
-            for (int r = 1; r < 3; r++) {
-                a_s[r] = time_one(n, k, B_candidates[best_idx], S, payout, equity);
-                b_s[r] = time_one(n, k, B_candidates[second_idx], S, payout, equity);
-            }
-            qsort(a_s, 3, sizeof(double), cmp_double);
-            qsort(b_s, 3, sizeof(double), cmp_double);
-            best_B = (a_s[1] <= b_s[1]) ? B_candidates[best_idx]
-                                        : B_candidates[second_idx];
-        } else {
-            best_B = B_candidates[best_idx];
-        }
-    }
-
-    /* ── Phase 2: fresh median-of-7 for final ms values ──────── */
-    double auto_ms = time_median7(n, k, auto_B, S, payout, equity);
-    double best_ms = time_median7(n, k, best_B, S, payout, equity);
+    /* ── Phase 2: fresh adaptive measurement for final ms values ──── */
+    double auto_ms = time_adaptive(n, k, auto_B, S, payout, equity);
+    double best_ms = time_adaptive(n, k, best_B, S, payout, equity);
 
     /* gap: positive means auto_B is slower than best_B */
     double gap_pct = 0.0;

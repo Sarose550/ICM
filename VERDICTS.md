@@ -222,6 +222,57 @@ which doesn't exist -- the Makefile places these at the repo root.
 Found this the hard way mid-run today (see above); worked around with
 an explicit `--validate-bin` flag at the time, now fixed at the source.
 
+**Root cause found and fixed, same day, before another B200 rental.**
+The user pushed back on "nearest-neighbor is unsafe" as too vague for a
+281% regression and asked for the actual mechanism. Traced it precisely:
+
+- Every worst regression (n=2048,k=512 -> B=1280 vs true B=64, gap
+  292.75%; n=16384,k=64 -> B=1024 vs true B=48, gap 265.32%) landed at
+  a problem size finishing in **under ~2ms total**, GPU kernel-launch-
+  overhead territory.
+- `validate_planner_gpu.cu`'s candidate sweep (the oracle
+  `calibrate_adaptive.py` trusts directly) timed every candidate with a
+  **single rep, no median, no noise check** -- `if (t_ms < best_ms)
+  best_B = B`, full stop. `calibrate_gpu_best_b.cu` (used for
+  `--narrow-around`) and the CPU `calibrate_best_b.c`/
+  `validate_best_b.c` had the same shape of bug: 1-rep-rank, with a
+  runoff/confirmation step that only ever re-measures the top-2 -- if
+  noise mis-ranks the true winner *outside* the top-2, nothing catches
+  it.
+- The GPU candidate set spans B=16 to B=1536, a 96x range (CPU's is
+  8x, {8,16,24,32,48,64}), so a noise-driven pick at small n can land
+  on a structurally very different B, amplifying a small timing fluke
+  into a catastrophic real regression once dispatched for real.
+- Rounds 1 and 2 operated at n>=65,536 (tens of ms per candidate,
+  noise a tiny fraction of signal) -- masking the bug. Round 3 pushed
+  into n=1,024-524,288, squarely in the noisy regime, and exposed it.
+  This also explains "why only now": the bug was always there, the
+  earlier rounds just never queried a region where it mattered.
+- The production `heatmap_gpu.cu` tool already solved exactly this:
+  adaptive reps (up to 10 for sub-10ms cases, extending to 15 if
+  cv>3%) converging on a median. It was never applied to the
+  calibration-writing oracles.
+
+**Fix:** ported `heatmap_gpu.cu`'s adaptive median/cv-convergence loop
+into all four measurement tools --
+`validate_planner_gpu.cu`/`calibrate_gpu_best_b.cu` (GPU) and
+`validate_best_b.c`/`calibrate_best_b.c` (CPU), for parity. Every
+candidate now gets its own converged measurement (3 reps minimum,
+extended to 15 until cv<=3%); the old top-2-only runoff/confirmation
+logic is removed as redundant (there's no longer a single noisy rep
+left to mis-rank). Cost impact is close to zero in aggregate: fast/
+noisy cases get more reps but each rep is proportionally cheap; slow
+cases (>100ms) still get 1 rep, unchanged from before, mirroring
+`heatmap_gpu.cu`'s own cost profile which was already proven not to
+blow up runtime.
+
+**Verification plan, not yet executed (needs a B200 rental):** re-probe
+the three worst regressed cells (n=2048,k=512; n=16384,k=64;
+n=65536,k=2048) with the fixed `validate_planner_gpu` and confirm they
+now report a low, stable gap_pct against the known-good B; only after
+that spot check passes is a real re-run over the broken domain
+(n=1,024-524,288) worth funding.
+
 ## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: down to 1 known regression from 16, chasing to zero has diminishing returns)
 
 **Recorded:** 2026-07-30. **Evidence:** `b06379e` read against the 2026-07-30
