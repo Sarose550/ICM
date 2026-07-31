@@ -122,15 +122,19 @@ threshold on a fresh sample) instead of per-band random walks.
 domain default was also fixed while doing this (was `4194304`, real
 GPU usage per `heatmap_gpu.cu` goes to `33554432`) -- an 8x undershoot
 that had been silently baked into every prior calibration default.
-`--skeleton-lo/hi` remain as an explicit opt-in narrowing (used for this
-project's own targeted fixes); the unscoped default is the full domain,
-so a fresh device port gets real coverage with zero required judgment
-calls. See the tooling commit for the full design rationale.
+`--n-min`/`--n-max` (named `--skeleton-lo`/`--skeleton-hi` until a
+same-day rename, see below) remain as an explicit opt-in narrowing
+(used for this project's own targeted fixes); the unscoped default is
+the full domain, so a fresh device port gets real coverage with zero
+required judgment calls. See the tooling commit for the full design
+rationale.
 
 **First real run, 2026-07-31: found a serious design flaw, reverted,
 nothing shipped.** Ran `calibrate_adaptive.py --device b200
 --skeleton-lo 1024 --skeleton-hi 524288 --budget 20m` for real (contract
-`46358305`). It worked as designed and found far more real disagreement
+`46358305`) -- exact command as typed at the time; the flags were
+renamed to `--n-min`/`--n-max` immediately afterward, see the
+flag-rename entry below. It worked as designed and found far more real disagreement
 than expected: 520 probes in 20 minutes, most landing well off the
 standard heatmap grid (random log-uniform points like n=1980, n=90283,
 n=411295 -- points nobody had ever measured before), many with large
@@ -206,6 +210,17 @@ confirmation probe on nearby *existing* points before accepting a new
 one, or a distance-weighted local fit instead of pure NN) so one new
 point can't silently override answers for queries it was never actually
 tested against.
+
+**Renamed, same session:** `--skeleton-lo`/`--skeleton-hi`/
+`--skeleton-ratio` -> `--n-min`/`--n-max`/`--landmark-ratio`. The old
+names leaked the tool's own internal implementation detail (they only
+made sense once you knew Step 1 calls `gen_calib_skeleton.py`
+internally); the new names describe what the flags actually mean to a
+caller. Also fixed while in there: the default `--validate-bin` path
+pointed at `./build/validate_planner_gpu`/`./build/validate_best_b`,
+which doesn't exist -- the Makefile places these at the repo root.
+Found this the hard way mid-run today (see above); worked around with
+an explicit `--validate-bin` flag at the time, now fixed at the source.
 
 ## V7. The GPU anchors were co-designed with the sequential lookup (and V11 broke that) (OPEN: down to 1 known regression from 16, chasing to zero has diminishing returns)
 

@@ -221,14 +221,18 @@ def main() -> None:
     parser.add_argument("--validate-bin", type=str, default=None,
                         help="Path to validate_best_b / validate_planner_gpu "
                              "binary.")
-    parser.add_argument("--skeleton-lo", type=int, default=None,
-                        help="Minimum n (inclusive).")
-    parser.add_argument("--skeleton-hi", type=int, default=None,
-                        help="Maximum n (inclusive).")
-    parser.add_argument("--skeleton-ratio", type=float, default=None,
-                        help="Log-spacing ratio for skeleton n-anchors "
-                             "(if set, used directly; else ~3x device "
-                             "default for sparse landmark seeding).")
+    parser.add_argument("--n-min", type=int, default=None,
+                        help="Minimum n to calibrate (inclusive). Default: "
+                             "the device's full real domain -- only narrow "
+                             "this for a deliberately scoped/cheap run.")
+    parser.add_argument("--n-max", type=int, default=None,
+                        help="Maximum n to calibrate (inclusive). Default: "
+                             "the device's full real domain -- only narrow "
+                             "this for a deliberately scoped/cheap run.")
+    parser.add_argument("--landmark-ratio", type=float, default=None,
+                        help="Log-spacing ratio between landmark n-anchors "
+                             "(if set, used directly; else ~3x the device's "
+                             "own calibration ratio, for sparse seeding).")
     parser.add_argument("--config-header", type=str, default=None,
                         help="Override path to config header (for testing).")
     parser.add_argument("--convergence-threshold", type=float,
@@ -254,13 +258,15 @@ def main() -> None:
     else:
         budget_label = args.budget
 
-    # Validate binary
+    # Validate binary (the Makefile places these at the repo root, not
+    # build/ -- confirmed 2026-07-31 after this default silently pointed
+    # at a nonexistent path, see VERDICTS.md V6)
     validate_bin = args.validate_bin
     if validate_bin is None:
         if is_gpu:
-            validate_bin = "./build/validate_planner_gpu"
+            validate_bin = "./validate_planner_gpu"
         else:
-            validate_bin = "./build/validate_best_b"
+            validate_bin = "./validate_best_b"
 
     if not os.path.isfile(validate_bin):
         print(f"WARNING: validate binary not found at '{validate_bin}'. "
@@ -270,18 +276,18 @@ def main() -> None:
     # ── Step 1: Skeleton generation for landmarks ──────────────────────
     print("── Step 1: Generate sparse landmark n-anchors ──")
     landmark_ns = _run_skeleton_for_landmarks(
-        device, args.skeleton_lo, args.skeleton_hi, args.skeleton_ratio)
+        device, args.n_min, args.n_max, args.landmark_ratio)
 
     # Determine effective domain lo/hi for reporting
     # (gen_calib_skeleton.py applied its defaults; use the min/max
     # from the landmark set itself as a reasonable proxy, and also
     # re-derive from gen_calib_skeleton's own defaults for reporting.)
-    if args.skeleton_lo is not None:
-        domain_lo = args.skeleton_lo
+    if args.n_min is not None:
+        domain_lo = args.n_min
     else:
         domain_lo = 1024 if is_gpu else 256
-    if args.skeleton_hi is not None:
-        domain_hi = args.skeleton_hi
+    if args.n_max is not None:
+        domain_hi = args.n_max
     else:
         domain_hi = 33554432 if is_gpu else 65536
 
