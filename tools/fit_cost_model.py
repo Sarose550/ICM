@@ -15,23 +15,22 @@ Model (per Q-point):
 
   T_leaf  = n * max(C_div, 2*B * C_leaf_fma) + (n/B) * C_leaf_block
 
-As of the SPRINT_MICROBENCH_MIGRATION, ALL scalar constants are pinned
-to direct measurements; zero free parameters remain for regression:
+As of the SPRINT_MICROBENCH_MIGRATION, WRAP_FMA_NS and
+PAIRED_CACHED_CORR_RATIO are pinned to direct measurements;
+INDEP_PAIR_RATIO is pinned separately via --indep-pair-ratio.
 
-  WRAP_FMA_NS         → --wrap-ns       (tools/bench_wrap_fma.c)
-  FP64_DIV_NS         → --div-ns        (tools/bench_div_chain.c)
-  FMA_NS              → --fma-ns        (./bench_grid profile, schoolbook slope)
-  PAIRED_CACHED_CORR_RATIO → --paired-cached-ratio  (./bench_grid profile, phase split)
-  INDEP_PAIR_RATIO    → --indep-pair-ratio  (./bench_grid profile, phase split)
-  FFT_OVERHEAD_NS     → --overhead-ns    (always 0.0; redundant with calib_times_ns)
+FMA_NS, FP64_DIV_NS, FFT_OVERHEAD_NS were deleted with cost_model.h
+(SPRINT_FINAL_CLOSEOUT); they have zero live readers in the current
+codebase.  The --fma-ns, --div-ns, --overhead-ns flags are still accepted
+for backward compatibility but are no-ops for header writing.
 
 BLOCK_FMA_NS / BLOCK_MEM_NS / LEAF_FMA_NS / LEAF_BLOCK_NS were
 converted to per-B lookup tables by bench_block_build.c and
-bench_leaf_fma.c; not this script's concern.
+probe_leaf_extract.c; not this script's concern.
 
-When all 6 scalar pins are provided, scipy optimization is skipped
-entirely (a 0-parameter degenerate fit is meaningless).  The script
-assembles the pinned values and writes them to fft_config.h directly.
+When all in-scope params (WRAP_FMA_NS, PAIRED_CACHED_CORR_RATIO) are
+pinned, scipy optimization is skipped entirely. The script assembles
+the pinned values and writes them to fft_config.h directly.
 
 Usage: python3 tools/fit_cost_model.py <sample_plans.csv> [config_h] [--write]
           [--wrap-ns N] [--div-ns N] [--fma-ns N]
@@ -60,9 +59,11 @@ PARAM_NAMES = [
     'C_school', 'C_div', 'C_leaf_fma', 'C_leaf_block', 'C_overhead',
 ]
 
-# Parameters still handled by THIS script (not converted to lookup tables).
+# Parameters still handled by THIS script (written to fft_config.h).
 # When ALL of these are pinned, scipy optimization is skipped.
-IN_SCOPE_PARAMS = {P_WRAP, P_R, P_SCHOOL, P_DIV, P_OVERHEAD}
+# C_school (FMA_NS), C_div (FP64_DIV_NS), and C_overhead (FFT_OVERHEAD_NS)
+# are no longer written to the header (deleted with cost_model.h).
+IN_SCOPE_PARAMS = {P_WRAP, P_R}
 
 # Physically plausible bounds (Zen4)
 BOUNDS = [
@@ -330,16 +331,13 @@ def report(params, plans, calib, pins=None):
 
 
 # Mapping from fit parameter name -> fft_config.h macro name(s).
-# This mapping covers only the summed-constant params below; BLOCK_FMA_NS/
-# BLOCK_MEM_NS/LEAF_FMA_NS/LEAF_BLOCK_NS are per-B lookup tables populated
-# separately by bench_block_build/bench_leaf_fma. PAIRED_CACHED_CORR_RATIO
-# is here; INDEP_PAIR_RATIO is written via a separate path, not this array.
+# Only WRAP_FMA_NS and PAIRED_CACHED_CORR_RATIO are still written to the
+# header; FMA_NS/FP64_DIV_NS/FFT_OVERHEAD_NS were deleted with cost_model.h
+# (they have zero live readers in the current codebase).  INDEP_PAIR_RATIO
+# is written via a separate path (--indep-pair-ratio flag).
 FIT_TO_MACRO = [
     ('C_wrap',       ['WRAP_FMA_NS']),
     ('R',            ['PAIRED_CACHED_CORR_RATIO']),
-    ('C_school',     ['FMA_NS']),
-    ('C_div',        ['FP64_DIV_NS']),
-    ('C_overhead',   ['FFT_OVERHEAD_NS']),
 ]
 
 
@@ -505,13 +503,10 @@ def main():
         print(f"\nPinned constants:")
         print(f"  WRAP_FMA_NS               = {params[P_WRAP]:.4f}")
         print(f"  PAIRED_CACHED_CORR_RATIO  = {params[P_R]:.4f}")
-        print(f"  FMA_NS                    = {params[P_SCHOOL]:.4f}")
-        print(f"  FP64_DIV_NS              = {params[P_DIV]:.4f}")
-        print(f"  FFT_OVERHEAD_NS           = {params[P_OVERHEAD]:.4f}")
         if indep_pair_ratio is not None:
             print(f"  INDEP_PAIR_RATIO          = {indep_pair_ratio:.4f}")
         else:
-            print(f"  INDEP_PAIR_RATIO          = (not provided ,  will not be written)")
+            print(f"  INDEP_PAIR_RATIO          = (not provided, will not be written)")
 
         # Optionally report against sample_plans for diagnostics
         # (uses scalar block/leaf model ,  approximate only)

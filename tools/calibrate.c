@@ -309,14 +309,10 @@ static void write_config(const char *filename) {
     fprintf(f,
 "/* ── Device constants ── */\n"
 "/* calib_times_ns now measures the full polymul_fft_wrap pipeline\n"
-" * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.\n"
-" * Wrap correction is modeled separately with WRAP_FMA_NS. */\n"
-"#ifndef FMA_NS\n"
-"#define FMA_NS 0.25  /* ns per scalar FMA, re-measure via ./bench_grid profile */\n"
-"#endif\n"
-"#ifndef FFT_OVERHEAD_NS\n"
-"#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline) */\n"
-"#endif\n"
+" * (memcpy + 2×FFT + pointwise + scale), so the old FFT_OVERHEAD_NS\n"
+" * constant is obsolete (the overhead is baked into calib_times_ns).\n"
+" * Wrap correction is modeled with WRAP_FMA_NS, measured via\n"
+" * tools/bench_wrap_fma.c. */\n"
 "#ifndef WRAP_FMA_NS\n"
 "#define WRAP_FMA_NS 4.0  /* ns per FMA in wrap correction (memory-latency-bound) */\n"
 "#endif\n"
@@ -325,26 +321,9 @@ static void write_config(const char *filename) {
 "#endif\n"
 "#ifndef INDEP_PAIR_RATIO\n"
 "#define INDEP_PAIR_RATIO 1.25  /* correlate_fft_pair / full pipeline */\n"
-"#endif\n"
-"/* Hybrid-engine block/leaf constants, placeholders until\n"
-" * tools/fit_cost_model.py --write overwrites them with a real fit. */\n"
-"#ifndef FP64_DIV_NS\n"
-"#define FP64_DIV_NS 10.0  /* ns per FP64 division, re-fit via fit_cost_model.py */\n"
-"#endif\n"
-"#ifndef LEAF_FMA_NS\n"
-"#define LEAF_FMA_NS 0.25  /* ns per FMA in leaf blocks, re-fit via fit_cost_model.py */\n"
-"#endif\n"
-"#ifndef LEAF_BLOCK_NS\n"
-"#define LEAF_BLOCK_NS 100.0  /* ns per leaf block overhead, re-fit via fit_cost_model.py */\n"
-"#endif\n"
-"#ifndef BLOCK_FMA_NS\n"
-"#define BLOCK_FMA_NS 0.05  /* ns per FMA in block build, re-fit via fit_cost_model.py */\n"
-"#endif\n"
-"#ifndef BLOCK_MEM_NS\n"
-"#define BLOCK_MEM_NS 0.1  /* ns per block-build memory op, re-fit via fit_cost_model.py */\n"
 "#endif\n\n");
 
-    /* Cache and bandwidth constants */
+    /* Cache constants */
     fprintf(f,
 "/* ── Cache hierarchy ── */\n"
 "#ifndef L2_CACHE_SIZE\n"
@@ -353,20 +332,6 @@ static void write_config(const char *filename) {
 "#ifndef L3_CACHE_SIZE\n"
 "#define L3_CACHE_SIZE 33554432  /* shared L3 in bytes, update for this hardware */\n"
 "#endif\n\n");
-
-    /* Bandwidth constants from measurement */
-    fprintf(f,
-"/* ── Streaming bandwidth (measured by calibrate) ── */\n"
-"#ifndef L2_BW_GBS\n"
-"#define L2_BW_GBS %.1f\n"
-"#endif\n"
-"#ifndef L3_BW_GBS\n"
-"#define L3_BW_GBS %.1f\n"
-"#endif\n"
-"#ifndef DRAM_BW_GBS\n"
-"#define DRAM_BW_GBS %.1f\n"
-"#endif\n\n",
-        bw_l2_gbs, bw_l3_gbs, bw_dram_gbs);
 
     fclose(f);
     printf("  Written %s (%d sizes)\n\n", filename, n_smooth);
@@ -401,11 +366,7 @@ int main(int argc, char **argv) {
     printf("  1. cp fft_config.h devices/<DEVICE>/fft_config.h\n");
     printf("  2. cp fftw_wisdom.dat devices/<DEVICE>/fftw_wisdom.dat\n");
     printf("  3. make DEVICE=<DEVICE> && ./bench_grid verify\n");
-    printf("  4. ./bench_grid profile   # measure device constants\n");
-    printf("  5. Update #defines in fft_config.h with measured values:\n");
-    printf("     FMA_NS, FFT_OVERHEAD_NS, PAIRED_CACHED_CORR_RATIO,\n");
-    printf("     INDEP_PAIR_RATIO, L2_CACHE_SIZE, L3_CACHE_SIZE\n");
-    printf("  6. ./bench_grid verify && ./bench_grid\n");
+    printf("  4. Run full calibration pipeline: ./tools/calibrate_full.sh <DEVICE>\n");
     printf("\n  Calibration ceiling: conv lengths up to %d are fully optimal;\n", calib_max_conv_len);
     printf("  beyond that the uncalibrated FFTW_ESTIMATE fallback engages.\n");
     printf("  To raise the ceiling, re-run with --max-size N (higher N = longer calibration).\n");

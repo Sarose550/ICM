@@ -266,9 +266,13 @@ def main() -> None:
     )
     parser.add_argument(
         '--device', required=True,
-        choices=['m3_pro', 'zen4', 'b200'],
-        help='Target device.  m3_pro/zen4 share CPU smooth-number logic; '
-             'b200 uses GPU smooth-number logic.'
+        help='Target device name (any string).  Use --gpu to select '
+             'GPU smooth-number logic and defaults; CPU otherwise.'
+    )
+    parser.add_argument(
+        '--gpu', action='store_true',
+        help='Use GPU smooth-number algorithm, domain defaults, and '
+             'spacing ratio (CPU otherwise).'
     )
     parser.add_argument(
         '--lo', type=int, default=None,
@@ -296,7 +300,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # ── Device-specific defaults ──────────────────────────────────────
-    is_gpu = (args.device == 'b200')
+    is_gpu = args.gpu
 
     lo = args.lo
     hi = args.hi

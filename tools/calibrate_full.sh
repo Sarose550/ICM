@@ -36,14 +36,14 @@
 #  10. Builds and runs tools/bench_linear_batched_fma.c, directly measures
 #      the batched linear engine's inner-loop per-FMA cost.  Extracts
 #      BATCHED_FMA_NS (regression slope, combined forward+backward k-sweep)
-#      and writes it into fft_config.h.  The cost model in src/cost_model.h
-#      uses this as 5*n*k*BATCHED_FMA_NS (not 4*n*k*FMA_NS; the batched
-#      engine performs ~5k FMAs per player per QP, not the 4k the old
-#      scalar-schoolbook-based formula assumed).
-#  11. Runs tools/fit_cost_model.py --write with ALL 6 scalar pins
-#      (WRAP_FMA_NS, FP64_DIV_NS, FMA_NS, PAIRED_CACHED_CORR_RATIO,
-#      INDEP_PAIR_RATIO, FFT_OVERHEAD_NS=0.0).  ZERO free parameters remain
-#      - scipy optimization is skipped; the script assembles the fully-pinned
+#      and writes it into fft_config.h.  The batched engine performs
+#      ~5k FMAs per player per QP (not 4k as the old scalar-schoolbook
+#      formula assumed).
+#  11. Runs tools/fit_cost_model.py --write with the 2 live scalar pins
+#      (WRAP_FMA_NS, PAIRED_CACHED_CORR_RATIO) plus INDEP_PAIR_RATIO.
+#      FMA_NS, FP64_DIV_NS, and FFT_OVERHEAD_NS are no longer written
+#      (deleted with cost_model.h).  ZERO free parameters remain - scipy
+#      optimization is skipped; the script assembles the fully-pinned
 #      config directly.
 #  12. Builds and runs tools/calibrate_crossover.c, binary-searches the
 #      real linear-vs-hybrid crossover k(n) via direct timing (median of 7
@@ -297,7 +297,7 @@ if idx < 0:
 placeholder_block = '''
 /* ── Empirical linear-vs-hybrid crossover table ──────────────────────
  * Measured by tools/calibrate_crossover.c ,  binary search on real
- * timing (median of 7 reps, Q=256).  See src/fft_cost_model.h's
+ * timing (median of 7 reps, Q=256).  See src/cpu/fft_cost_model.h's
  * empirical_crossover_k() for how this is consulted (log-linear
  * interpolation between bracketing n).  PLACEHOLDER. */
 #ifndef N_CROSSOVER_POINTS
@@ -309,7 +309,7 @@ static const int crossover_k[N_CROSSOVER_POINTS] = {999, 999, 999, 999, 999, 999
 /* ── Empirical hybrid block-size (B) table ───────────────────────────
  * Measured by tools/calibrate_best_b.c ,  direct timing (median of 7
  * reps, Q=256) of the real hybrid engine at every candidate B, per
- * (n,k) grid point.  See src/fft_cost_model.h's empirical_best_B()
+ * (n,k) grid point.  See src/cpu/fft_cost_model.h's empirical_best_B()
  * for how this is consulted (2D nearest-neighbor).  PLACEHOLDER. */
 #ifndef N_BSELECT_POINTS
 #define N_BSELECT_POINTS 34
@@ -848,10 +848,9 @@ echo "  ✓ Schoolbook lookup tables written to $CONFIG_H"
 # ═══════════════════════════════════════════════════════════════════════
 # Step 10: Build and run bench_linear_batched_fma → BATCHED_FMA_NS
 #
-# The batched linear engine (BQ=8, src/linear_batched_impl.inc) performs
+# The batched linear engine (BQ=8, src/cpu/linear_batched_impl.inc) performs
 # ~5k FMAs per player per QP (forward: BQ*(2k-1), backward: BQ*(3k-1)).
-# The cost model in src/cost_model.h's linear_roofline_cost() uses:
-#   compute_ns = 5.0 * n * k * BATCHED_FMA_NS;
+# The batched engine's per-QP cost is approximately 5*n*k*BATCHED_FMA_NS.
 # This step measures BATCHED_FMA_NS directly from the verbatim inner loops.
 # ═══════════════════════════════════════════════════════════════════════
 echo ""

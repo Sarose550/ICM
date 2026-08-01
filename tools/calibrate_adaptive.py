@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-calibrate_adaptive.py — Adaptive mesh-refinement calibration orchestrator.
+calibrate_adaptive.py - Adaptive mesh-refinement calibration orchestrator.
 
 Replaces calibrate_block_size.py with a priority-queue-driven adaptive
 refinement strategy directly analogous to adaptive quadrature: maintain a
@@ -9,9 +9,9 @@ highest-scoring candidate next, stop when a fixed budget is exhausted OR the
 queue's top score drops below a convergence threshold.
 
 Key fixes over the old orchestrator:
-  1. No second binary call — the validate probe already runs a full
+  1. No second binary call - the validate probe already runs a full
      candidate-timing search internally; we take its best_B directly.
-  2. No --narrow-around guess — there is no second call to attach a guess
+  2. No --narrow-around guess - there is no second call to attach a guess
      to, and the old approach assumed the true answer was close to the
      (known-wrong) dispatched answer, which real data disproved.
 
@@ -25,7 +25,7 @@ Proven twice on real B200 data: once with the noise bug present, once
 after fixing it. This is a second, separate failure mode from measurement
 noise, not fixed by the median/cv-convergence fix above.
 
-The fix here is NOT a heuristic — it re-runs the exact same trustworthy,
+The fix here is NOT a heuristic - it re-runs the exact same trustworthy,
 converged measurement (run_validate_probe) at a fixed, held-out canary
 set, before and after the run, and auto-reverts the entire config header
 to its pre-run snapshot if the canaries got worse. No back-and-forth: the
@@ -49,7 +49,7 @@ import tempfile
 import time
 from typing import Optional
 
-from calib_common import (DEVICE_META, inject_table, read_existing_table,
+from calib_common import (inject_table, read_existing_table,
                           run_validate_probe, _draw_log_uniform_nk)
 
 
@@ -126,7 +126,8 @@ def _score_candidate(n: int, k: int,
 # ────────────────────────────────────────────────────────────────────────────
 
 def _run_skeleton_for_landmarks(
-        device: str, lo: Optional[int], hi: Optional[int],
+        device: str, is_gpu: bool,
+        lo: Optional[int], hi: Optional[int],
         ratio: Optional[float]) -> list[int]:
     """
     Call gen_calib_skeleton.py to get a sparse set of landmark n-values.
@@ -138,6 +139,8 @@ def _run_skeleton_for_landmarks(
     # Build command: pass through user-specified --lo/--hi/--ratio if set;
     # if ratio is not set, multiply the device's default by 3 for sparseness.
     cmd = [sys.executable, script, "--device", device]
+    if is_gpu:
+        cmd += ["--gpu"]
     if lo is not None:
         cmd += ["--lo", str(lo)]
     if hi is not None:
@@ -147,7 +150,6 @@ def _run_skeleton_for_landmarks(
     if ratio is not None:
         effective_ratio = ratio
     else:
-        is_gpu = (device == "b200")
         default_ratio = 1.8 if is_gpu else 1.6
         effective_ratio = default_ratio * 3.0
     cmd += ["--ratio", str(effective_ratio)]
@@ -168,7 +170,7 @@ def _run_skeleton_for_landmarks(
             f"gen_calib_skeleton.py failed with code {result.returncode}")
     print(result.stderr.strip())
 
-    # Parse skeleton CSV — extract just the unique n values
+    # Parse skeleton CSV - extract just the unique n values
     landmark_ns: set[int] = set()
     with open(skel_path, "r") as f:
         header = f.readline()  # skip "n,k"
@@ -188,7 +190,7 @@ def _run_skeleton_for_landmarks(
 # Canary safety net
 # ────────────────────────────────────────────────────────────────────────────
 
-CANARY_K_FRACTIONS = (6, 3, 1.5)  # n/6, n/3, 2n/3 — deliberately NOT the
+CANARY_K_FRACTIONS = (6, 3, 1.5)  # n/6, n/3, 2n/3 - deliberately NOT the
                                    # landmark k-fractions (2, 16, n/8, n/4,
                                    # n/2, n), so canaries are genuinely
                                    # held-out, not just re-checking points
@@ -310,15 +312,21 @@ def _parse_budget(budget_str: str) -> tuple[Optional[int], Optional[float]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Adaptive calibration orchestrator — priority-queue "
+        description="Adaptive calibration orchestrator - priority-queue "
                     "refinement replacing calibrate_block_size.py."
     )
     parser.add_argument("--device", required=True,
-                        choices=["m3_pro", "zen4", "b200"])
+                        help="Device name (any string; used to locate "
+                             "devices/<device>/fft_config.h or "
+                             "devices/<device>/gpu_fft_config.h).")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Device is a GPU (CPU otherwise). Controls "
+                             "config header path, array prefix, macro "
+                             "names, and domain defaults.")
     parser.add_argument("--budget", required=True, type=str,
                         help="Probe budget: bare integer (probe count) or "
                              "time-suffixed (30s, 20m, 2h). Required, no "
-                             "default — force an explicit choice every run.")
+                             "default - force an explicit choice every run.")
     parser.add_argument("--validate-bin", type=str, default=None,
                         help="Path to validate_best_b / validate_planner_gpu "
                              "binary.")
@@ -380,10 +388,20 @@ def main() -> None:
             "table and the whole check is meaningless. See --help.")
 
     device = args.device
-    meta = dict(DEVICE_META[device])  # shallow copy so we can override
+    is_gpu = args.gpu
+
+    # Derive config header path: devices/<device>/[gpu_]fft_config.h
     if args.config_header:
-        meta["config_header"] = args.config_header
-    is_gpu = meta["is_gpu"]
+        config_header = args.config_header
+    else:
+        config_header = f"devices/{device}/{'gpu_' if is_gpu else ''}fft_config.h"
+
+    meta = {
+        "is_gpu": is_gpu,
+        "config_header": config_header,
+        "array_prefix": "gbselect" if is_gpu else "bselect",
+        "n_macro": "GPU_N_BSELECT_POINTS" if is_gpu else "N_BSELECT_POINTS",
+    }
 
     # Budget
     max_probes, max_seconds = _parse_budget(args.budget)
@@ -410,7 +428,7 @@ def main() -> None:
     # ── Step 1: Skeleton generation for landmarks ──────────────────────
     print("── Step 1: Generate sparse landmark n-anchors ──")
     landmark_ns = _run_skeleton_for_landmarks(
-        device, args.n_min, args.n_max, args.landmark_ratio)
+        device, is_gpu, args.n_min, args.n_max, args.landmark_ratio)
 
     # Determine effective domain lo/hi for reporting
     # (gen_calib_skeleton.py applied its defaults; use the min/max
@@ -447,6 +465,7 @@ def main() -> None:
     print()
 
     if args.dry_run:
+        print(f"  config_header = {meta['config_header']}")
         print("  --dry-run: stopping before any measurement.")
         print(f"  Would run Step 0 (load existing) + Step 1 landmark "
               f"probing ({len(landmark_points)} candidate probes) "
@@ -571,7 +590,7 @@ def main() -> None:
             pool = fresh
             pool_refilled_this_iteration = True
             if not pool:
-                # Couldn't find any more candidates — domain exhausted
+                # Couldn't find any more candidates - domain exhausted
                 print("  Pool exhausted (domain fully covered). Converged.")
                 converged = True
                 break
@@ -595,7 +614,7 @@ def main() -> None:
                       f"(convergence threshold) on fresh refill. Converged.")
                 converged = True
                 break
-            # Not converged yet — clear the flag for subsequent iterations
+            # Not converged yet - clear the flag for subsequent iterations
             # (only the very first pop after a fresh refill is the
             # convergence checkpoint)
 
@@ -680,13 +699,13 @@ def main() -> None:
                             for n, k in pool)
             print(f"  Top remaining score:  {top_score:.4f}")
             if top_score > args.convergence_threshold * 3:
-                print(f"    → Score well above threshold — more budget "
+                print(f"    → Score well above threshold - more budget "
                       f"would likely help.")
             elif top_score > args.convergence_threshold:
-                print(f"    → Score moderately above threshold — "
+                print(f"    → Score moderately above threshold - "
                       f"run was close to done.")
             else:
-                print(f"    → Score near/below threshold — run was "
+                print(f"    → Score near/below threshold - run was "
                       f"nearly converged anyway.")
         else:
             print(f"  Top remaining score:  N/A (pool empty)")

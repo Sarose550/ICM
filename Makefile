@@ -130,7 +130,7 @@ libicm.a: $(LIBICM)
 
 # ── Bench grid (includes icm.c directly for profiling access) ──
 
-.PHONY: all parallel test bench calibrate clean libicm.a libicm libicm.dylib libicm.so
+.PHONY: all parallel test bench calibrate clean libicm.a libicm libicm.dylib libicm.so validate_best_b calibrate_best_b
 
 all:
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(OUT) $(SRC) $(LDFLAGS)
@@ -152,39 +152,23 @@ contour_1s: $(LIBICM)
 contour_1s_par: $(BUILD_DIR)/libicm_omp.a
 	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -o $@ tools/contour_1s.c $(BUILD_DIR)/libicm_omp.a $(LDFLAGS) $(OMP_LDFLAGS)
 
+validate_best_b: $(LIBICM)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tools/validate_best_b.c $(LIBICM) $(LDFLAGS)
+
+calibrate_best_b: $(LIBICM)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tools/calibrate_best_b.c $(LIBICM) $(LDFLAGS)
+
 calibrate:
 	$(CC) $(CFLAGS) $(INCLUDES) -o calibrate tools/calibrate.c $(LDFLAGS)
 	@echo "Run: ./calibrate (then copy fft_config.h + fftw_wisdom.dat to devices/$(DEVICE)/)"
 
-# ── Regenerate results/ data for tools/plot_contour.py ──────────
-# Requires devices/$(DEVICE)/ to already be calibrated (see "Calibrating
-# for a New Device" in README.md). Writes stable (undated) files directly
-# into results/, overwriting any previous run -- plot_contour.py picks up
-# these files by name (via find_latest's mtime tiebreak), no renaming or
-# copying needed. DEVICE=zen4 must be run on Zen4 hardware; DEVICE=m3_pro
-# on Apple Silicon. Git history is the record of prior runs; file names are
-# not used for versioning.
-# plot_contour.py's DEVICE_CONFIGS use "m3pro" (no underscore) in filenames
-# even though the build device is "m3_pro" -- match that convention here.
-RESULTS_TAG := $(subst m3_pro,m3pro,$(DEVICE))
-# NOTE: `all` and `parallel` both build to the same $(OUT) binary
-# (bench_grid), so do not list either as a prerequisite of this target --
-# Make builds prerequisites before the recipe body runs, which would let
-# `parallel`'s OpenMP-enabled build silently overwrite the serial one before
-# `./$(OUT) > ..._serial.txt` executes. Rebuild explicitly inside the recipe
-# body, immediately before each binary's use, instead.
-results-refresh: contour_1s contour_1s_par
-	mkdir -p results
-	$(MAKE) all
-	./$(OUT) > results/bench_grid_$(RESULTS_TAG)_serial.txt
-	$(MAKE) parallel
-	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc)} \
-	    ./$(OUT) > results/bench_grid_$(RESULTS_TAG)_parallel.txt
-	./contour_1s --contour > results/contour_$(RESULTS_TAG)_serial_q256.csv
-	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc)} \
-	    ./contour_1s_par --contour > results/contour_$(RESULTS_TAG)_parallel_q256.csv
-	python3 tools/plot_contour.py --device $(DEVICE)
-	@echo "Refreshed results/ for DEVICE=$(DEVICE)."
+# ── Regenerate results/ data and plots ──────────────────────────
+# Delegates to tools/results/refresh_all.sh which rebuilds binaries,
+# regenerates all raw data files (bench_grid, contour CSVs, crossover,
+# subset-speed), and regenerates every publication plot in one shot.
+# DEVICE=zen4 must be run on Zen4 hardware; DEVICE=m3_pro on Apple Silicon.
+results-refresh:
+	bash tools/results/refresh_all.sh --device $(DEVICE)
 
 .PHONY: results-refresh
 
@@ -278,7 +262,7 @@ campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate
 # ── Clean ───────────────────────────────────────────────────────
 
 clean:
-	rm -f $(OUT) calibrate contour_1s contour_1s_par accuracy_bench
+	rm -f $(OUT) calibrate contour_1s contour_1s_par accuracy_bench validate_best_b calibrate_best_b
 	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model test_bselect_lookup
 	rm -rf $(BUILD_DIR)
 	rm -rf python/*.egg-info python/build python/dist

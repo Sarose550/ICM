@@ -129,26 +129,13 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 };
 
 /* ── Device constants ── */
-/* calib_times_ns now measures the full polymul_fft_wrap pipeline
- * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.
- * Wrap correction is modeled separately with WRAP_FMA_NS. */
-#ifndef FMA_NS
-#define FMA_NS 0.0677  /* ns per scalar FMA, re-measure via ./bench_grid profile */
-#endif
-#ifndef FFT_OVERHEAD_NS
-#define FFT_OVERHEAD_NS 0.0000  /* baked into calib_times_ns (full pipeline) */
-#endif
 #ifndef WRAP_FMA_NS
 #define WRAP_FMA_NS 0.5160  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
 /* Batched linear engine (BQ=8, src/linear_batched_impl.inc) effective
- * per-work-unit cost for linear_roofline_cost()'s 5*n*k*BATCHED_FMA_NS
- * formula (5, not 4: forward pass does BQ*(2k-1) FMAs/player, the fused
- * backward pass does BQ*(3k-1) -- ~5k total, not 4k as the old formula
- * assumed). FMA_NS itself is measured from an unrelated scalar schoolbook
- * microbenchmark (polymul_modk) and is NOT representative of this engine's
- * real interleaved inner loop -- reusing it here underpredicted real
- * linear-engine cost by a consistent ~1.73-1.80x. BATCHED_FMA_NS is fit
+ * per-work-unit cost: 5*n*k*BATCHED_FMA_NS (5, not 4: forward pass does
+ * BQ*(2k-1) FMAs/player, the fused backward pass does BQ*(3k-1) -- ~5k
+ * total, not 4k as the old formula assumed). BATCHED_FMA_NS is fit
  * directly against real icm_run_linear_batched() measurements across
  * n in {512..8192}, k in {120..285} (CV 1.27% across all points -- the
  * 5*n*k form fits real data far better than the old 4*n*k form did). */
@@ -163,12 +150,10 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #endif
 /* Hybrid-engine block/leaf constants, per-B lookup tables.
  *
- * These replace the old 2-parameter linear fit (BLOCK_FMA_NS, BLOCK_MEM_NS,
- * LEAF_FMA_NS, LEAF_BLOCK_NS) with directly-measured per-player costs at
- * each of the 6 candidate block sizes B ∈ {8, 16, 24, 32, 48, 64}.
- *
- * The per-B cost is genuinely non-linear (reorder-buffer-limited ILP). A
- * lookup table captures this without unphysical negative intercepts.
+ * Directly-measured per-player costs at each of the 6 candidate block
+ * sizes B ∈ {8, 16, 24, 32, 48, 64}. The per-B cost is genuinely
+ * non-linear (reorder-buffer-limited ILP). A lookup table captures this
+ * without unphysical negative intercepts.
  *
  * Live, final values from tools/bench_block_build.c on this machine. */
 #ifndef BLOCK_BUILD_NS_PER_PLAYER_DEFINED
@@ -201,30 +186,12 @@ static const double leaf_fma_ns_per_player[6] = {
 };
 #endif
 
-/* FP64 division floor, directly measured, one division per player in
- * the leaf-extraction synthetic-division recurrence.  This is a genuine
- * hardware throughput bound, independent of B. */
-#ifndef FP64_DIV_NS
-#define FP64_DIV_NS 3.7984  /* ns per FP64 division, re-measure via bench_div_chain */
-#endif
-
 /* ── Cache hierarchy ── */
 #ifndef L2_CACHE_SIZE
 #define L2_CACHE_SIZE 1048576  /* per-core L2 in bytes, update for this hardware */
 #endif
 #ifndef L3_CACHE_SIZE
 #define L3_CACHE_SIZE 33554432  /* shared L3 in bytes, update for this hardware */
-#endif
-
-/* ── Streaming bandwidth (measured by calibrate) ── */
-#ifndef L2_BW_GBS
-#define L2_BW_GBS 113.3
-#endif
-#ifndef L3_BW_GBS
-#define L3_BW_GBS 111.3
-#endif
-#ifndef DRAM_BW_GBS
-#define DRAM_BW_GBS 110.7
 #endif
 
 /* ── Schoolbook cost lookup tables ─────────────────────────────
@@ -372,7 +339,7 @@ static const int crossover_k[N_CROSSOVER_POINTS] = {123, 124, 122, 122, 122, 122
  * B=32 dominates almost everywhere on M3 Pro; the one consistent
  * exception is k=400 at n>=2048, where B=48 real-wins. */
 #ifndef N_BSELECT_POINTS
-#define N_BSELECT_POINTS 2558
+#define N_BSELECT_POINTS 2563
 static const int bselect_n[N_BSELECT_POINTS] = {
     17640, 749, 353, 1680, 1964, 256, 3395, 1680, 28125, 34620, 4320, 912,
     1436, 60420, 10976, 4874, 256, 3814, 6860, 31694, 648, 507, 405, 6860,
@@ -587,8 +554,9 @@ static const int bselect_n[N_BSELECT_POINTS] = {
     270, 689, 787, 1108, 2821, 42910, 8714, 23121, 18377, 29350, 21831, 383,
     1776, 4200, 4765, 8148, 11252, 18019, 317, 22514, 423, 1067, 398, 2708,
     273, 3465, 31772, 789, 60094, 1915, 51662, 62473, 34043, 14577, 38403, 5440,
-    40467, 33332
+    40467, 33332, 1024, 1024, 1024, 1024, 1024
 };
+;
 ;
 ;
 ;
@@ -2609,8 +2577,9 @@ static const int bselect_k[N_BSELECT_POINTS] = {
     48, 3, 3, 23, 14, 240, 7605, 49, 5, 27, 39, 32,
     5, 8, 2585, 5, 5, 90, 237, 17511, 4, 11, 8, 17,
     10, 1564, 16757, 2, 25903, 1889, 29762, 3066, 20179, 332, 77, 57,
-    40023, 12037
+    40023, 12037, 2, 16, 128, 256, 512
 };
+;
 ;
 ;
 ;
@@ -4631,8 +4600,9 @@ static const int bselect_B[N_BSELECT_POINTS] = {
     48, 24, 32, 48, 48, 32, 48, 32, 24, 48, 64, 48,
     32, 24, 32, 24, 24, 48, 32, 32, 16, 32, 24, 48,
     32, 32, 32, 8, 32, 32, 32, 32, 48, 32, 48, 48,
-    32, 32
+    32, 32, 8, 32, 32, 32, 32
 };
+;
 ;
 ;
 ;

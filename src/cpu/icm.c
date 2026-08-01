@@ -1364,7 +1364,7 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
                   fft_idx = lo; }
                 double fft_build = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
                                    ? calib_times_ns[fft_idx] : 1e18;
-                double fft_overhead = FFT_OVERHEAD_NS;
+                double fft_overhead = 0.0;  /* was FFT_OVERHEAD_NS, always 0.0 */
                 double build_correction = (double)bwm * (bwm + 1) / 2.0 * WRAP_FMA_NS;
 
                 /* Build cost comparison: schoolbook vs FFT.
@@ -1901,17 +1901,6 @@ typedef struct {
 #define L2_CACHE_SIZE 1048576  /* 1MB for Zen 4; 32MB for M3 Pro */
 #endif
 
-/* Bandwidth constants for roofline cost model (measured by calibrate).
- * Fallback defaults for uncalibrated devices. */
-#ifndef L2_BW_GBS
-#define L2_BW_GBS 200.0
-#endif
-#ifndef L3_BW_GBS
-#define L3_BW_GBS 80.0
-#endif
-#ifndef DRAM_BW_GBS
-#define DRAM_BW_GBS 45.0
-#endif
 #ifndef L3_CACHE_SIZE
 #define L3_CACHE_SIZE 33554432  /* 32MB */
 #endif
@@ -2371,16 +2360,11 @@ static int select_best_B(int n, int k);
 /* Batch width of the linear engine used by icm_equity (run_linear_batched_bq8). */
 #define LINEAR_BQ 8
 
-/* Shared roofline cost model (blended_bw, linear_roofline_cost).
- * Requires L2_CACHE_SIZE, L3_CACHE_SIZE, L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS
- * to be defined above (from fft_config.h). */
-#include "cost_model.h"
-
 /* Engine dispatch: linear vs hybrid, for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.
  * n_targets: number of target players for subset queries (0 or n = all players).
  *
- * Uses the empirically-measured crossover table (src/fft_cost_model.h's
+ * Uses the empirically-measured crossover table (src/cpu/fft_cost_model.h's
  * empirical_crossover_k(), calibrated by tools/calibrate_crossover.c)
  * rather than a summed analytical cost comparison. Closed-form cost models
  * miss microarchitectural effects even when every constant is individually
@@ -2698,7 +2682,7 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
  * O(log n) per candidate, negligible vs engine work. */
 static int select_best_B(int n, int k) {
     /* Empirically-measured 2D nearest-neighbor lookup
-     * (tools/calibrate_best_b.c). See src/fft_cost_model.h's
+     * (tools/calibrate_best_b.c). See src/cpu/fft_cost_model.h's
      * empirical_best_B(): B is a discrete choice, not a continuous
      * threshold, so nearest-neighbor, not interpolation.
      *

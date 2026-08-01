@@ -198,82 +198,7 @@ static void test_tree_ctx_levels(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Test 6: Cost model B sweep; verify model picks reasonable B
-   Compare model's best_B against forced-B cost sweep.
-   ═══════════════════════════════════════════════════════════════ */
-static void test_b_sweep_cpu(void) {
-    int test_n[] = {1024, 4096, 16384, 65536};
-    int n_tests = sizeof(test_n) / sizeof(test_n[0]);
-    int cands[] = {8, 16, 24, 32, 48, 64};
-
-    for (int ti = 0; ti < n_tests; ti++) {
-        int n = test_n[ti], k = n;
-        int model_B = select_best_B(n, k);
-
-        /* Compute cost for each B candidate */
-        double costs[6];
-        double min_cost = 1e18;
-        int min_B = 0;
-        for (int ci = 0; ci < 6; ci++) {
-            int B = cands[ci];
-            if (B > k || B > n) { costs[ci] = 1e18; continue; }
-            int nblocks = (n + B - 1) / B;
-            TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
-            double block = (double)n * ((double)(B+1)/2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
-            double le_d = FP64_DIV_NS, le_f = 2.0*B*LEAF_FMA_NS;
-            double leaf_cost = (double)n * (le_d > le_f ? le_d : le_f)
-                             + (double)n / B * LEAF_BLOCK_NS;
-            double tree = 0;
-            for (int ell = 1; ell < tc->L - 1; ell++) {
-                int cps = tc->psz[ell-1], nr = tc->n_real[ell];
-                if (tc->use_fft[ell]) {
-                    int bfn = tc->build_fft_n[ell], bwm = tc->build_wrap_m[ell];
-                    int idx=0; { int lo=0,hi=N_CALIBRATED_SIZES-1;
-                      while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-                      idx=lo; }
-                    double bf = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                              + (double)bwm*(bwm+1)/2.0*FMA_NS;
-                    double corr;
-                    if (tc->fft_cache_ok[ell]) {
-                        corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                             + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
-                    } else {
-                        int cfn = tc->corr_fft_n[ell], cwm = tc->corr_wrap_m[ell];
-                        int cidx=0; {int lo=0,hi=N_CALIBRATED_SIZES-1;
-                         while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
-                         cidx=lo;}
-                        corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                             + (double)cwm*(cwm+1)*FMA_NS;
-                    }
-                    tree += nr * (bf + corr);
-                } else {
-                    int is_below = tc->below_sat[ell];
-                    int d_eff = is_below ? cps/2 : cps-1;
-                    double school_mul = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
-                    double school_corr = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
-                    tree += nr * (school_mul + school_corr);
-                }
-            }
-            tree_ctx_destroy(tc);
-            costs[ci] = block + leaf_cost + tree;
-            if (costs[ci] < min_cost) { min_cost = costs[ci]; min_B = B; }
-        }
-
-        CHECK(model_B == min_B,
-              "n=%d model_B=%d != sweep_min_B=%d", n, model_B, min_B);
-
-        fprintf(stderr, "  n=%d model_B=%d:", n, model_B);
-        for (int ci = 0; ci < 6; ci++) {
-            if (cands[ci] > k || cands[ci] > n) continue;
-            fprintf(stderr, " B=%d=%.0f%s", cands[ci], costs[ci],
-                    cands[ci] == model_B ? "*" : "");
-        }
-        fprintf(stderr, "\n");
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   Test 7: FFT config picks reasonable sizes
+   Test 6: FFT config picks reasonable sizes
    The chosen FFT size should not be wildly larger than conv_len.
    ═══════════════════════════════════════════════════════════════ */
 static void test_fft_config_sizes(void) {
@@ -294,7 +219,7 @@ static void test_fft_config_sizes(void) {
         { int lo=0,hi=N_CALIBRATED_SIZES-1;
           while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
           idx=lo; }
-        double cost = calib_times_ns[idx] + (double)bwm*(bwm+1)/2.0*FMA_NS;
+        double cost = calib_times_ns[idx] + (double)bwm*(bwm+1)/2.0*WRAP_FMA_NS;
 
         /* The no-wrap option (next smooth >= conv) should not be 3x cheaper */
         int nowrap_fft = bfn;
@@ -315,7 +240,7 @@ static void test_fft_config_sizes(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Test 8: Wrap formula consistency across functions
+   Test 7: Wrap formula consistency across functions
    tree_ctx_create_ex2 and select_best_B must use the same
    wrap formulas as best_fft_config / best_fft_config_joint:
      build: bwm*(bwm+1)/2 * FMA_NS
@@ -351,8 +276,8 @@ static void test_wrap_formula_consistency(void) {
                   nblocks, B, ell, bwm, expected_bwm, bfn, conv_build);
 
             /* Verify the build wrap cost formula: bwm*(bwm+1)/2 */
-            double correct_build_wrap = (double)bwm * (bwm + 1) / 2.0 * FMA_NS;
-            double wrong_build_wrap = (double)(bwm + 1) * (bwm + 1) * FMA_NS;
+            double correct_build_wrap = (double)bwm * (bwm + 1) / 2.0 * WRAP_FMA_NS;
+            double wrong_build_wrap = (double)(bwm + 1) * (bwm + 1) * WRAP_FMA_NS;
             if (bwm > 0) {
                 CHECK(correct_build_wrap < wrong_build_wrap,
                       "sanity: correct build wrap %.1f should be < wrong %.1f",
@@ -360,8 +285,8 @@ static void test_wrap_formula_consistency(void) {
             }
 
             /* Verify corr wrap: cwm*(cwm+1) (NOT 2*(cwm+1)^2) */
-            double correct_corr_wrap = (double)cwm * (cwm + 1) * FMA_NS;
-            double wrong_corr_wrap = 2.0 * (double)(cwm + 1) * (cwm + 1) * FMA_NS;
+            double correct_corr_wrap = (double)cwm * (cwm + 1) * WRAP_FMA_NS;
+            double wrong_corr_wrap = 2.0 * (double)(cwm + 1) * (cwm + 1) * WRAP_FMA_NS;
             if (cwm > 0) {
                 CHECK(correct_corr_wrap < wrong_corr_wrap,
                       "sanity: correct corr wrap %.1f should be < wrong %.1f",
@@ -373,7 +298,7 @@ static void test_wrap_formula_consistency(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Test 9: Calibration table sanity
+   Test 8: Calibration table sanity
    ═══════════════════════════════════════════════════════════════ */
 static void test_calibration_table(void) {
     CHECK(N_CALIBRATED_SIZES > 100,
@@ -445,9 +370,9 @@ int main(void) {
     /* Try loading wisdom, but tests work without it */
     wisdom_load();
 
-    fprintf(stderr, "Config: FMA_NS=%.3f  FFT_OVERHEAD_NS=%.1f  "
+    fprintf(stderr, "Config: WRAP_FMA_NS=%.4f  "
             "PAIRED_CACHED_CORR_RATIO=%.3f  INDEP_PAIR_RATIO=%.3f\n",
-            FMA_NS, FFT_OVERHEAD_NS, PAIRED_CACHED_CORR_RATIO, INDEP_PAIR_RATIO);
+            WRAP_FMA_NS, PAIRED_CACHED_CORR_RATIO, INDEP_PAIR_RATIO);
     fprintf(stderr, "N_CALIBRATED_SIZES=%d  max_calib=%d\n\n",
             N_CALIBRATED_SIZES, calib_sizes[N_CALIBRATED_SIZES - 1]);
 
@@ -466,16 +391,13 @@ int main(void) {
     fprintf(stderr, "--- 5. Tree ctx levels ---\n");
     test_tree_ctx_levels();
 
-    fprintf(stderr, "--- 6. B sweep cost verification ---\n");
-    test_b_sweep_cpu();
-
-    fprintf(stderr, "--- 7. FFT config sizes ---\n");
+    fprintf(stderr, "--- 6. FFT config sizes ---\n");
     test_fft_config_sizes();
 
-    fprintf(stderr, "--- 8. Wrap formula consistency ---\n");
+    fprintf(stderr, "--- 7. Wrap formula consistency ---\n");
     test_wrap_formula_consistency();
 
-    fprintf(stderr, "--- 9. Calibration table ---\n");
+    fprintf(stderr, "--- 8. Calibration table ---\n");
     test_calibration_table();
 
     fprintf(stderr, "\n--- Diagnostic: level info ---\n");

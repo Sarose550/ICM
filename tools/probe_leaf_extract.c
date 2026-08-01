@@ -1,11 +1,15 @@
-/* probe_leaf_extract.c; Measure leaf-extraction cost embedded in real hybrid
- * engine runs, and compare against the cost-model prediction
- * (leaf_fma_ns_per_player[] + FP64_DIV_NS floor).
+/* probe_leaf_extract.c: Measure leaf-extraction cost embedded in real hybrid
+ * engine runs.
  *
  * Methodology: replicates engine_hybrid_core with timing splits at each phase
  * boundary; block_build, tree_build+propagate, leaf_divide. Runs Q=256 points,
  * median over N_REPS independent runs. This is the same rigor as
  * probe_tree_levels.c.
+ *
+ * The main sweep reports raw per-phase timings (block, tree, leaf) at a grid
+ * of (n,k) values.  The B-sweep phase (n=8192, k=320, all 6 candidate B
+ * values) reports measured leaf-extraction ns/player for each B, producing
+ * the leaf_fma_ns_per_player[] lookup table consumed by the hybrid engine.
  *
  * Build (macOS M3 Pro):
  *   gcc -O3 -march=native -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
@@ -259,16 +263,9 @@ int main(void) {
 
     printf("=== PHASE-BY-PHASE TIMING (B=%d, Q=%d, %d reps median) ===\n\n",
            B, Q_PROBE, N_REPS);
-    printf("%-6s %-6s %12s %12s %12s %14s %14s %14s %8s %8s %8s\n",
+    printf("%-6s %-6s %12s %12s %12s %12s %12s %12s\n",
            "n", "k", "block/qp", "tree/qp", "leaf/qp",
-           "leaf_pred/qp", "block_pred/qp", "total_pred/qp",
-           "l_ratio", "b_ratio", "t_ratio");
-
-    double leaf_sum_log = 0, leaf_sum_log2 = 0;
-    double block_sum_log = 0, block_sum_log2 = 0;
-    int n_rows = 0;
-    double leaf_best = 1e9, leaf_worst = 0;
-    double block_best = 1e9, block_worst = 0;
+           "block/player", "tree/player", "leaf/player");
 
     for (int ni = 0; ni < n_n; ni++) {
         int n = n_vals[ni];
@@ -313,103 +310,13 @@ int main(void) {
             double med_tree = tree_samples[N_REPS / 2];
             double med_leaf = leaf_samples[N_REPS / 2];
 
-            /* Model predictions */
-            int bidx = B_to_table_index(B);
-            double pred_block = (double)n * block_build_ns_per_player[bidx];
-            double le_cost = (FP64_DIV_NS > leaf_fma_ns_per_player[bidx])
-                             ? FP64_DIV_NS : leaf_fma_ns_per_player[bidx];
-            double pred_leaf = (double)n * le_cost;
-
-            /* Tree prediction from model */
-            int nblocks = (n + B - 1) / B;
-            TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
-            double pred_tree = 0;
-            for (int ell = 1; ell < tc->L - 1; ell++) {
-                int cps = tc->psz[ell-1], nr = tc->n_real[ell];
-                if (tc->use_fft[ell]) {
-                    int bfn = tc->build_fft_n[ell];
-                    int bwm = tc->build_wrap_m[ell];
-                    int idx = 0;
-                    { int lo=0,hi=N_CALIBRATED_SIZES-1;
-                      while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-                      idx=lo; }
-                    double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                                     + (double)bwm*(bwm+1)/2.0*FMA_NS;
-                    double corr;
-                    if (tc->fft_cache_ok[ell]) {
-                        corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                             + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
-                    } else {
-                        int cfn = tc->corr_fft_n[ell];
-                        int cwm = tc->corr_wrap_m[ell];
-                        int cidx=0;
-                        {int lo=0,hi=N_CALIBRATED_SIZES-1;
-                         while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
-                         cidx=lo;}
-                        corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                             + (double)cwm*(cwm+1)*FMA_NS;
-                    }
-                    pred_tree += nr * (build_fft + corr);
-                } else {
-                    int idx;
-                    { int lo=0,hi=N_CALIBRATED_SIZES-1;
-                      while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
-                      idx=lo; }
-                    double s = schoolbook_mul_ns[idx];
-                    double c = (double)cps * tc->g_needed[ell-1] * schoolbook_corr_ns[idx];
-                    pred_tree += nr * (s + c);
-                }
-            }
-            tree_ctx_destroy(tc);
-
-            double pred_total = pred_block + pred_tree + pred_leaf;
-            double l_ratio = (pred_leaf > 0) ? med_leaf / pred_leaf : 0;
-            double b_ratio = (pred_block > 0) ? med_block / pred_block : 0;
-            double t_ratio = (pred_total > 0) ? (med_block+med_tree+med_leaf) / pred_total : 0;
-
-            printf("%-6d %-6d %12.1f %12.1f %12.1f %14.1f %14.1f %14.1f %8.3f %8.3f %8.3f\n",
+            printf("%-6d %-6d %12.1f %12.1f %12.1f %12.4f %12.4f %12.4f\n",
                    n, k, med_block, med_tree, med_leaf,
-                   pred_leaf, pred_block, pred_total,
-                   l_ratio, b_ratio, t_ratio);
-
-            if (l_ratio > 0.1) {
-                double lr = log(l_ratio);
-                leaf_sum_log += lr;
-                leaf_sum_log2 += lr * lr;
-                if (l_ratio < leaf_best) leaf_best = l_ratio;
-                if (l_ratio > leaf_worst) leaf_worst = l_ratio;
-            }
-            if (b_ratio > 0.1) {
-                double lr = log(b_ratio);
-                block_sum_log += lr;
-                block_sum_log2 += lr * lr;
-                if (b_ratio < block_best) block_best = b_ratio;
-                if (b_ratio > block_worst) block_worst = b_ratio;
-            }
-            n_rows++;
+                   med_block / n, med_tree / n, med_leaf / n);
 
             free(S); free(payout);
         }
     }
-
-    double leaf_geo = exp(leaf_sum_log / n_rows);
-    double leaf_sd = sqrt(leaf_sum_log2/n_rows - (leaf_sum_log/n_rows)*(leaf_sum_log/n_rows));
-    double block_geo = exp(block_sum_log / n_rows);
-    double block_sd = sqrt(block_sum_log2/n_rows - (block_sum_log/n_rows)*(block_sum_log/n_rows));
-
-    printf("\n=== LEAF EXTRACTION ===\n");
-    printf("geo_mean(meas/pred) = %.3f\n", leaf_geo);
-    printf("log-stddev          = %.3f\n", leaf_sd);
-    printf("ratio range         = [%.3f, %.3f]\n", leaf_best, leaf_worst);
-    printf("prediction: FP64_DIV_NS=%.4f, leaf_fma_ns_per_player[%d]=%.4f\n",
-           FP64_DIV_NS, B_to_table_index(B), leaf_fma_ns_per_player[B_to_table_index(B)]);
-
-    printf("\n=== BLOCK BUILD ===\n");
-    printf("geo_mean(meas/pred) = %.3f\n", block_geo);
-    printf("log-stddev          = %.3f\n", block_sd);
-    printf("ratio range         = [%.3f, %.3f]\n", block_best, block_worst);
-    printf("prediction: block_build_ns_per_player[%d]=%.4f\n",
-           B_to_table_index(B), block_build_ns_per_player[B_to_table_index(B)]);
 
     /* ── B-SWEEP PHASE: n=8192, k=320, sweep B ∈ {8,16,24,32,48,64} ──
      * Same fresh-HybridCtx-per-rep discipline as the main sweep above.
@@ -418,10 +325,8 @@ int main(void) {
      * Each B runs N_REPS independent HybridCtx alloc→probe→destroy cycles. */
     printf("\n\n=== B-SWEEP (n=8192, k=320, Q=%d, %d reps median) ===\n\n",
            Q_PROBE, N_REPS);
-    printf("%-6s %12s %12s %12s\n",
-           "B", "leaf_ns/qp", "leaf_ns/player", "pred_ns/player");
-    printf("%-6s %12s %12s %12s\n",
-           "", "", "(measured)", "(current model)");
+    printf("%-6s %12s %12s\n",
+           "B", "leaf_ns/qp", "leaf_ns/player");
 
     {
         int bs_n = 8192, bs_k = 320;
@@ -468,12 +373,8 @@ int main(void) {
             double block_ns_per_player = med_block / (double)bs_n;
             leaf_table[bi] = leaf_ns_per_player;
 
-            int bidx = B_to_table_index(Bv);
-            double le_cost = (FP64_DIV_NS > leaf_fma_ns_per_player[bidx])
-                             ? FP64_DIV_NS : leaf_fma_ns_per_player[bidx];
-
-            printf("%-6d %12.1f %12.4f %12.4f\n",
-                   Bv, med_leaf, leaf_ns_per_player, le_cost);
+            printf("%-6d %12.1f %12.4f\n",
+                   Bv, med_leaf, leaf_ns_per_player);
         }
 
         printf("\n=== FINAL leaf_fma_ns_per_player[] TABLE ===\n");

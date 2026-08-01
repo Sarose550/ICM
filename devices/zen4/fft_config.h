@@ -129,15 +129,6 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 };
 
 /* ── Device constants ── */
-/* calib_times_ns now measures the full polymul_fft_wrap pipeline
- * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.
- * Wrap correction is modeled separately with WRAP_FMA_NS. */
-#ifndef FMA_NS
-#define FMA_NS 0.0690  /* ns per scalar FMA, re-measure via ./bench_grid profile */
-#endif
-#ifndef FFT_OVERHEAD_NS
-#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline) */
-#endif
 #ifndef WRAP_FMA_NS
 #define WRAP_FMA_NS 0.4360  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
@@ -164,12 +155,10 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #endif
 /* Hybrid-engine block/leaf constants, per-B lookup tables.
  *
- * These replace the old 2-parameter linear fit (BLOCK_FMA_NS, BLOCK_MEM_NS,
- * LEAF_FMA_NS, LEAF_BLOCK_NS) with directly-measured per-player costs at
- * each of the 6 candidate block sizes B ∈ {8, 16, 24, 32, 48, 64}.
- *
- * The per-B cost is genuinely non-linear (reorder-buffer-limited ILP). A
- * lookup table captures this without unphysical negative intercepts.
+ * Directly-measured per-player costs at each of the 6 candidate block
+ * sizes B ∈ {8, 16, 24, 32, 48, 64}. The per-B cost is genuinely
+ * non-linear (reorder-buffer-limited ILP). A lookup table captures this
+ * without unphysical negative intercepts.
  *
  * Live, final values from tools/bench_block_build.c on this machine. */
 #ifndef BLOCK_BUILD_NS_PER_PLAYER_DEFINED
@@ -202,30 +191,12 @@ static const double leaf_fma_ns_per_player[6] = {
 };
 #endif
 
-/* FP64 division floor, directly measured, one division per player in
- * the leaf-extraction synthetic-division recurrence.  This is a genuine
- * hardware throughput bound, independent of B. */
-#ifndef FP64_DIV_NS
-#define FP64_DIV_NS 3.2951  /* ns per FP64 division, re-measure via bench_div_chain */
-#endif
-
 /* ── Cache hierarchy ── */
 #ifndef L2_CACHE_SIZE
 #define L2_CACHE_SIZE 1048576  /* per-core L2 in bytes, update for this hardware */
 #endif
 #ifndef L3_CACHE_SIZE
 #define L3_CACHE_SIZE 33554432  /* shared L3 in bytes, update for this hardware */
-#endif
-
-/* ── Streaming bandwidth (measured by calibrate) ── */
-#ifndef L2_BW_GBS
-#define L2_BW_GBS 131.5
-#endif
-#ifndef L3_BW_GBS
-#define L3_BW_GBS 56.0
-#endif
-#ifndef DRAM_BW_GBS
-#define DRAM_BW_GBS 33.0
 #endif
 
 /* ── Empirical linear-vs-hybrid crossover table ──────────────────────

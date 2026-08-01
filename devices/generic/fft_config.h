@@ -58,20 +58,13 @@ static const double schoolbook_corr_ns[1] = {-1.0};
  * Compile-only on the uncalibrated path (the cost comparison is
  * skipped).  Plausible defaults that let the code compile; never
  * used for any dispatch decision when CALIBRATED_MAX_CONV_LEN == -1. */
-#define FMA_NS                     0.25
-#define FFT_OVERHEAD_NS            0.0
 #define WRAP_FMA_NS                4.0
 #define PAIRED_CACHED_CORR_RATIO   1.03
 #define INDEP_PAIR_RATIO           1.25
-#define FP64_DIV_NS                10.0
-#define LEAF_FMA_NS                0.25
-#define LEAF_BLOCK_NS              100.0
-#define BLOCK_FMA_NS               0.05
-#define BLOCK_MEM_NS               0.1
 
 /* ── Batched linear-engine constant ───────────────────────────
  * Compile-only on the uncalibrated path.  Fit against real
- * icm_run_linear_batched() measurements; NOT the same as FMA_NS. */
+ * icm_run_linear_batched() measurements. */
 #define BATCHED_FMA_NS             0.0954
 
 /* ── Cache hierarchy ──────────────────────────────────────────
@@ -80,9 +73,6 @@ static const double schoolbook_corr_ns[1] = {-1.0};
  * decisions when CALIBRATED_MAX_CONV_LEN == -1. */
 #define L2_CACHE_SIZE   1048576
 #define L3_CACHE_SIZE   33554432
-#define L2_BW_GBS       100.0
-#define L3_BW_GBS       50.0
-#define DRAM_BW_GBS     20.0
 
 /* ── MKL dual-dispatch table (Linux only) ─────────────────────
  * Compile-only: the HAS_CALIB_LIB guard prevents access on the

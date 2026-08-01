@@ -1,22 +1,23 @@
 /* bench_linear_batched_fma.c: isolated microbenchmark for the batched
  * linear engine's inner-loop per-FMA cost (BQ=8 interleaved layout).
  *
- * The cost model in src/cost_model.h predicts linear-engine cost as
- *   4.0 * n * k * FMA_NS  (per quadrature point, × Q=256 total),
- * where FMA_NS=0.0677 (from bench/bench.c's profile mode, measured via
- * a scalar schoolbook polymul_modk, NOT the batched engine's actual
- * inner loop).  Real measured linear-engine times are ~1.73 to 1.80× higher
- * than the model predicts, with a flat multiplicative bias across all
- * (n,k), meaning the model's FORM is right but FMA_NS is wrong.
+ * Historical note: an earlier analytical cost model (src/cost_model.h,
+ * deleted SPRINT_FINAL_CLOSEOUT) used FMA_NS=0.0677 derived from a scalar
+ * schoolbook polymul_modk microbenchmark and predicted linear-engine cost
+ * as 4.0*n*k*FMA_NS per QP. Real measured times were ~1.73-1.80x higher,
+ * with a flat multiplicative bias -- the model's form was right but its
+ * per-FMA constant was wrong. The old FMA_NS was removed with that header;
+ * the current cost model uses directly measured per-B lookup tables
+ * instead of a single scalar FMA_NS.
  *
  * This benchmark isolates the EXACT inner loops verbatim from
- * src/linear_batched_impl.inc (BQ=8, interleaved a_batch layout):
+ * src/cpu/linear_batched_impl.inc (BQ=8, interleaved a_batch layout):
  *
  *   1. apply_factor_bq: forward propagation, BQ*(2k-1) FMAs per player
  *   2. Backward fused: dot product + suffix update, BQ*(3k-1) FMAs per player
  *
  * Total: BQ*(5k-2) ≈ 5*k*BQ FMAs per player per BQ quadrature points,
- * i.e. ~5*k FMAs per QP.  (The model uses 4*k, a ~25% undercount.)
+ * i.e. ~5*k FMAs per QP.  (The old model used 4*k, a ~25% undercount.)
  *
  * We sweep k ∈ {32, 64, 128, 256, 512} and n ∈ {256, 512, 1024, 2048}
  * to extract the marginal per-FMA cost via linear regression of
@@ -624,10 +625,10 @@ int main(void) {
     fprintf(stderr, "#    the scalar schoolbook's (%.4f ns), and the existing model formula\n", old_fma_ns);
     fprintf(stderr, "#    4.0*n*k undercounts the actual FMA count by ~25%%.\n");
     fprintf(stderr, "#\n");
-    fprintf(stderr, "# 2. Update linear_roofline_cost() in src/cost_model.h:\n");
-    fprintf(stderr, "#      OLD: double compute_ns = 4.0 * n * k * FMA_NS;\n");
-    fprintf(stderr, "#      NEW: double compute_ns = 4.0 * n * k * LINEAR_BATCHED_FMA_NS;\n");
-    fprintf(stderr, "#    with LINEAR_BATCHED_FMA_NS = %.4f\n", linear_batched_fma_ns);
+    fprintf(stderr, "# 2. The batched engine performs ~5k FMAs per player per QP\n");
+    fprintf(stderr, "#    (BQ=8: forward 8*(2k-1) + backward 8*(3k-1) ≈ 5k net),\n");
+    fprintf(stderr, "#    not the 4k the old scalar-schoolbook formula assumed.\n");
+    fprintf(stderr, "#    measured BATCHED_FMA_NS = %.4f\n", linear_batched_fma_ns);
     fprintf(stderr, "#\n");
     fprintf(stderr, "#    This only corrects the inner-loop portion.  To fully close the\n");
     fprintf(stderr, "#    1.73-1.80× gap, the model also needs terms for a_batch\n");

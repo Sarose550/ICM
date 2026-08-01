@@ -124,7 +124,7 @@ def read_existing_table(config_path: str, device_meta: dict) -> list[tuple[int, 
     seeding and adaptive refinement only cover a sparse/subset of the
     domain, which does NOT include hand-added gap-fill anchors at
     non-7-smooth n values (e.g. points added to close a specific
-    B-selection cliff) — those points would vanish on the next full
+    B-selection cliff) - those points would vanish on the next full
     orchestrator run if this function's result weren't seeded into
     live_table before any injection.
     """

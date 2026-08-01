@@ -52,7 +52,7 @@ fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
 
 # Left: raw ns/FMA
 ax1.semilogx(wrap_ms, ns_per_fma, 'o-', color='#2166ac', markersize=4)
-ax1.axhline(y=0.40, color='#b2182b', linestyle='--', alpha=0.7, label=r'Production $\mathrm{WRAP\_FMA\_NS}=0.40$')
+ax1.axhline(y=0.4360, color="#b2182b", linestyle="--", alpha=0.7, label=r"Production $\mathrm{WRAP\_FMA\_NS}=0.436$")
 ax1.set_xlabel('wrap_m')
 ax1.set_ylabel('Apparent ns/FMA')
 ax1.set_title('Raw ns-per-FMA (includes overhead)')
@@ -61,7 +61,7 @@ ax1.grid(True, alpha=0.3)
 
 # Right: marginal cost (local slope)
 ax2.semilogx(mid_wrap, marginal, 's-', color='#2166ac', markersize=4)
-ax2.axhline(y=0.40, color='#b2182b', linestyle='--', alpha=0.7, label=r'Production $\mathrm{WRAP\_FMA\_NS}=0.40$')
+ax2.axhline(y=0.4360, color="#b2182b", linestyle="--", alpha=0.7, label=r"Production $\mathrm{WRAP\_FMA\_NS}=0.436$")
 ax2.axvspan(64, 384, alpha=0.1, color='green', label='Operating window [64, 384]')
 ax2.set_xlabel('wrap_m (midpoint)')
 ax2.set_ylabel('Marginal ns/FMA (local slope)')
