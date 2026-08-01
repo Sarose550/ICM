@@ -597,7 +597,7 @@ here is the *motivation* for that migration, not a standing caveat.
 | 33,554,432 | 2,506.71 | 5,059.26 | 22,321.49 | 22,865.76 |
 
 Full 211-point calibration heatmap
-(`results/gpu_heatmap_b200_20260730_gapfill.csv`), regenerated 2026-07-30 on
+(`results/gpu_heatmap_b200.csv`), regenerated 2026-07-30 on
 top of two rounds of B-selection anchor fixes (`2620583`, `71db180`; see
 `VERDICTS.md` V7). All 210 cells pass with zero errors, cv ≤ 0.036
 everywhere (most 0.000).

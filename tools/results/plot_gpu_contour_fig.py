@@ -5,7 +5,7 @@ and runtime_vs_n_gpu.png — Runtime(n) at fixed k, log-log (GPU).
 
 Usage:
   python3 tools/results/plot_gpu_contour_fig.py
-  python3 tools/results/plot_gpu_contour_fig.py --heatmap results/gpu_heatmap_b200_20260730_gapfill.csv
+  python3 tools/results/plot_gpu_contour_fig.py --heatmap results/gpu_heatmap_b200.csv
 """
 
 import argparse
