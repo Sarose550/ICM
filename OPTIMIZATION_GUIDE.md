@@ -16,7 +16,7 @@ no FFT. Baseline: n=1024 k=n took 689ms.
 Three engines with dispatch:
 
 ```c
-int B = select_engine(n, k);  // empirical-table-based for full equity; analytical for subsets
+int B = select_engine(n, k);  // empirical-table-based (subset queries use the same lookup, n_targets is unused)
 if (B > 0)
     use hybrid(B);        // block build + FFT tree + bidirectional divide
 else
@@ -58,23 +58,23 @@ by offline-calibrated data.
 #### Per-level FFT vs schoolbook decision
 At each tree level, `tree_ctx_create_ex2` compares:
 ```
-fft_cost = calib_time[best_fft_size] + FFT_OVERHEAD_NS + correction(m)
+fft_cost = calib_time[best_fft_size] + fft_overhead + correction(m)
 school_cost = schoolbook_mul_ns[idx]  // direct per-size lookup table
 ```
-Where `schoolbook_mul_ns[]` is a per-size lookup table (indexed by `cps` into
-`calib_sizes[]`), replacing the old `(d_eff + 1)² × FMA_NS` formula. The lookup
-table captures the real non-linear cost at small sizes where schoolbook is
-latency/dependency-chain-bound, not FMA-throughput-bound. `d_eff = cps/2` at
-below-saturation levels (half the coefficients are zero) and `d_eff = cps - 1`
-at saturated levels. Using `cps²` instead of `(d_eff+1)²` overestimates
-schoolbook by 4x at below-sat levels - this was a bug that caused FFT at tiny
-sizes where schoolbook was faster. `FFT_OVERHEAD_NS` is 0.0 (the overhead is
-baked into `calib_times_ns[]` which now measures the full pipeline).
+`fft_overhead` is a hardcoded `0.0` in `icm.c` (the overhead is baked into
+`calib_times_ns[]`, which measures the full pipeline); the `FFT_OVERHEAD_NS`
+`#define` that used to hold this value was deleted as dead code (zero live
+callers), along with `src/cpu/cost_model.h`.
 
-`FMA_NS` is device-specific: **M3 Pro = 0.0677 ns**, Zen 4 = 0.0690 ns
-(AVX-512 scalar FMA). Note: `FMA_NS` is used only for wrap-correction cost
-(`WRAP_FMA_NS`, a separate constant) and as a rough scalar-throughput reference;
-schoolbook cost decisions use the per-size lookup tables, not this constant.
+Where `schoolbook_mul_ns[]` is a per-size lookup table (indexed by `cps` into
+`calib_sizes[]`), replacing the old `(d_eff + 1)² × FMA_NS` formula (`FMA_NS`
+has likewise been deleted as dead code). The lookup table captures the real
+non-linear cost at small sizes where schoolbook is latency/dependency-chain-
+bound, not FMA-throughput-bound. `d_eff = cps/2` at below-saturation levels
+(half the coefficients are zero) and `d_eff = cps - 1` at saturated levels.
+Using `cps²` instead of `(d_eff+1)²` overestimates schoolbook by 4x at
+below-sat levels - this was a bug that caused FFT at tiny sizes where
+schoolbook was faster.
 
 Note: `school_cost_flops` must be `long long` - at cps=65536, `(65536)²` overflows
 a 32-bit int, which caused the root level to use schoolbook (4.3 billion FMAs)
@@ -177,9 +177,10 @@ The batched linear engine's cost model uses **5×n×k × BATCHED_FMA_NS** FMAs p
 quadrature point (forward pass: BQ×(2k-1) FMAs/player; fused backward pass:
 BQ×(3k-1) FMAs/player, ~5k total per player, not 4k as older formulas assumed).
 `BATCHED_FMA_NS` (M3 Pro: 0.0954 ns) is fit directly against real
-`icm_run_linear_batched()` measurements; it is NOT the same as `FMA_NS` (which
-comes from an unrelated scalar schoolbook microbenchmark). Reusing `FMA_NS` here
-underpredicts real linear-engine cost by ~1.73-1.80×.
+`icm_run_linear_batched()` measurements; it was historically distinct from the
+now-deleted `FMA_NS` (an unrelated scalar schoolbook microbenchmark, dead code
+with zero live callers) -- reusing that old constant here underpredicted real
+linear-engine cost by ~1.73-1.80×.
 
 ### 3. OpenMP Parallelism (~8-10x on 16 threads)
 The Q=256 quadrature loop is embarrassingly parallel. Each thread gets its own
@@ -218,7 +219,7 @@ exceeds savings at smaller n). Template in `src/linear_batched_impl.inc`.
 ### 7. Hybrid Block-Divide Engine (8-12%)
 Replace the tree's bottom log₂(B) levels with: sequential block build (tight loop,
 no tree overhead) + bidirectional divide (stable on the complete block product).
-B is selected by an empirically-calibrated 2D nearest-neighbor lookup (`empirical_best_B(n,k)` in `src/fft_cost_model.h`, calibrated by `tools/calibrate_best_b.c`): typically B=32 on both M3 Pro and Zen 4. For subset queries, B selection still uses the analytical cost model (that path was never measured/calibrated this session).
+B is selected by an empirically-calibrated 2D nearest-neighbor lookup (`empirical_best_B(n,k)` in `src/fft_cost_model.h`, calibrated by `tools/calibrate_best_b.c`): typically B=32 on both M3 Pro and Zen 4. `select_best_B(n, k)` takes no `n_targets` parameter at all -- subset queries get the same lookup as full-equity queries, which were the only case the calibration itself measured.
 Players sorted by stack size for branch-prediction-friendly divide direction.
 
 ### 8. Truncated Propagation (2-5%)
@@ -286,11 +287,13 @@ writes sequentially; the backward pass reads in reverse. Both are streaming acce
 patterns that the hardware prefetcher handles perfectly at 400 GB/s.
 
 Checkpointing reduces memory to O(√n·k) but adds 33% recomputation. On M3 Pro
-(unified memory streaming at ~110.7 GB/s, calibrated `DRAM_BW_GBS`), the
-recomputation costs more than the cache miss savings because streaming is
-already fast. On bandwidth-limited hardware (Zen 4 at 33.0 GB/s streaming,
-well below the DDR5-5200 dual-channel theoretical peak), checkpointing
-becomes essential.
+(unified memory streaming at ~110.7 GB/s), the recomputation costs more than
+the cache miss savings because streaming is already fast. On bandwidth-limited
+hardware (Zen 4 at 33.0 GB/s streaming, well below the DDR5-5200 dual-channel
+theoretical peak), checkpointing becomes essential. (The `DRAM_BW_GBS` macro
+that used to carry these bandwidth measurements was deleted as dead code --
+it fed only `blended_bw()`/`linear_roofline_cost()` in the now-deleted
+`src/cpu/cost_model.h`, neither ever called live.)
 
 The hybrid engine IS the blocked linear: block build = forward within a block,
 divide = backward within a block, tree = inter-block structure. The block's working
@@ -328,8 +331,9 @@ For the GPU planner (B200), the equivalent tuning lives in
 
 ### Key Architectural Differences from M3 Pro
 - **SIMD**: AVX-512 (8 FP64/vector) vs NEON (2 FP64/vector)
-- **Memory BW (streaming, calibrated `DRAM_BW_GBS`)**: 33.0 GB/s DDR5 vs
-  110.7 GB/s unified -- well below either platform's theoretical peak
+- **Memory BW (streaming, measured by `tools/calibrate.c`'s bandwidth probe)**:
+  33.0 GB/s DDR5 vs 110.7 GB/s unified -- well below either platform's
+  theoretical peak
 - **L1 cache**: 32KB vs 192KB
 - **L2 cache**: 1MB/core vs 32MB cluster
 - **Cores**: 16P (no E-cores) vs M3 Pro's P+E topology
@@ -372,16 +376,17 @@ The profile output has three measurement sections. Record these values:
 
 1. **FFT overhead table** - The "overhead" column is the per-call constant cost
    not captured in calibration (plan lookup, buffer copies, result extraction).
-   → `FFT_OVERHEAD_NS` (currently 0.0 on all calibrated devices, overhead is
-   baked into `calib_times_ns[]` which measures the full pipeline).
+   This was always 0.0 on every calibrated device (the overhead is baked into
+   `calib_times_ns[]`, which measures the full pipeline); the `FFT_OVERHEAD_NS`
+   `#define` that used to carry this value has been deleted as dead code
+   (zero live callers) and is no longer emitted for new device ports.
 
 2. **Schoolbook row** in the overhead table - `school_ns / cps²` at the largest
-   schoolbook size gives the scalar FMA cost.
-   → `FMA_NS` (measured: 0.0690 on Zen4 with AVX-512).
-   Note: schoolbook COST DECISIONS now use per-size lookup tables
-   (`schoolbook_mul_ns[]`, `schoolbook_corr_ns[]`) rather than the `FMA_NS`
-   formula, `FMA_NS` is primarily used for wrap-correction costing
-   (`WRAP_FMA_NS`) and as a rough scalar-throughput reference.
+   schoolbook size gives the scalar FMA cost, historically recorded as
+   `FMA_NS`. That `#define` has likewise been deleted as dead code: schoolbook
+   cost decisions use the per-size lookup tables (`schoolbook_mul_ns[]`,
+   `schoolbook_corr_ns[]`), not a scalar FMA rate, and nothing else read
+   `FMA_NS` either. Nothing needs recording here for a new device port.
 
 3. **Phase split table** - `f_fwd`, `f_pw`, `f_ifft` fractions at each FFT size.
    Compute the paired/independent correlate ratios:
@@ -397,8 +402,6 @@ The profile output has three measurement sections. Record these values:
 Edit the `#define`s at the top of the file with measured values:
 
 ```c
-#define FMA_NS             0.0690  /* scalar FMA cost from profile schoolbook row */
-#define FFT_OVERHEAD_NS    0.0     /* per-call FFT overhead, converged to 0 in fit */
 #define WRAP_FMA_NS        0.4360  /* ns per FMA in wrap correction */
 #define BATCHED_FMA_NS     0.0973  /* effective ns per FMA in batched linear engine */
 #define PAIRED_CACHED_CORR_RATIO 1.5467  /* from phase split + fit_cost_model.py */
@@ -410,7 +413,8 @@ Edit the `#define`s at the top of the file with measured values:
 linear engine (`ckpt_interval_batched`). Zen 4's 1MB L2 vs M3 Pro's 32MB means
 checkpointing activates much earlier, which is critical - without it, the linear
 engine would stream through DRAM at 33.0 GB/s instead of L2 at 131.5 GB/s
-(both calibrated `DRAM_BW_GBS`/`L2_BW_GBS` values, not theoretical peaks).
+(both measured values, not theoretical peaks; the `DRAM_BW_GBS`/`L2_BW_GBS`
+macros that used to carry them were deleted as dead code).
 
 **Step 4: Rebuild and verify.**
 
@@ -438,10 +442,12 @@ tools produce these tables:
                                 # into devices/<DEVICE>/fft_config.h
 ```
 
-Subset queries (`n_targets > 0`) still use the analytical cost-model comparison in
-`select_engine_ex()` and `select_best_B()`, the empirical tables were calibrated
-only for the full-equity case and subset behavior was never measured directly.
-Revisit if subset dispatch is shown to need the same fix.
+`select_engine_ex()` and `select_best_B()` apply the same empirical tables to
+subset queries (`n_targets > 0`) as to full-equity ones -- the old analytical
+fallback lived in the now-deleted `src/cpu/cost_model.h` (zero live callers).
+The empirical tables themselves were calibrated only against full-equity
+measurements, so subset dispatch quality was never directly validated.
+Revisit if subset dispatch is shown to need its own calibration.
 
 **Step 6: Verify dispatch decisions.**
 
@@ -453,8 +459,8 @@ This runs both linear and hybrid at each (n, k) and compares which wins against
 the empirical crossover table. If mismatches occur, re-run the calibration tools
 above on the target machine. The old analytical cost-model constants
 (`BATCHED_FMA_NS`, `PAIRED_CACHED_CORR_RATIO`, etc.) do NOT affect the
-full-equity dispatch decision anymore, they only matter for subset queries and
-for the intra-engine per-level FFT-vs-schoolbook decisions within the tree.
+engine-dispatch decision anymore (full-equity or subset alike), they only
+matter for the intra-engine per-level FFT-vs-schoolbook decisions within the tree.
 
 **Step 7: Run the full benchmark grid.**
 
@@ -472,9 +478,9 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 | Feature | How it adapts |
 |---|---|
 | `select_engine(n,k)` (full equity) | Uses empirical crossover table `empirical_crossover_k(n)`, log-linear interpolation between calibrated (n, k_cross) points (`tools/calibrate_crossover.c`). Zen 4's table has higher k_cross values, shifting the crossover upward |
-| `select_engine(n,k)` (subset) | Still uses analytical cost-model comparison (`hybrid_total` vs `linear_per_qp` from `src/cost_model.h`), the empirical table was only calibrated for full-equity dispatch |
+| `select_engine(n,k)` (subset) | `n_targets` is currently unused inside `select_engine_ex()` -- it calls the same empirical crossover table as full-equity dispatch. The old analytical fallback lived in the now-deleted `src/cpu/cost_model.h` (zero live callers) |
 | `select_best_B(n,k)` (full equity) | Uses `empirical_best_B(n,k)` 2D nearest-neighbor lookup over a calibrated (n,k,B) grid (`tools/calibrate_best_b.c`). No interpolation, B is discrete in {8,16,24,32,48,64}. Typically B=32 on both Zen 4 and M3 Pro |
-| `select_best_B(n,k)` (subset) | Still uses analytical cost-model per-candidate tree cost summing, subset B selection was never measured/calibrated |
+| `select_best_B(n,k)` (subset) | `select_best_B()` takes no `n_targets` parameter -- subset queries get the same empirical lookup as full-equity ones, which is what the calibration itself measured |
 | `ckpt_interval_batched` | Sized to fit working set in `L2_CACHE_SIZE`. Activates much earlier on Zen 4 (1MB vs 32MB) |
 | BQ=8 batched linear | Same interleaved `a_batch[j*BQ+qi]` layout. AVX-512 processes 8 doubles natively per instruction |
 | Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` and `schoolbook_mul_ns[]` lookup tables to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |
@@ -485,10 +491,8 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 
 | Constant | Why manual | How to measure |
 |---|---|---|
-| `FMA_NS` | Hardware-specific scalar FMA cost | `./bench_grid profile` schoolbook row |
 | `WRAP_FMA_NS` | Memory-latency-bound wrap correction | `./bench_grid profile` wrap phase |
-| `BATCHED_FMA_NS` | Linear engine's interleaved inner-loop throughput | Fit against `icm_run_linear_batched()` measurements; NOT the same as FMA_NS |
-| `FFT_OVERHEAD_NS` | Plan lookup + buffer copy cost | `./bench_grid profile` overhead column (usually 0.0, baked into calib) |
+| `BATCHED_FMA_NS` | Linear engine's interleaved inner-loop throughput | Fit against `icm_run_linear_batched()` measurements |
 | `PAIRED_CACHED_CORR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split + `fit_cost_model.py` |
 | `INDEP_PAIR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split + `fit_cost_model.py` |
 | `L2_CACHE_SIZE` | Hardware spec | CPU datasheet |
@@ -496,7 +500,10 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 | `schoolbook_corr_ns[]` | Per-size schoolbook correlate cost | `tools/bench_schoolbook_tree.c` |
 | `block_build_ns_per_player[]` | Per-B block build cost (non-linear in B) | `tools/bench_block_build.c` |
 | `leaf_fma_ns_per_player[]` | Per-B leaf extraction cost | `tools/probe_leaf_extract.c` |
-| `FP64_DIV_NS` | FP64 division throughput floor | `tools/bench_div_chain.c` |
+
+`FMA_NS`, `FFT_OVERHEAD_NS`, and `FP64_DIV_NS` were deleted as dead code
+(zero live callers) along with `src/cpu/cost_model.h`; new device ports no
+longer need to measure or set them.
 
 ### Optional: Karatsuba at intermediate sizes
 

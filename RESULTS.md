@@ -17,72 +17,72 @@ Single-threaded vs 12-thread parallel, per (n, k) cell:
 
 | n | k | serial (ms) | parallel (ms) | speedup |
 |---|---|---|---|---|
-| 64 | k=10 | 0.09 | 0.049 | 1.8x |
-| 64 | k=50 | 0.32 | 0.088 | 3.6x |
-| 64 | k=100 | 0.43 | 0.106 | 4.1x |
-| 64 | k=n/4 | 0.119 | 0.05 | 2.4x |
-| 64 | k=n/2 | 0.201 | 0.07 | 2.9x |
-| 64 | k=n | 0.421 | 0.116 | 3.6x |
-| 128 | k=10 | 0.177 | 0.055 | 3.2x |
-| 128 | k=50 | 0.68 | 0.156 | 4.4x |
-| 128 | k=100 | 1.3 | 0.253 | 5.1x |
-| 128 | k=n/4 | 0.475 | 0.123 | 3.9x |
-| 128 | k=n/2 | 0.869 | 0.18 | 4.8x |
-| 128 | k=n | 1.31 | 0.229 | 5.7x |
-| 256 | k=10 | 0.412 | 0.109 | 3.8x |
-| 256 | k=50 | 1.36 | 0.281 | 4.8x |
-| 256 | k=100 | 3.21 | 0.515 | 6.2x |
-| 256 | k=n/4 | 1.8 | 0.344 | 5.2x |
-| 256 | k=n/2 | 3.36 | 0.471 | 7.1x |
-| 256 | k=n | 3.65 | 0.522 | 7.0x |
-| 512 | k=10 | 0.839 | 0.183 | 4.6x |
-| 512 | k=50 | 3.58 | 0.64 | 5.6x |
-| 512 | k=100 | 6.56 | 1.12 | 5.9x |
-| 512 | k=n/4 | 7.58 | 1.03 | 7.4x |
-| 512 | k=n/2 | 9.16 | 1.28 | 7.2x |
-| 512 | k=n | 10.1 | 1.39 | 7.3x |
-| 1024 | k=10 | 1.79 | 0.329 | 5.4x |
-| 1024 | k=50 | 7.28 | 1.23 | 5.9x |
-| 1024 | k=100 | 12.8 | 2.19 | 5.8x |
-| 1024 | k=n/4 | 18.4 | 2.64 | 7.0x |
-| 1024 | k=n/2 | 22.2 | 2.99 | 7.4x |
-| 1024 | k=n | 24.0 | 3.27 | 7.3x |
-| 2048 | k=10 | 4.01 | 0.703 | 5.7x |
-| 2048 | k=50 | 14.1 | 2.4 | 5.9x |
-| 2048 | k=100 | 26.2 | 4.41 | 5.9x |
-| 2048 | k=n/4 | 47.9 | 6.27 | 7.6x |
-| 2048 | k=n/2 | 54.8 | 7.18 | 7.6x |
-| 2048 | k=n | 57.3 | 7.77 | 7.4x |
-| 4096 | k=10 | 8.1 | 1.36 | 6.0x |
-| 4096 | k=50 | 28.2 | 4.79 | 5.9x |
-| 4096 | k=100 | 52.4 | 8.11 | 6.5x |
-| 4096 | k=n/4 | 115 | 16.1 | 7.1x |
-| 4096 | k=n/2 | 135 | 18.5 | 7.3x |
-| 4096 | k=n | 155 | 21.5 | 7.2x |
-| 8192 | k=10 | 16.1 | 2.67 | 6.0x |
-| 8192 | k=50 | 56.4 | 9.44 | 6.0x |
-| 8192 | k=100 | 104 | 16.4 | 6.3x |
-| 8192 | k=n/4 | 273 | 37.9 | 7.2x |
-| 8192 | k=n/2 | 325 | 46.9 | 6.9x |
-| 8192 | k=n | 359 | 50.4 | 7.1x |
-| 16384 | k=10 | 32.3 | 5.4 | 6.0x |
-| 16384 | k=50 | 113 | 18.7 | 6.0x |
-| 16384 | k=100 | 210 | 35.1 | 6.0x |
-| 16384 | k=n/4 | 650 | 91.9 | 7.1x |
-| 16384 | k=n/2 | 725 | 101 | 7.2x |
-| 16384 | k=n | 778 | 111 | 7.0x |
-| 32768 | k=10 | 65.0 | 10.7 | 6.1x |
-| 32768 | k=50 | 227 | 37.9 | 6.0x |
-| 32768 | k=100 | 420 | 67.7 | 6.2x |
-| 32768 | k=n/4 | 1590 | 229 | 6.9x |
-| 32768 | k=n/2 | 1800 | 265 | 6.8x |
-| 32768 | k=n | 1970 | 296 | 6.7x |
-| 65536 | k=10 | 131 | 21.6 | 6.1x |
-| 65536 | k=50 | 456 | 77.4 | 5.9x |
-| 65536 | k=100 | 842 | 142 | 5.9x |
-| 65536 | k=n/4 | 3460 | 515 | 6.7x |
-| 65536 | k=n/2 | 3880 | 583 | 6.7x |
-| 65536 | k=n | 4120 | 649 | 6.3x |
+| 64 | k=10 | 0.0950 | 0.0650 | 1.5x |
+| 64 | k=50 | 0.341 | 0.101 | 3.4x |
+| 64 | k=100 | 0.442 | 0.100 | 4.4x |
+| 64 | k=n/4 | 0.126 | 0.0530 | 2.4x |
+| 64 | k=n/2 | 0.226 | 0.0650 | 3.5x |
+| 64 | k=n | 0.436 | 0.106 | 4.1x |
+| 128 | k=10 | 0.188 | 0.0520 | 3.6x |
+| 128 | k=50 | 0.702 | 0.167 | 4.2x |
+| 128 | k=100 | 1.29 | 0.250 | 5.2x |
+| 128 | k=n/4 | 0.473 | 0.143 | 3.3x |
+| 128 | k=n/2 | 0.881 | 0.193 | 4.6x |
+| 128 | k=n | 1.39 | 0.243 | 5.7x |
+| 256 | k=10 | 0.416 | 0.108 | 3.9x |
+| 256 | k=50 | 1.41 | 0.287 | 4.9x |
+| 256 | k=100 | 3.26 | 0.513 | 6.4x |
+| 256 | k=n/4 | 1.77 | 0.343 | 5.2x |
+| 256 | k=n/2 | 3.22 | 0.464 | 6.9x |
+| 256 | k=n | 3.64 | 0.520 | 7.0x |
+| 512 | k=10 | 0.851 | 0.193 | 4.4x |
+| 512 | k=50 | 3.56 | 0.639 | 5.6x |
+| 512 | k=100 | 6.52 | 1.05 | 6.2x |
+| 512 | k=n/4 | 6.96 | 1.02 | 6.8x |
+| 512 | k=n/2 | 8.36 | 1.17 | 7.1x |
+| 512 | k=n | 11.4 | 1.58 | 7.2x |
+| 1024 | k=10 | 1.72 | 0.325 | 5.3x |
+| 1024 | k=50 | 7.07 | 1.28 | 5.5x |
+| 1024 | k=100 | 13.0 | 2.07 | 6.3x |
+| 1024 | k=n/4 | 17.9 | 2.42 | 7.4x |
+| 1024 | k=n/2 | 21.0 | 2.82 | 7.4x |
+| 1024 | k=n | 28.6 | 3.81 | 7.5x |
+| 2048 | k=10 | 4.10 | 0.733 | 5.6x |
+| 2048 | k=50 | 14.1 | 2.50 | 5.6x |
+| 2048 | k=100 | 26.1 | 4.05 | 6.4x |
+| 2048 | k=n/4 | 44.4 | 5.87 | 7.6x |
+| 2048 | k=n/2 | 51.8 | 6.77 | 7.7x |
+| 2048 | k=n | 56.3 | 7.42 | 7.6x |
+| 4096 | k=10 | 8.13 | 1.40 | 5.8x |
+| 4096 | k=50 | 28.3 | 4.90 | 5.8x |
+| 4096 | k=100 | 52.0 | 8.82 | 5.9x |
+| 4096 | k=n/4 | 108 | 14.8 | 7.3x |
+| 4096 | k=n/2 | 123 | 16.6 | 7.4x |
+| 4096 | k=n | 141 | 18.9 | 7.5x |
+| 8192 | k=10 | 16.3 | 2.71 | 6.0x |
+| 8192 | k=50 | 59.7 | 9.63 | 6.2x |
+| 8192 | k=100 | 104 | 16.8 | 6.2x |
+| 8192 | k=n/4 | 291 | 39.8 | 7.3x |
+| 8192 | k=n/2 | 374 | 50.6 | 7.4x |
+| 8192 | k=n | 407 | 55.0 | 7.4x |
+| 16384 | k=10 | 32.4 | 5.40 | 6.0x |
+| 16384 | k=50 | 113 | 18.9 | 6.0x |
+| 16384 | k=100 | 208 | 33.9 | 6.1x |
+| 16384 | k=n/4 | 784 | 108 | 7.3x |
+| 16384 | k=n/2 | 788 | 108 | 7.3x |
+| 16384 | k=n | 967 | 135 | 7.2x |
+| 32768 | k=10 | 64.9 | 10.7 | 6.1x |
+| 32768 | k=50 | 226 | 37.8 | 6.0x |
+| 32768 | k=100 | 416 | 68.1 | 6.1x |
+| 32768 | k=n/4 | 1670 | 231 | 7.2x |
+| 32768 | k=n/2 | 1920 | 265 | 7.2x |
+| 32768 | k=n | 2100 | 295 | 7.1x |
+| 65536 | k=10 | 130 | 21.1 | 6.2x |
+| 65536 | k=50 | 452 | 78.9 | 5.7x |
+| 65536 | k=100 | 831 | 140 | 5.9x |
+| 65536 | k=n/4 | 4030 | 584 | 6.9x |
+| 65536 | k=n/2 | 4670 | 682 | 6.8x |
+| 65536 | k=n | 5610 | 811 | 6.9x |
 
 ### Parallel speedup - M3 Pro
 
@@ -90,19 +90,21 @@ At the 1-second boundary (from regenerated contour sweep, Q=256):
 
 | k | Serial n | Parallel n | Speedup |
 |---|----------|------------|---------|
-| 2 | 1,025,391 | 5,468,751 | 5.3x |
+| 2 | 1,025,391 | 5,273,438 | 5.1x |
 | 100 | 78,209 | 453,134 | 5.8x |
-| 1000 | 33,156 | 244,140 | 7.4x |
-| 10000 | 20,312 | 131,875 | 6.5x |
-| 13000 | 19,500 | 122,687 | 6.3x |
+| 1000 | 33,156 | 206,734 | 6.2x |
+| 10000 | 18,125 | 99,062 | 5.5x |
+| 13000 | 16,250 | 104,406 | 6.4x |
 
 Speedup varies by k due to engine dispatch: linear-only k values see ~5-6x (simple SIMD scaling),
-while hybrid-engine k values reach ~7-8x (FFT tree parallelism). M3 Pro's 6P+6E topology
-limits peak parallel speedup to ~8x vs Zen 4's ~14x on 16 homogeneous P-cores.
+while hybrid-engine k values reach ~5.5-6.5x at this (extrapolated, past-grid) 1-second boundary
+(FFT tree parallelism); the full performance grid above shows hybrid cells peaking around 7.5-7.7x
+at more moderate n. M3 Pro's 6P+6E topology limits peak parallel speedup well below Zen 4's ~14x on
+16 homogeneous P-cores.
 
-### 1-second threshold: n ≈ 19,400 (k=n, single-threaded), n ≈ 98,000 (k=n, 12-thread)
+### 1-second threshold: n ≈ 16,900 (k=n, single-threaded), n ≈ 77,500 (k=n, 12-thread)
 
-Serial: interpolated from bench_grid (n=16,384 at 778 ms, n=32,768 at 1,970 ms). Parallel: extrapolated from bench_grid (n=32,768 at 296 ms, n=65,536 at 649 ms); regenerated contour and grid (July 2026) using the post-recalibration B-selection tables.
+Serial: interpolated from bench_grid (n=16,384 at 967 ms, n=32,768 at 2,100 ms). Parallel: extrapolated from bench_grid (n=32,768 at 295 ms, n=65,536 at 811 ms); regenerated bench_grid using the widened B-selection tables (2026-08-01).
 
 ### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈122-124 (empirical crossover table in `devices/m3_pro/fft_config.h`).
 
@@ -116,7 +118,7 @@ Serial: interpolated from bench_grid (n=16,384 at 778 ms, n=32,768 at 1,970 ms).
 > AOCL is cleanly faster than plain system FFTW at every calibrated size, no dual
 > dispatch. All numbers below are under the `performance` cpufreq governor (16 physical
 > cores, SMT off for benchmarking, `OMP_NUM_THREADS=16` for parallel).
-> `WRAP_FMA_NS=0.40` is directly measured via `tools/bench_wrap_fma.c`, see
+> `WRAP_FMA_NS=0.4360` is directly measured via `tools/bench_wrap_fma.c`, see
 > [Calibration methodology](#calibration-methodology).
 >
 > **Important: this box's RAM runs at 3600 MT/s vs. its 5600 MT/s DIMM rating**,
@@ -432,17 +434,19 @@ They live in `devices/<device>/fft_config.h`.
 > measured FFT times.
 >
 > Several constants below (`FMA_NS`, `FP64_DIV_NS`, `LEAF_*`, `BLOCK_*`,
-> `FFT_OVERHEAD_NS`, the `*_BW_GBS` trio) are **read by nothing in `libicm.a`**;
-> they are emitted leftovers awaiting deletion. `CLAUDE.md`'s constants table has
-> the audited live/dead split; `HANDOFF.md` has the deletion plan. Values below
-> are retained as a historical record, not as a description of live behaviour.
+> `FFT_OVERHEAD_NS`, the `*_BW_GBS` trio) were **read by nothing in `libicm.a`**
+> and have since been deleted from `devices/*/fft_config.h` along with the dead
+> `src/cpu/cost_model.h` that consumed them. `CLAUDE.md`'s constants table has
+> the audited live/dead split. Values below are retained as a historical
+> record of the fitting process, not as a description of any currently-shipped
+> `#define`.
 
 ### M3 Pro (Apple Silicon, ARM64)
 
 | Constant | Value | Notes |
 |---|---|---|
 | `FMA_NS` | 0.0500 | Scalar FMA cost. Fit lower bound, hit its limit when `WRAP_FMA_NS` and `FP64_DIV_NS` were pinned; see caveat below. |
-| `WRAP_FMA_NS` | 0.4942 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c`. |
+| `WRAP_FMA_NS` | 0.5160 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c`. |
 | `FP64_DIV_NS` | 3.4890 | FP64 divide latency. **Directly measured** via `tools/bench_div_chain.c` (dependency-chained, not throughput). |
 | `BLOCK_FMA_NS` | 0.4027 | FMA cost inside block build/divide. Superseded by the per-B `block_build_ns_per_player[]` table; dead in `libicm.a`. |
 | `BLOCK_MEM_NS` | 0.1000 | Memory cost per element in block build/divide. |
@@ -470,7 +474,7 @@ They live in `devices/<device>/fft_config.h`.
 | Constant | Value | Notes |
 |---|---|---|
 | `FMA_NS` | 0.0793 | Scalar FMA cost. 8-param fit (only `WRAP_FMA_NS` pinned). |
-| `WRAP_FMA_NS` | 0.40 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c`, extracted as least-squares slope over the decision-relevant range `wrap_m ∈ [64,384]`. |
+| `WRAP_FMA_NS` | 0.4360 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c`, extracted as least-squares slope over the decision-relevant range `wrap_m ∈ [64,384]`. |
 | `FP64_DIV_NS` | 12.5287 | FP64 divide latency. From the unpinned 8-param fit, not independently cross-checked against a direct measurement this session. |
 | `BLOCK_FMA_NS` | 0.6833 | FMA cost inside block build/divide (sequential dependency chain, latency- not throughput-bound). |
 | `BLOCK_MEM_NS` | 0.1 | Memory cost per element in block build/divide. |
@@ -510,12 +514,14 @@ already-correct values (it tightens them: 83-114 GB/s scattered → a consistent
 ~115 GB/s across all three cache levels).
 
 **Re-verified with a fresh calibration run on Zen4 hardware** (commit `18bf1c3`,
-2026-07-22). `devices/zen4/fft_config.h` now contains sane values
+2026-07-22). `devices/zen4/fft_config.h` at the time contained sane values
 (`L2_BW_GBS=131.5`, `L3_BW_GBS=56.0`, `DRAM_BW_GBS=33.0`, all in GB/s), directly
-measured on an AMD Ryzen 9 7950X with the compiler-barrier fix applied. These
-constants feed `blended_bandwidth()` in `src/cost_model.h`, affecting
-`select_engine()` dispatch cost for the linear engine, not correctness
-(`./bench_grid verify` is unaffected regardless).
+measured on an AMD Ryzen 9 7950X with the compiler-barrier fix applied.
+`src/cpu/cost_model.h` (the only consumer of these constants, via
+`blended_bw()`/`linear_roofline_cost()`, neither ever called live) and the
+`*_BW_GBS` macros themselves have since been deleted as dead code; this
+historical bug affected no shipped dispatch decision and `./bench_grid verify`
+was unaffected throughout.
 
 ---
 
@@ -571,8 +577,11 @@ pushed to a physically odd 631 ns to compensate.
 **This limitation no longer applies.** The regression it describes was removed;
 all six scalar constants are now pinned from direct microbenchmarks and the
 optimizer is skipped, so there is no fit whose RMS error could degrade.
-`FFT_OVERHEAD_NS` is 0.0 on every device. The identifiability failure recorded
-here is the *motivation* for that migration, not a standing caveat.
+`FFT_OVERHEAD_NS` -- which this fit pushed to the physically odd value above --
+has since been deleted entirely as confirmed dead code, redundant by
+construction with `calib_times_ns[]` already measuring the full pipeline. The
+identifiability failure recorded here is the *motivation* for that migration,
+not a standing caveat.
 
 ---
 

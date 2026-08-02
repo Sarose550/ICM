@@ -3,7 +3,7 @@
 
 # ICM -- Independent Chip Model Equity Computation
 
-High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~19,000 players / payouts in 1 second single-threaded, or ~98,000 across 12 threads (Apple M3 Pro; see [RESULTS.md](RESULTS.md) for per-device figures). A CUDA backend extends this to up to 1.49 million players in under a second on an NVIDIA B200 (full field, `k=n`). Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
+High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~17,000 players / payouts in 1 second single-threaded, or ~77,500 across 12 threads (Apple M3 Pro; see [RESULTS.md](RESULTS.md) for per-device figures). A CUDA backend extends this to up to 1.49 million players in under a second on an NVIDIA B200 (full field, `k=n`). Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
 
 > 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf) - full derivation, proofs, and performance evaluation.
 >
@@ -179,13 +179,13 @@ is in the paper; raw sweep data is in `results/accuracy_convergence.csv`.
 | n | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n | | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n |
 |---|------|------|-------|-------|-------|-----|-|------|------|-------|-------|-------|-----|
 | | **M3 Pro** |||||| | **Zen 4 7950X** (AOCL-FFTW) |||||
-| 1024  | 1.72 | 7.08 | 13.1 | 17.7 | 20.8 | 23.2 | | 1.44 | 4.04 | 7.90 | 15.7 | 16.7 | 17.6 |
-| 2048  | 4.10 | 14.2 | 26.2 | 48.5 | 51.5 | 55.8 | | 3.21 | 6.87 | 13.7 | 36.2 | 38.6 | 40.9 |
-| 4096  | 8.17 | 28.2 | 52.4 | 108  | 122  | 135  | | 6.58 | 14.1 | 29.3 | 83.4 | 92.5 | 93.6 |
-| 8192  | 16.3 | 56.4 | 105  | 255  | 298  | 319  | | 13.1 | 28.2 | 53.4 | 188  | 203  | 213  |
-| 16384 | 32.4 | 113  | 208  | 632  | 700  | 749  | | 26.4 | 66.3 | 106  | 433  | 479  | 508  |
-| 32768 | 64.7 | 225  | 417  | 1470 | 1640 | 1750 | | 52.3 | 127  | 228  | 980  | 1080 | 1230 |
-| 65536 | 129  | 451  | 835  | 3440 | 3820 | 4100 | | 115  | 225  | 414  | 2580 | 2970 | 3330 |
+| 1024  | 1.72 | 7.07 | 13.0 | 17.9 | 21.0 | 28.6 | | 1.44 | 4.04 | 7.90 | 15.7 | 16.7 | 17.6 |
+| 2048  | 4.10 | 14.1 | 26.1 | 44.4 | 51.8 | 56.3 | | 3.21 | 6.87 | 13.7 | 36.2 | 38.6 | 40.9 |
+| 4096  | 8.13 | 28.3 | 52.0 | 108  | 123  | 141  | | 6.58 | 14.1 | 29.3 | 83.4 | 92.5 | 93.6 |
+| 8192  | 16.3 | 59.7 | 104  | 291  | 374  | 407  | | 13.1 | 28.2 | 53.4 | 188  | 203  | 213  |
+| 16384 | 32.4 | 113  | 208  | 784  | 788  | 967  | | 26.4 | 66.3 | 106  | 433  | 479  | 508  |
+| 32768 | 64.9 | 226  | 416  | 1670 | 1920 | 2100 | | 52.3 | 127  | 228  | 980  | 1080 | 1230 |
+| 65536 | 130  | 452  | 831  | 4030 | 4670 | 5610 | | 115  | 225  | 414  | 2580 | 2970 | 3330 |
 
 **GPU, NVIDIA B200 (ms, Q=256):**
 
@@ -304,7 +304,7 @@ cp fft_config.h fftw_wisdom.dat devices/mydevice/
 # Build and verify
 make DEVICE=mydevice
 ./bench_grid verify
-./bench_grid profile    # measure FMA_NS, FFT_OVERHEAD_NS, etc.
+./bench_grid profile    # measure WRAP_FMA_NS, phase-split ratios, etc.
 ```
 
 Update the `#define` constants in `fft_config.h` with measured values from `./bench_grid profile`. See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for details on each constant.
@@ -348,7 +348,6 @@ make libicm.a
 ```
 src/cpu/icm.h                    -- public CPU API
 src/cpu/icm.c                    -- all CPU engines + FFT infrastructure
-src/cpu/cost_model.h             -- shared roofline cost model (linear engine dispatch)
 src/cpu/fft_cost_model.h         -- shared FFT cost-model decision logic (best_fft_config,
                                     empirical_crossover_k, empirical_best_B)
 src/cpu/linear_batched_impl.inc  -- batched linear engine template

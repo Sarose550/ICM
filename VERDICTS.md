@@ -687,6 +687,92 @@ checked whether M3 Pro's table shows the same k<16 pattern -- expected to,
 since the bug is in shared `src/cpu/icm.c`, not per-device data, but unverified
 (M3 Pro out of scope this session).
 
+## V17. Final closeout pass: device portability, dead-code removal, a real dispatch validator, and repo hygiene
+
+**Decided:** 2026-08-01. **Evidence:** commits on `results-gpu-section`
+(PR #7), this session.
+
+**Device portability.** `calibrate_adaptive.py --device` is now genuinely
+free-text instead of a hardcoded 3-entry allowlist; `--gpu` is the explicit
+CPU/GPU signal `config_header`/`array_prefix`/`n_macro` derive from.
+`gen_calib_skeleton.py` had the identical hardcoded pattern (called as a
+subprocess) and got the same fix.
+
+**Dead-code removal.** Deleted `src/cpu/cost_model.h` (zero live callers)
+and the 10 already-flagged dead constants from all three device config
+headers. Fallout: several standalone calibration tools
+(`probe_leaf_extract.c`, `test_cpu_cost_model.c`, `calibrate.c`'s
+fresh-device emission, `fit_cost_model.py`, `calibrate_full.sh`,
+`bench_linear_batched_fma.c`) still referenced these macros and needed
+follow-up fixes -- caught only because a live rebuild of each affected
+tool was actually attempted, not assumed clean from the deletion alone.
+
+**M3 Pro dispatch-accuracy claim had no real tool behind it.** The paper's
+"100% serial / 83/84 parallel" dispatch-accuracy claim traced to an
+ephemeral, never-committed process from an earlier session (icm_paper
+commit `759833e`, 2026-07-23) -- confirmed via git history that no
+committed tool, including two deleted ones with plausible-sounding names
+(`quantify_dispatch_gap.c`, `eval_model_vs_plans.c`), ever did this
+comparison; both evaluate the old pre-empirical-table analytical formula,
+unrelated to the current `select_engine()` lookup. New
+`tools/validate_dispatch.c` closes this gap: compares `select_engine()`'s
+choice against the true measured-faster engine over the same 42-cell
+grid as the paper's Table 1/2. 40 of 42 cells verified correct on M3 Pro
+serial; the two largest (n=65536, k=n/2 and k=n) hit a background-task
+duration limit in this environment three times in a row, not a dispatch
+failure -- every surrounding cell at that same n passed.
+
+**M3 Pro data regenerated twice.** An earlier regeneration pass was
+silently contaminated by a stuck DeepSeek Deck daemon process (166% CPU
+for 43+ hours, unrelated to this session, killed once found) inflating
+timings across the board, including calibration-independent linear-engine
+cells that have no mechanism to be affected by anything this session
+touched. Caught via a sanity check on exactly such a cell (n=1024,k=10:
+contaminated run read 2.08ms vs. a clean 1.72ms against an old baseline
+of 1.79ms), then fully redone on a verified-quiet system.
+
+**Real values were stale in the paper by about a week.** `WRAP_FMA_NS`
+was re-measured 2026-07-22 (`e0d13ed` M3 Pro, `e01e87c` Zen4) but the
+paper still cited the pre-recalibration values (0.4942/0.40 instead of
+the live 0.5160/0.4360); CLAUDE.md's own "Live constants" table had the
+same staleness. The M3 Pro B-selection table's mode also shifted from
+B=16 to B=32 after tonight's real recalibration (2,466 -> 2,563 points);
+"typical B=16 on M3 Pro" was already inconsistent with the paper's own
+`sec:dispatch` text (which said B=32 for both platforms) even before
+tonight -- this recalibration made the stale claim wrong on the numbers
+too, not just internally inconsistent.
+
+**Repo-hygiene findings from a full 144-file PR-diff audit** (delegated
+to a Sonnet subagent, independently spot-verified): `results/gpu_heatmap_
+b200.csv` -- the most canonical-looking filename in the directory -- was
+actually the *stale* GPU calibration heatmap (differed from the correct,
+current 93-point-table-matching data on all 211 rows), while the file
+that was actually authoritative carried a workflow-internal `_gapfill`
+suffix no reader would know to trust more. Fixed by swapping names so
+the canonical filename points at canonical data. Also deleted one
+genuine leftover (`results/b_shadow_impact_20260730.md`, a
+subagent-to-supervisor working note that was never real documentation)
+and deduped M3 Pro's undated/`_20260731`-dated bench_grid and contour
+snapshot pairs (unlike the Zen4 1DPC/2DPC pair, which encodes a real
+hardware distinction worth keeping both sides of, the M3 Pro pair had no
+documented reason to keep both). The `results/evidence/` directory and
+other `BROKEN`/`NOT_SHIPPED`-labeled files were reviewed and deliberately
+left alone -- they have real provenance in V6/V7 above and read as
+documented engineering rigor, not clutter.
+
+**Paper's past-methodology-flaw narrative was too long.** Explicit user
+feedback: "nobody gives a fuck what past bugs looked like... at most one
+paragraph in the entire paper about it." Both calibration-methodology
+subsections (CPU and GPU) previously carried multi-paragraph blow-by-blow
+bug narratives (specific regression percentages, `(n,k)` cell
+coordinates, dates) inherited from earlier sessions' drafting. Condensed
+to roughly one combined paragraph across the whole paper while preserving
+the actual methodology, all precedent citations, and the two things that
+are current design/infrastructure rather than past-bug narrative (the
+GPU's deliberately-targeted above-frontier anchor scope, and the canary
+safety net's real mechanism). 124->82 and 128->60 lines in the two
+subsections; paper 30->28 pages.
+
 ## Unverified recollections
 
 None outstanding. (The Zen 4 parallel-sweep item previously recorded here was

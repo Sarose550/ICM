@@ -383,5 +383,5 @@ captures all of that, whether or not anyone understood it in advance.
 ---
 
 *Document compiled from: CLAUDE.md, HANDOFF.md (2026-07-26 session record),
-src/fft_cost_model.h, src/cost_model.h, src/gpu/gpu_plan.cu,
+src/fft_cost_model.h, src/gpu/gpu_plan.cu,
 tools/fit_gpu_cost_model.py, and the B200 device configuration header.*
