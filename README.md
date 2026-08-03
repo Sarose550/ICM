@@ -89,63 +89,6 @@ All correctness tests pass at < 1e-8 relative error against the CPU reference
 including the reusable `IcmGpuPlan` (amortizes planning cost across repeated
 calls at the same `n`/`k`) and calibration/diagnostics helpers.
 
-## How It Works
-
-The algorithm reformulates ICM equity as a one-dimensional integral over
-generating-function coefficients, evaluated by Gaussian quadrature
-($Q = 256$ nodes, relative error $< 5 \times 10^{-12}$). The central
-challenge - computing leave-one-out polynomial products for all $n$ players
-simultaneously - is solved by an FFT-accelerated binary subproduct tree
-whose propagation phase is the adjoint of its build phase, reducing cost
-from $O(nk)$ to $O(n \log^2 k)$ per quadrature point.
-
-The library dispatches automatically across three independent layers
-(see [Automatic Dispatch](#automatic-dispatch) below). The GPU path (NVIDIA B200)
-uses cuFFTDx fused device-side kernels with CUDA graph capture, computing
-nearly 8 million player equities ($k = 100$) in under a second.
-
-**For the full derivation, complexity analysis, correctness proofs, and
-performance evaluation, see the paper:**
-[**paper/icm_paper.pdf**](paper/icm_paper.pdf)
-
-### Automatic Dispatch
-
-Three independent layers, each driven by offline-calibrated data rather than
-analytical formulas:
-
-1. **Engine dispatch (linear vs hybrid).** `empirical_crossover_k(n)` does a
-   log-linear interpolation over an empirically measured crossover table
-   (`crossover_n[]`/`crossover_k[]` in the device's `fft_config.h`), one per
-   calibrated device. No closed-form cost comparison; the crossover is
-   determined by direct timing on the target machine (precedent: LAPACK's
-   `ILAENV` `NX` parameter).
-2. **Block size B inside the hybrid engine.** `empirical_best_B(n, k)` does a
-   single-pass **joint** `(n,k)` nearest-neighbor lookup in log space
-   (`hypot(log n - log n_i, log k - log k_i)`) over a calibrated `(n,k,B)`
-   grid, returning one of `{8, 16, 24, 32, 48, 64}`. No interpolation; B is a
-   discrete choice. The word "joint" is load-bearing: resolving nearest `n`
-   first and nearest `k` second is a different and wrong answer, because
-   sparse calibration points then shadow dense grid rows.
-   `tools/test_bselect_lookup.c` pins this in CI.
-3. **Per tree level: schoolbook vs FFT, and which FFT size.**
-   `best_fft_config()` / `best_fft_config_joint()` compare the real calibrated
-   per-size FFT timing (`calib_times_ns[]`) against the schoolbook multiply
-   cost for that level's convolution length, including the wrap-correction
-   penalty when the FFT size is smaller than the full linear convolution.
-
-**Calibration-boundary behavior.** When a tree level's convolution length
-exceeds the device's `CALIBRATED_MAX_CONV_LEN` (or the device is
-uncalibrated, `CALIBRATED_MAX_CONV_LEN = -1`), the schoolbook-vs-FFT
-comparison is skipped entirely. The level always uses FFT, picks the
-smallest 7-smooth size at or above the needed convolution length, and
-plans with `FFTW_ESTIMATE` (zero-cost heuristic planning). Results stay
-correct; only optimality is lost. The same guard prevents out-of-bounds
-reads on the crossover and B-selection tables; an uncalibrated device
-always dispatches hybrid with B=32.
-
-See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for the full dispatch
-logic, cost-model fitting procedure, and per-device calibration walkthrough.
-
 ## Accuracy
 
 Validated against exact closed-form reference equities (`v1_exact()`,
@@ -382,6 +325,56 @@ paper/                           -- paper PDF
 
 - [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) -- detailed optimization notes, porting guide, and algorithm descriptions
 - [RESULTS.md](RESULTS.md) -- complete performance tables, head-to-head comparisons, and phase-split analysis
+
+## How It Works
+
+The algorithm reformulates ICM equity as a one-dimensional integral over
+generating-function coefficients, evaluated by Gaussian quadrature.
+The library dispatches automatically across three independent layers
+(see [Automatic Dispatch](#automatic-dispatch) below). The GPU path (NVIDIA B200)
+uses cuFFTDx fused device-side kernels with CUDA graph capture.
+
+**For the full derivation, complexity analysis, correctness proofs, and
+performance evaluation, see the paper:**
+[**paper/icm_paper.pdf**](paper/icm_paper.pdf)
+
+### Automatic Dispatch
+
+Three independent layers, each driven by offline-calibrated data rather than
+analytical formulas:
+
+1. **Engine dispatch (linear vs hybrid).** `empirical_crossover_k(n)` does a
+   log-linear interpolation over an empirically measured crossover table
+   (`crossover_n[]`/`crossover_k[]` in the device's `fft_config.h`), one per
+   calibrated device. No closed-form cost comparison; the crossover is
+   determined by direct timing on the target machine (precedent: LAPACK's
+   `ILAENV` `NX` parameter).
+2. **Block size B inside the hybrid engine.** `empirical_best_B(n, k)` does a
+   single-pass **joint** `(n,k)` nearest-neighbor lookup in log space
+   (`hypot(log n - log n_i, log k - log k_i)`) over a calibrated `(n,k,B)`
+   grid, returning one of `{8, 16, 24, 32, 48, 64}`. No interpolation; B is a
+   discrete choice. The word "joint" is load-bearing: resolving nearest `n`
+   first and nearest `k` second is a different and wrong answer, because
+   sparse calibration points then shadow dense grid rows.
+   `tools/test_bselect_lookup.c` pins this in CI.
+3. **Per tree level: schoolbook vs FFT, and which FFT size.**
+   `best_fft_config()` / `best_fft_config_joint()` compare the real calibrated
+   per-size FFT timing (`calib_times_ns[]`) against the schoolbook multiply
+   cost for that level's convolution length, including the wrap-correction
+   penalty when the FFT size is smaller than the full linear convolution.
+
+**Calibration-boundary behavior.** When a tree level's convolution length
+exceeds the device's `CALIBRATED_MAX_CONV_LEN` (or the device is
+uncalibrated, `CALIBRATED_MAX_CONV_LEN = -1`), the schoolbook-vs-FFT
+comparison is skipped entirely. The level always uses FFT, picks the
+smallest 7-smooth size at or above the needed convolution length, and
+plans with `FFTW_ESTIMATE` (zero-cost heuristic planning). Results stay
+correct; only optimality is lost. The same guard prevents out-of-bounds
+reads on the crossover and B-selection tables; an uncalibrated device
+always dispatches hybrid with B=32.
+
+See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for the full dispatch
+logic, cost-model fitting procedure, and per-device calibration walkthrough.
 
 ## Getting Help / Reporting Issues
 
