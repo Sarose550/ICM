@@ -179,20 +179,22 @@ BQ×(3k-1) FMAs/player, ~5k total per player, not 4k as older formulas assumed).
 `BATCHED_FMA_NS` (M3 Pro: 0.0954 ns) is fit directly against real
 `icm_run_linear_batched()` measurements; it was historically distinct from the
 now-deleted `FMA_NS` (an unrelated scalar schoolbook microbenchmark, dead code
-with zero live callers) -- reusing that old constant here underpredicted real
+with zero live callers); reusing that old constant here underpredicted real
 linear-engine cost by ~1.73-1.80×.
 
-### 3. OpenMP Parallelism (~8-10x on 16 threads)
+### 3. OpenMP Parallelism (~6-8x on 12 threads)
 The Q=256 quadrature loop is embarrassingly parallel. Each thread gets its own
 engine context (cloned workspace). Thread-local equity arrays avoid false sharing.
 FFTW plan creation before parallel region (not thread-safe). Context cloning uses
 `FFTW_MEASURE | FFTW_WISDOM_ONLY` with ESTIMATE fallback - this gives cloned
 contexts the same PATIENT-quality plans as the original (critical for parallel
 performance; using bare ESTIMATE produces significantly slower plans).
-~9.5x on M3 Pro's P+E topology (n=8192 k=n: serial→parallel speedup, 16-thread).
-HybridCtx pre-allocates permutation buffers (`a_sorted`, `inner_sorted`) to avoid
-per-call malloc under parallel allocator contention - without this, tree beats hybrid
-in parallel despite hybrid winning in serial.
+~7.2x on M3 Pro's 6P+6E topology (n=8192 k=n: serial→parallel speedup, 12-thread;
+see `RESULTS.md`'s M3 Pro table for the full grid). HybridCtx pre-allocates
+permutation buffers (`a_sorted`, `inner_sorted`) to avoid per-call malloc under
+parallel allocator contention - without this, tree can beat hybrid in parallel
+at large n/k, an effect that gets worse as B-selection calibration error grows
+(see `VERDICTS.md` for the M3 Pro B-selection gap found and fixed 2026-08-02).
 
 ### 4. Truncated Correlate (35-40% at below-saturation levels)
 Exploit sparsity of P (only d+1 non-zero terms) AND limited range of g (only need
@@ -219,7 +221,7 @@ exceeds savings at smaller n). Template in `src/linear_batched_impl.inc`.
 ### 7. Hybrid Block-Divide Engine (8-12%)
 Replace the tree's bottom log₂(B) levels with: sequential block build (tight loop,
 no tree overhead) + bidirectional divide (stable on the complete block product).
-B is selected by an empirically-calibrated 2D nearest-neighbor lookup (`empirical_best_B(n,k)` in `src/fft_cost_model.h`, calibrated by `tools/calibrate_best_b.c`): typically B=32 on both M3 Pro and Zen 4. `select_best_B(n, k)` takes no `n_targets` parameter at all -- subset queries get the same lookup as full-equity queries, which were the only case the calibration itself measured.
+B is selected by an empirically-calibrated 2D nearest-neighbor lookup (`empirical_best_B(n,k)` in `src/fft_cost_model.h`, calibrated by `tools/calibrate_best_b.c`): typically B=32 on both M3 Pro and Zen 4. `select_best_B(n, k)` takes no `n_targets` parameter at all; subset queries get the same lookup as full-equity queries, which were the only case the calibration itself measured.
 Players sorted by stack size for branch-prediction-friendly divide direction.
 
 ### 8. Truncated Propagation (2-5%)
@@ -291,7 +293,7 @@ Checkpointing reduces memory to O(√n·k) but adds 33% recomputation. On M3 Pro
 the cache miss savings because streaming is already fast. On bandwidth-limited
 hardware (Zen 4 at 33.0 GB/s streaming, well below the DDR5-5200 dual-channel
 theoretical peak), checkpointing becomes essential. (The `DRAM_BW_GBS` macro
-that used to carry these bandwidth measurements was deleted as dead code --
+that used to carry these bandwidth measurements was deleted as dead code;
 it fed only `blended_bw()`/`linear_roofline_cost()` in the now-deleted
 `src/cpu/cost_model.h`, neither ever called live.)
 
@@ -332,8 +334,8 @@ For the GPU planner (B200), the equivalent tuning lives in
 ### Key Architectural Differences from M3 Pro
 - **SIMD**: AVX-512 (8 FP64/vector) vs NEON (2 FP64/vector)
 - **Memory BW (streaming, measured by `tools/calibrate.c`'s bandwidth probe)**:
-  33.0 GB/s DDR5 vs 110.7 GB/s unified -- well below either platform's
-  theoretical peak
+  33.0 GB/s DDR5 vs 110.7 GB/s unified (well below either platform's
+  theoretical peak)
 - **L1 cache**: 32KB vs 192KB
 - **L2 cache**: 1MB/core vs 32MB cluster
 - **Cores**: 16P (no E-cores) vs M3 Pro's P+E topology
@@ -443,7 +445,7 @@ tools produce these tables:
 ```
 
 `select_engine_ex()` and `select_best_B()` apply the same empirical tables to
-subset queries (`n_targets > 0`) as to full-equity ones -- the old analytical
+subset queries (`n_targets > 0`) as to full-equity ones; the old analytical
 fallback lived in the now-deleted `src/cpu/cost_model.h` (zero live callers).
 The empirical tables themselves were calibrated only against full-equity
 measurements, so subset dispatch quality was never directly validated.
@@ -478,9 +480,9 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 | Feature | How it adapts |
 |---|---|
 | `select_engine(n,k)` (full equity) | Uses empirical crossover table `empirical_crossover_k(n)`, log-linear interpolation between calibrated (n, k_cross) points (`tools/calibrate_crossover.c`). Zen 4's table has higher k_cross values, shifting the crossover upward |
-| `select_engine(n,k)` (subset) | `n_targets` is currently unused inside `select_engine_ex()` -- it calls the same empirical crossover table as full-equity dispatch. The old analytical fallback lived in the now-deleted `src/cpu/cost_model.h` (zero live callers) |
+| `select_engine(n,k)` (subset) | `n_targets` is currently unused inside `select_engine_ex()`; it calls the same empirical crossover table as full-equity dispatch. The old analytical fallback lived in the now-deleted `src/cpu/cost_model.h` (zero live callers) |
 | `select_best_B(n,k)` (full equity) | Uses `empirical_best_B(n,k)` 2D nearest-neighbor lookup over a calibrated (n,k,B) grid (`tools/calibrate_best_b.c`). No interpolation, B is discrete in {8,16,24,32,48,64}. Typically B=32 on both Zen 4 and M3 Pro |
-| `select_best_B(n,k)` (subset) | `select_best_B()` takes no `n_targets` parameter -- subset queries get the same empirical lookup as full-equity ones, which is what the calibration itself measured |
+| `select_best_B(n,k)` (subset) | `select_best_B()` takes no `n_targets` parameter; subset queries get the same empirical lookup as full-equity ones, which is what the calibration itself measured |
 | `ckpt_interval_batched` | Sized to fit working set in `L2_CACHE_SIZE`. Activates much earlier on Zen 4 (1MB vs 32MB) |
 | BQ=8 batched linear | Same interleaved `a_batch[j*BQ+qi]` layout. AVX-512 processes 8 doubles natively per instruction |
 | Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` and `schoolbook_mul_ns[]` lookup tables to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |
@@ -612,25 +614,34 @@ gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
 
 ## GPU Cost Model (B200)
 
-The GPU planner uses a separate cost model from the CPU. Unlike the CPU's
-9-parameter physics-based model, the GPU model fits only 4 constants ,
-`C_wrap`, `C_school`, `R`, `C_gap`, with all other costs (compute-a,
-block-build, leaf-extract, accumulate) interpolated from empirical kernel
-benchmarks and cuFFT/cuFFTDx calibration tables in
-`devices/b200/gpu_fft_config.h`.
+The shipped GPU planner is driven by measured calibration data, not by
+fitted parameters: tier dispatch compares real per-pipeline measurements
+(`gpu_calib_cufft_ns[]` vs `gpu_calib_cufftdx_r2c_build_ns[]`), FFT-size
+selection reads the same tables, `estimate_candidate_cost()` uses directly
+measured constants (`GPU_BLOCK_BUILD_OVERHEAD_NS`, `GPU_BLOCK_BUILD_BASE_FMA_NS`,
+`GPU_SCHOOL_FMA_NS`), and B selection uses the empirical `gbselect_*` table
+in `devices/b200/gpu_fft_config.h`. Verified 2026-07-30 by tracing every
+live call site.
 
-The 4 fitted parameters are tuned via `tools/fit_gpu_cost_model.py`:
+`tools/fit_gpu_cost_model.py` fits four parameters (`C_wrap`, `C_school`,
+`R`, `C_gap`) via differential evolution against sampled (n,k,B) plans, but
+**writes nothing**: no corresponding macros exist in
+`devices/b200/gpu_fft_config.h` or anywhere in `src/gpu/`. Treat it as an
+analysis/validation script, not part of the shipped decision path. (An
+earlier revision of this file claimed those 4 parameters drive the
+planner; that was wrong.)
 
 ```bash
 python3 tools/fit_gpu_cost_model.py gpu_sample_plans.csv devices/b200/gpu_fft_config.h [bench_kernels.csv]
 ```
 
-The script uses differential evolution to minimize log-relative error
-across sampled (n,k,B) plans. The GPU calibration pipeline is:
+The GPU calibration pipeline that *does* feed the shipped planner:
 1. `calibrate_gpu.cu`, measure per-size cuFFT pipeline times →
    `devices/b200/gpu_fft_config.h`
 2. `gpu_sample_plans.cu`, sample planner decisions → `gpu_sample_plans.csv`
+   (used for `fit_gpu_cost_model.py`'s offline analysis, not for writing config)
 3. `bench_kernels`, measure individual kernel costs → `bench_kernels_b200.csv`
-4. `fit_gpu_cost_model.py`, fit C_wrap, C_school, R, C_gap from the above
+4. `calibrate_gpu_best_b.cu`, measure the empirical `gbselect_*` B-selection
+   table directly (the actual live dispatch input, not a fit)
 
 Or run the full campaign: `./tools/run_b200_campaign.sh`.

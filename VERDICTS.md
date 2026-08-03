@@ -26,7 +26,7 @@ the autotuning literature; see V2.
 
 ## V2. The precedent this design follows
 
-**Evidence:** `COST_MODEL_EXPLAINED.md` section 4; paper sections 3.5 and 5.x.
+**Evidence:** paper sections 3.5 and 5.x; `CLAUDE.md`'s architecture notes.
 
 FFTW (`ESTIMATE` vs `MEASURE`/`PATIENT`), ATLAS (AEOS), BeBOP/Sparsity
 register-blocking search (Demmel/Dongarra/Whaley 2004 section 4.2), and LAPACK
@@ -48,7 +48,7 @@ Per-level schoolbook-vs-FFT and FFT-size selection (`best_fft_config`,
 
 ## V4. B is discrete: nearest-neighbour lookup, never interpolation
 
-**Evidence:** `c70ca4e`; `COST_MODEL_EXPLAINED.md`.
+**Evidence:** `c70ca4e`; `CLAUDE.md`'s architecture notes.
 
 B is chosen from a fixed candidate set. Interpolating would produce values like
 "B=48.7" which do not exist. The crossover k, by contrast, *is* continuous and
@@ -95,7 +95,7 @@ auto_B` on a gap, which (a) re-paid for a full candidate search that
 `validate_planner_gpu`'s probe had *already done* to compute the same
 point's `best_B` (used to derive `gap_pct` in the first place), and (b)
 narrowed around the dispatch's own already-wrong answer, which can miss a
-true optimum more than one candidate step away -- exactly what V7 observed.
+true optimum more than one candidate step away, exactly what V7 observed.
 Fixed to use the probe's own `best_B` directly: no second binary call, no
 narrowing, no guessing. `tools/splice_calib_points.py` (new) is now the
 reproducible way to land a `--narrow-around` measurement into a config
@@ -108,7 +108,7 @@ for the full detail. Not yet run for real on B200 (would need funding);
 this is a tooling fix, not a claim that V7's remaining cell is now closed.
 
 **Superseded, same day.** The user asked for a fully non-discretionary,
-one-command production tool -- patching `calibrate_block_size.py`'s
+one-command production tool; patching `calibrate_block_size.py`'s
 Step 2/Step 4 split still left real hand-tuned knobs (`--skeleton-lo/hi`,
 `--clean-streak-target`, `--max-probes-per-band`) a fresh device port
 would have to guess at. Replaced entirely with
@@ -120,7 +120,7 @@ time), and a convergence stopping rule (top-of-queue score below
 threshold on a fresh sample) instead of per-band random walks.
 `calibrate_block_size.py` is deleted. `gen_calib_skeleton.py`'s GPU
 domain default was also fixed while doing this (was `4194304`, real
-GPU usage per `heatmap_gpu.cu` goes to `33554432`) -- an 8x undershoot
+GPU usage per `heatmap_gpu.cu` goes to `33554432`), an 8x undershoot
 that had been silently baked into every prior calibration default.
 `--n-min`/`--n-max` (named `--skeleton-lo`/`--skeleton-hi` until a
 same-day rename, see below) remain as an explicit opt-in narrowing
@@ -132,12 +132,12 @@ rationale.
 **First real run, 2026-07-31: found a serious design flaw, reverted,
 nothing shipped.** Ran `calibrate_adaptive.py --device b200
 --skeleton-lo 1024 --skeleton-hi 524288 --budget 20m` for real (contract
-`46358305`) -- exact command as typed at the time; the flags were
+`46358305`); exact command as typed at the time, the flags were
 renamed to `--n-min`/`--n-max` immediately afterward, see the
 flag-rename entry below. It worked as designed and found far more real disagreement
 than expected: 520 probes in 20 minutes, most landing well off the
 standard heatmap grid (random log-uniform points like n=1980, n=90283,
-n=411295 -- points nobody had ever measured before), many with large
+n=411295, points nobody had ever measured before), many with large
 gaps (39-87%). This itself is a genuine, valuable discovery: the old
 table was only ever validated against a fixed grid of "nice" n values;
 between those points its true accuracy had never been measured and
@@ -152,25 +152,25 @@ B64->1024 +260%; n=2048,k=512 B64->1280 +281%), and the grid's total
 time got **worse**, not better (+4.57% vs the pre-run baseline).
 Independently re-confirmed two of the worst with direct, freshly-built
 `validate_planner_gpu` probes to rule out a stale-binary artifact (there
-was actually a real one mid-session -- see below -- but it does not
+was actually a real one mid-session, see below, but it does not
 explain this): `n=2048,k=512` now dispatched B=1280 when direct
 measurement said B=64 is right (gap 292.75%); `n=16384,k=64` dispatched
 B=1024 against a true B=48 (gap 265.32%). Both are real, not measurement
 noise, and both are much worse than what the *unmodified* baseline
-already had at those same cells (63.04% and 7.31% gaps respectively --
+already had at those same cells (63.04% and 7.31% gaps respectively;
 the baseline was already imperfect there, but nowhere near this badly).
 
 **Root cause: pure joint-log-distance nearest-neighbor is not a safe
 table-construction strategy for this function.** Two compounding
 factors, both real: (1) `B*(n,k)` is far noisier / more locally variable
 than the "smooth regions with occasional cliffs" model implicit in
-nearest-neighbor lookup assumes -- confirmed by how much real
+nearest-neighbor lookup assumes: confirmed by how much real
 disagreement 520 essentially-random samples turned up. (2)
 `validate_planner_gpu`/`validate_best_b` measure with a single rep, no
-repeats -- confirmed contaminating results directly: one probe during
+repeats; confirmed contaminating results directly: one probe during
 the run reported `auto_B=64, best_B=64, gap=21.44%` for the *same* B,
 which can only be timing noise between two separate single-shot runs.
-Combined, a single new point -- possibly itself noisy -- can become the
+Combined, a single new point (possibly itself noisy) can become the
 nearest neighbor for many nearby *unmeasured* queries and silently pull
 them to a worse answer, exactly the V7 failure mode, but now happening
 at the scale of hundreds of essentially-random points instead of a
@@ -180,11 +180,11 @@ handful of deliberately-chosen ones.
 the exact committed state (93 points, `md5 d23ad491...`) before
 rebuilding and destroying the instance. Nothing from this run shipped,
 including the one manually re-derived point (`65536,2048,B=80`) that
-*was* correctly measured -- it's real and could be re-added on its own,
+*was* correctly measured; it's real and could be re-added on its own,
 but landing it alone, separately from the broken bulk run, was judged
 not worth a special-cased partial commit tonight. `results/gpu_heatmap_
 b200_20260731_adaptive.csv` and `..._final.csv` are kept as evidence of
-this finding, not as usable calibration data -- do not treat either as
+this finding, not as usable calibration data; do not treat either as
 a baseline.
 
 **Also found and fixed mid-session (operational, not a data problem):**
@@ -195,7 +195,7 @@ with an explicit `--validate-bin` flag, needs a real default-path fix
 (see the flag-rename item below, batch it in). Separately, a real
 stale-binary trap: rebuilding one target (e.g. `make validate_planner_
 gpu`) does NOT relink other already-built executables (`heatmap_gpu`)
-even when their shared `.o` dependencies changed underneath them --
+even when their shared `.o` dependencies changed underneath them;
 always rebuild every binary you're about to run after any config
 change, not just the one you think you need.
 
@@ -218,7 +218,7 @@ made sense once you knew Step 1 calls `gen_calib_skeleton.py`
 internally); the new names describe what the flags actually mean to a
 caller. Also fixed while in there: the default `--validate-bin` path
 pointed at `./build/validate_planner_gpu`/`./build/validate_best_b`,
-which doesn't exist -- the Makefile places these at the repo root.
+which doesn't exist; the Makefile places these at the repo root.
 Found this the hard way mid-run today (see above); worked around with
 an explicit `--validate-bin` flag at the time, now fixed at the source.
 
@@ -232,11 +232,11 @@ The user pushed back on "nearest-neighbor is unsafe" as too vague for a
   overhead territory.
 - `validate_planner_gpu.cu`'s candidate sweep (the oracle
   `calibrate_adaptive.py` trusts directly) timed every candidate with a
-  **single rep, no median, no noise check** -- `if (t_ms < best_ms)
+  **single rep, no median, no noise check**: `if (t_ms < best_ms)
   best_B = B`, full stop. `calibrate_gpu_best_b.cu` (used for
   `--narrow-around`) and the CPU `calibrate_best_b.c`/
   `validate_best_b.c` had the same shape of bug: 1-rep-rank, with a
-  runoff/confirmation step that only ever re-measures the top-2 -- if
+  runoff/confirmation step that only ever re-measures the top-2; if
   noise mis-ranks the true winner *outside* the top-2, nothing catches
   it.
 - The GPU candidate set spans B=16 to B=1536, a 96x range (CPU's is
@@ -244,7 +244,7 @@ The user pushed back on "nearest-neighbor is unsafe" as too vague for a
   on a structurally very different B, amplifying a small timing fluke
   into a catastrophic real regression once dispatched for real.
 - Rounds 1 and 2 operated at n>=65,536 (tens of ms per candidate,
-  noise a tiny fraction of signal) -- masking the bug. Round 3 pushed
+  noise a tiny fraction of signal), masking the bug. Round 3 pushed
   into n=1,024-524,288, squarely in the noisy regime, and exposed it.
   This also explains "why only now": the bug was always there, the
   earlier rounds just never queried a region where it mattered.
@@ -254,7 +254,7 @@ The user pushed back on "nearest-neighbor is unsafe" as too vague for a
   calibration-writing oracles.
 
 **Fix:** ported `heatmap_gpu.cu`'s adaptive median/cv-convergence loop
-into all four measurement tools --
+into all four measurement tools:
 `validate_planner_gpu.cu`/`calibrate_gpu_best_b.cu` (GPU) and
 `validate_best_b.c`/`calibrate_best_b.c` (CPU), for parity. Every
 candidate now gets its own converged measurement (3 reps minimum,
@@ -286,7 +286,7 @@ signal stayed real. The timing-noise root cause is confirmed correct.
 shipped.** `calibrate_adaptive.py --device m3_pro --budget 25m` with
 the fixed `validate_best_b`: 92 probes, 2466 -> 2558 points,
 budget-capped but nearly converged (top score 0.1453 vs 0.15
-threshold). Gaps modest throughout (0-8%), no wild swings -- CPU's
+threshold). Gaps modest throughout (0-8%), no wild swings; CPU's
 narrower 8x B-candidate range (vs GPU's 96x) is much less exposed to
 the mechanism above, and the fix confirms that empirically as well as
 analytically. `bench_grid verify` PASSED, `bench_grid crossover` sane,
@@ -296,9 +296,9 @@ analytically. `bench_grid verify` PASSED, `bench_grid crossover` sane,
 SECOND, separate failure mode, not shipped.** With the noise bug fixed
 and individually confirmed correct, ran
 `calibrate_adaptive.py --device b200 --n-min 1024 --n-max 524288
---budget 20m` for real (contract `46367689` again) -- the actual
+--budget 20m` for real (contract `46367689` again); the actual
 domain round 3 broke. 252 probes, 93 -> 345 points, budget-capped
-(top score 1.31, well above threshold -- lots of genuine signal in
+(top score 1.31, well above threshold: lots of genuine signal in
 this newly-explored region). `bench_gpu_fused verify` (0 FAIL) and
 `test_gpu_cost_model` (483/5, identical pre-existing failures) both
 clean.
@@ -307,7 +307,7 @@ clean.
 baseline showed 40 regressions out of 84 `--fast`-range cells, some
 catastrophic** (n=1024,k=128: B64->1024, +402.7%; n=65536,k=128:
 B64->1536, +329.3%; n=32768,k=256: B64->1536, +275.1%), **total time
-+5.23% worse than the original baseline** -- materially worse than
++5.23% worse than the original baseline**, materially worse than
 round 3's own 36/84 disaster, despite every individual measurement now
 being genuinely correct (spot-checked above). This is NOT the noise
 bug reappearing. It is a second, separate, previously-undiagnosed
@@ -324,7 +324,7 @@ whether the neighborhood actually agrees with the one point that got
 measured. `calibrate_adaptive.py`'s original design (this session,
 `b8a68f3`) deliberately removed the old orchestrator's dense
 base-sweep step as "redundant, adaptive refinement finds gaps on its
-own" -- that judgment was wrong for genuinely unexplored regions. The
+own"; that judgment was wrong for genuinely unexplored regions. The
 base sweep wasn't just expensive waste; it also guaranteed the
 baseline local density nearest-neighbor lookup implicitly assumes.
 Removing it without replacing that guarantee is what let this ship
@@ -348,7 +348,7 @@ per landmark n-anchor, deliberately disjoint from the landmark and
 adaptive-refinement k-fractions) using the exact same converged
 oracle (`run_validate_probe`) everything else in this session already
 trusts. After the run, rebuild `validate_bin` against the new table
-(the caller MUST supply `--rebuild-cmd`; there is no safe default --
+(the caller MUST supply `--rebuild-cmd`; there is no safe default:
 GPU needs an environment-specific `CUFFTDX_INC`, and `validate_best_b`
 has no Makefile target at all, so a guessed default risked silently
 verifying against a stale binary, exactly the trap that caused a
@@ -364,7 +364,7 @@ unit tests of the comparison logic against synthetic data, including a
 literal replay of tonight's own worst cell (n=1024,k=128,
 +402.7%) to confirm it fails exactly the way it should. This closes
 the fail-safe gap that let tonight's run and round 3 both ship
-undetected -- it does not fix the underlying density assumption (see
+undetected; it does not fix the underlying density assumption (see
 above), which remains a real, disclosed limitation: `--budget` alone
 still can't guarantee a new region gets dense enough coverage for
 nearest-neighbor to be locally valid, only that whatever the run does
@@ -394,7 +394,7 @@ frontier.
 **Confirmed clean with the new anchors, same box, same session:**
 `bench_gpu_fused verify` (0 FAIL) and `test_gpu_cost_model` (483 passed, 5
 failed, the same 5 pre-existing failures as before the fix, all below the
-frontier and already explained in HANDOFF.md -- no new failures from the
+frontier and already explained in HANDOFF.md; no new failures from the
 new anchors).
 
 **Second attempt, 2026-07-30 (later the same day, after a vast.ai top-up).**
@@ -419,7 +419,7 @@ pre-existing violation from the original baseline (n=4194304, k=2048->4096,
 The other two (n=256 k=128->256; n=512 k=64->128) have **identical B in
 both the pre-fix baseline and this run** (B=64, unchanged) and sit at
 0.08-0.11ms, a regime where GPU launch overhead dominates and cv jumped
-from ~1-3% to ~5-10% between runs at the same cells -- machine noise, not
+from ~1-3% to ~5-10% between runs at the same cells: machine noise, not
 a B-selection effect. **Zero of the 3 monotonicity violations are
 attributable to either fix.** Confirmed via `bench_gpu_fused verify` (0
 FAIL) and `test_gpu_cost_model` (483 passed, 5 failed, identical
@@ -442,7 +442,7 @@ baseline almost exactly. **Only the anchor addition changed them.**
 **Root cause: the 12-point `--narrow-around` fill was too narrow.** It
 added low-k anchors only at n >= 2,097,152, on the assumption that the
 table's low-k sparsity was specifically an "above the frontier" problem
-(per the original diagnosis). It is not -- the table was already sparse
+(per the original diagnosis). It is not; the table was already sparse
 at low k across a much wider n range (at least 131,072 through
 4,194,304). Adding anchors far away in n but close in k gave the
 joint-NN log-space distance a new "nearest neighbour" for several
@@ -461,7 +461,7 @@ the original fill: measure real B directly (`calibrate_gpu_best_b
 --narrow-around`) at the 16 regressed cells (or more broadly, sweep low-k
 anchors across n in {131072, 262144, 524288, 1048576} the way the
 original fix did for n >= 2,097,152), splice in, and rerun the full
-heatmap + cell-by-cell diff again -- including this same check against
+heatmap + cell-by-cell diff again, including this same check against
 ALL 210 cells, not just the newly-touched ones, since this exact mistake
 (narrow, targeted fix; broad, untargeted side effect) could repeat.
 **Blocked on funding**: this session's B200 credit ran out (~$0.75 left)
@@ -472,7 +472,7 @@ covering the actual gap: low-k anchors at n in {131072, 262144, 524288,
 1048576} (all four cells that regressed in the first pass), plus k=64
 buffer points at n=2097152/4194304 (contract `46331871`,
 `calibrate_gpu_best_b --narrow-around 32,48,64,80,96`). Directly measured,
-mostly B=48, not the B=64 the old table implied -- the assumption behind
+mostly B=48, not the B=64 the old table implied; the assumption behind
 the first pass's fix (that everything in this range was correctly B=64)
 was itself never verified; it wasn't quite right either.
 `GPU_N_BSELECT_POINTS` 72 -> 93.
@@ -484,7 +484,7 @@ regression**: n=65536,k=2048, B 64->48, +16.5% (12.13ms -> 14.13ms).
 Traced the same way as before: replayed the joint-NN lookup against the
 new 93-point table and confirmed the new anchor at (131072,1024,B=48) is
 now the nearest neighbour for this query (distance 0.980) and pulls it
-away from its correct answer -- **the identical failure mode as the first
+away from its correct answer: **the identical failure mode as the first
 pass, on a smaller scale**: a targeted fix for one cell became a false
 match for a nearby, untested one.
 
@@ -508,7 +508,7 @@ another full rental cycle when the aggregate signal (-2.34% total time,
 54 genuine improvements) is unambiguous and the remaining defect is one
 cell, isolated, understood, and not a repeat of an unknown mechanism.
 **If revisited:** measure n=65536,k=2048 directly, splice it in as one
-more anchor, and run the full 210-cell diff one more time -- given the
+more anchor, and run the full 210-cell diff one more time; given the
 pattern, budget for the possibility that this fixes n=65536,k=2048 but
 creates a new false match at some other untested nearby cell, and decide
 then whether to keep iterating or accept whatever single cell remains
@@ -677,13 +677,13 @@ ordinary nearest-neighbor imprecision, not this bug).
 crossover table (`crossover_n[]`/`crossover_k[]`) never returns a threshold
 below k~249 anywhere (clamped at both ends), and doesn't depend on
 `select_best_B()` at all. So for `icm_equity()`'s normal full-equity path,
-linear always wins below k~250 regardless of this bug -- B gets computed and
+linear always wins below k~250 regardless of this bug; B gets computed and
 silently discarded in that branch. The bug mattered for: subset-query dispatch
 (a different code path, `n_targets > 0`, not gated by the same crossover
 table), any tool or caller that forces/queries the hybrid engine directly at
 low k (which is exactly how `sweep_best_b.sh`'s `validate_best_b.c` found it),
 and the GPU path where the equivalent crossover gate does not exist. Not yet
-checked whether M3 Pro's table shows the same k<16 pattern -- expected to,
+checked whether M3 Pro's table shows the same k<16 pattern; expected to,
 since the bug is in shared `src/cpu/icm.c`, not per-device data, but unverified
 (M3 Pro out of scope this session).
 
@@ -704,13 +704,13 @@ headers. Fallout: several standalone calibration tools
 (`probe_leaf_extract.c`, `test_cpu_cost_model.c`, `calibrate.c`'s
 fresh-device emission, `fit_cost_model.py`, `calibrate_full.sh`,
 `bench_linear_batched_fma.c`) still referenced these macros and needed
-follow-up fixes -- caught only because a live rebuild of each affected
+follow-up fixes, caught only because a live rebuild of each affected
 tool was actually attempted, not assumed clean from the deletion alone.
 
 **M3 Pro dispatch-accuracy claim had no real tool behind it.** The paper's
 "100% serial / 83/84 parallel" dispatch-accuracy claim traced to an
 ephemeral, never-committed process from an earlier session (icm_paper
-commit `759833e`, 2026-07-23) -- confirmed via git history that no
+commit `759833e`, 2026-07-23); confirmed via git history that no
 committed tool, including two deleted ones with plausible-sounding names
 (`quantify_dispatch_gap.c`, `eval_model_vs_plans.c`), ever did this
 comparison; both evaluate the old pre-empirical-table analytical formula,
@@ -720,7 +720,7 @@ choice against the true measured-faster engine over the same 42-cell
 grid as the paper's Table 1/2. 40 of 42 cells verified correct on M3 Pro
 serial; the two largest (n=65536, k=n/2 and k=n) hit a background-task
 duration limit in this environment three times in a row, not a dispatch
-failure -- every surrounding cell at that same n passed.
+failure; every surrounding cell at that same n passed.
 
 **M3 Pro data regenerated twice.** An earlier regeneration pass was
 silently contaminated by a stuck DeepSeek Deck daemon process (166% CPU
@@ -739,12 +739,12 @@ same staleness. The M3 Pro B-selection table's mode also shifted from
 B=16 to B=32 after tonight's real recalibration (2,466 -> 2,563 points);
 "typical B=16 on M3 Pro" was already inconsistent with the paper's own
 `sec:dispatch` text (which said B=32 for both platforms) even before
-tonight -- this recalibration made the stale claim wrong on the numbers
+tonight; this recalibration made the stale claim wrong on the numbers
 too, not just internally inconsistent.
 
 **Repo-hygiene findings from a full 144-file PR-diff audit** (delegated
 to a Sonnet subagent, independently spot-verified): `results/gpu_heatmap_
-b200.csv` -- the most canonical-looking filename in the directory -- was
+b200.csv` (the most canonical-looking filename in the directory) was
 actually the *stale* GPU calibration heatmap (differed from the correct,
 current 93-point-table-matching data on all 211 rows), while the file
 that was actually authoritative carried a workflow-internal `_gapfill`
@@ -757,7 +757,7 @@ snapshot pairs (unlike the Zen4 1DPC/2DPC pair, which encodes a real
 hardware distinction worth keeping both sides of, the M3 Pro pair had no
 documented reason to keep both). The `results/evidence/` directory and
 other `BROKEN`/`NOT_SHIPPED`-labeled files were reviewed and deliberately
-left alone -- they have real provenance in V6/V7 above and read as
+left alone; they have real provenance in V6/V7 above and read as
 documented engineering rigor, not clutter.
 
 **Paper's past-methodology-flaw narrative was too long.** Explicit user
@@ -772,6 +772,54 @@ are current design/infrastructure rather than past-bug narrative (the
 GPU's deliberately-targeted above-frontier anchor scope, and the canary
 safety net's real mechanism). 124->82 and 128->60 lines in the two
 subsections; paper 30->28 pages.
+
+## V18. M3 Pro tree-beats-hybrid at large n/k was a B-selection coverage gap, not a regression (FIXED)
+
+**Recorded:** 2026-08-02. **Evidence:** `tools/calibrate_best_b.c --narrow-around`
+run directly on this M3 Pro; `git log` diff of `results/bench_grid_m3pro_serial.txt`
+across every regeneration since the first real PATIENT calibration (2026-07-20).
+
+A paper read-through flagged the pure tree engine beating hybrid at n=8192
+(k=n/2, k=n) and n=16384 (k=n/4, k=n) in both serial and parallel tables, and
+the user recalled this hadn't shown up in earlier, already-vetted data. Git
+history confirmed the memory was correct: hybrid won comfortably at these
+exact cells from 2026-07-20 through 2026-07-23, then narrowed and flipped
+starting with the 2026-07-24 "widened B-selection tables" regen and again
+after 2026-08-01's refresh.
+
+**Root cause:** none of the 4 affected `(n,k)` cells were themselves real
+calibration anchors in `devices/m3_pro/fft_config.h`'s `bselect_*` tables;
+all four were served by nearest-neighbor lookup from points 0.01-0.02
+log-distance away that happened to agree on `B=48`. Direct adaptive-median
+measurement (`calibrate_best_b --narrow-around 32,48`, same converged
+methodology as the live table) found the true best at all 4 points is
+`B=32`, not `B=48`, an 8-16% gap, enough to flip the tree/hybrid ordering
+at cells where the margin was already thin.
+
+Not a production correctness issue: `select_engine()` never dispatches to
+tree at all (confirmed via `dispatch_validation_m3pro_serial_20260731.csv`,
+which only ever contains `L`/`H`); tree is a `bench_grid`/paper comparison
+baseline only. The bug was specifically hybrid's *within-engine* B choice
+at those 4 points.
+
+**Fix:** measured the 4 points directly, spliced the corrected `B=32`
+anchors into `devices/m3_pro/fft_config.h` (2563 -> 2567 points) via
+`tools/splice_calib_points.py`, rebuilt (`bench_grid`, `libicm.a`,
+`libicm.dylib` all clean), reconfirmed `bench_grid verify` (ALL TESTS
+PASSED) and `crossover` (unaffected). Regenerated the full M3 Pro
+serial/parallel grids, contours, and plots; hybrid now wins at all 4
+cells (and everywhere else in the grid) in both modes. `RESULTS.md` and
+the paper's `tab:serial`/`tab:parallel` updated from the fresh data.
+
+**Also found and fixed in passing:** tonight's earlier `refresh_all.sh`
+rewrite (part of V17's device-portability work) had silently reintroduced
+date-suffixed filenames for the serial/parallel grid and contour steps
+(`bench_grid_m3pro_serial_20260802.txt` instead of the stable
+`bench_grid_m3pro_serial.txt`), undoing a 2026-07-21 fix that specifically
+existed to keep those names stable (plots already tolerated either, via
+`find_latest()`'s mtime-based glob, which is why this went unnoticed).
+Fixed at the source in `tools/results/refresh_all.sh`; `gen_crossover.sh`/
+`gen_subset_speed.sh` are dated by design and untouched.
 
 ## Unverified recollections
 

@@ -62,7 +62,7 @@ echo "--- [1/10] Building serial bench_grid ---"
 make DEVICE="$DEVICE"
 
 echo "--- [2/10] Running serial bench_grid ---"
-./bench_grid > "$RESULTS_DIR/bench_grid_${FILE_TAG}_serial_${DATE_SUFFIX}.txt"
+./bench_grid > "$RESULTS_DIR/bench_grid_${FILE_TAG}_serial.txt"
 
 # ── 2. Parallel bench_grid ────────────────────────────────────
 
@@ -70,7 +70,7 @@ echo "--- [3/10] Building parallel bench_grid ---"
 make parallel DEVICE="$DEVICE"
 
 echo "--- [4/10] Running parallel bench_grid ---"
-./bench_grid > "$RESULTS_DIR/bench_grid_${FILE_TAG}_parallel_${DATE_SUFFIX}.txt"
+./bench_grid > "$RESULTS_DIR/bench_grid_${FILE_TAG}_parallel.txt"
 
 # ── 3. Serial contour ─────────────────────────────────────────
 
@@ -78,7 +78,7 @@ echo "--- [5/10] Building contour_1s ---"
 make contour_1s DEVICE="$DEVICE"
 
 echo "--- [6/10] Running serial contour sweep ---"
-./contour_1s --contour > "$RESULTS_DIR/contour_${FILE_TAG}_serial_q256_${DATE_SUFFIX}.csv"
+./contour_1s --contour > "$RESULTS_DIR/contour_${FILE_TAG}_serial_q256.csv"
 
 # ── 4. Parallel contour ───────────────────────────────────────
 
@@ -86,7 +86,7 @@ echo "--- [7/10] Building contour_1s_par ---"
 make contour_1s_par DEVICE="$DEVICE"
 
 echo "--- [8/10] Running parallel contour sweep ---"
-./contour_1s_par --contour > "$RESULTS_DIR/contour_${FILE_TAG}_parallel_q256_${DATE_SUFFIX}.csv"
+./contour_1s_par --contour > "$RESULTS_DIR/contour_${FILE_TAG}_parallel_q256.csv"
 
 # ── 5. Crossover ──────────────────────────────────────────────
 

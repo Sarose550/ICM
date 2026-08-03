@@ -1,6 +1,6 @@
 # RESULTS.md - ICM Equity Optimization Results
 
-All correctness tests PASS at < 5e-12 relative error (< 1e-9 for Smax=10^9).
+All correctness tests pass at < 1.6e-10 relative error.
 Q=256 quadrature points.
 
 ## Apple M3 Pro (ARM64, NEON+vDSP, BQ=8)
@@ -17,72 +17,72 @@ Single-threaded vs 12-thread parallel, per (n, k) cell:
 
 | n | k | serial (ms) | parallel (ms) | speedup |
 |---|---|---|---|---|
-| 64 | k=10 | 0.0950 | 0.0650 | 1.5x |
-| 64 | k=50 | 0.341 | 0.101 | 3.4x |
-| 64 | k=100 | 0.442 | 0.100 | 4.4x |
-| 64 | k=n/4 | 0.126 | 0.0530 | 2.4x |
-| 64 | k=n/2 | 0.226 | 0.0650 | 3.5x |
-| 64 | k=n | 0.436 | 0.106 | 4.1x |
-| 128 | k=10 | 0.188 | 0.0520 | 3.6x |
-| 128 | k=50 | 0.702 | 0.167 | 4.2x |
-| 128 | k=100 | 1.29 | 0.250 | 5.2x |
-| 128 | k=n/4 | 0.473 | 0.143 | 3.3x |
-| 128 | k=n/2 | 0.881 | 0.193 | 4.6x |
-| 128 | k=n | 1.39 | 0.243 | 5.7x |
-| 256 | k=10 | 0.416 | 0.108 | 3.9x |
-| 256 | k=50 | 1.41 | 0.287 | 4.9x |
-| 256 | k=100 | 3.26 | 0.513 | 6.4x |
-| 256 | k=n/4 | 1.77 | 0.343 | 5.2x |
-| 256 | k=n/2 | 3.22 | 0.464 | 6.9x |
-| 256 | k=n | 3.64 | 0.520 | 7.0x |
-| 512 | k=10 | 0.851 | 0.193 | 4.4x |
-| 512 | k=50 | 3.56 | 0.639 | 5.6x |
-| 512 | k=100 | 6.52 | 1.05 | 6.2x |
-| 512 | k=n/4 | 6.96 | 1.02 | 6.8x |
-| 512 | k=n/2 | 8.36 | 1.17 | 7.1x |
-| 512 | k=n | 11.4 | 1.58 | 7.2x |
-| 1024 | k=10 | 1.72 | 0.325 | 5.3x |
-| 1024 | k=50 | 7.07 | 1.28 | 5.5x |
-| 1024 | k=100 | 13.0 | 2.07 | 6.3x |
-| 1024 | k=n/4 | 17.9 | 2.42 | 7.4x |
-| 1024 | k=n/2 | 21.0 | 2.82 | 7.4x |
-| 1024 | k=n | 28.6 | 3.81 | 7.5x |
-| 2048 | k=10 | 4.10 | 0.733 | 5.6x |
-| 2048 | k=50 | 14.1 | 2.50 | 5.6x |
-| 2048 | k=100 | 26.1 | 4.05 | 6.4x |
-| 2048 | k=n/4 | 44.4 | 5.87 | 7.6x |
-| 2048 | k=n/2 | 51.8 | 6.77 | 7.7x |
-| 2048 | k=n | 56.3 | 7.42 | 7.6x |
-| 4096 | k=10 | 8.13 | 1.40 | 5.8x |
-| 4096 | k=50 | 28.3 | 4.90 | 5.8x |
-| 4096 | k=100 | 52.0 | 8.82 | 5.9x |
-| 4096 | k=n/4 | 108 | 14.8 | 7.3x |
-| 4096 | k=n/2 | 123 | 16.6 | 7.4x |
-| 4096 | k=n | 141 | 18.9 | 7.5x |
-| 8192 | k=10 | 16.3 | 2.71 | 6.0x |
-| 8192 | k=50 | 59.7 | 9.63 | 6.2x |
-| 8192 | k=100 | 104 | 16.8 | 6.2x |
-| 8192 | k=n/4 | 291 | 39.8 | 7.3x |
-| 8192 | k=n/2 | 374 | 50.6 | 7.4x |
-| 8192 | k=n | 407 | 55.0 | 7.4x |
-| 16384 | k=10 | 32.4 | 5.40 | 6.0x |
-| 16384 | k=50 | 113 | 18.9 | 6.0x |
-| 16384 | k=100 | 208 | 33.9 | 6.1x |
-| 16384 | k=n/4 | 784 | 108 | 7.3x |
-| 16384 | k=n/2 | 788 | 108 | 7.3x |
-| 16384 | k=n | 967 | 135 | 7.2x |
-| 32768 | k=10 | 64.9 | 10.7 | 6.1x |
-| 32768 | k=50 | 226 | 37.8 | 6.0x |
-| 32768 | k=100 | 416 | 68.1 | 6.1x |
-| 32768 | k=n/4 | 1670 | 231 | 7.2x |
-| 32768 | k=n/2 | 1920 | 265 | 7.2x |
-| 32768 | k=n | 2100 | 295 | 7.1x |
-| 65536 | k=10 | 130 | 21.1 | 6.2x |
-| 65536 | k=50 | 452 | 78.9 | 5.7x |
-| 65536 | k=100 | 831 | 140 | 5.9x |
-| 65536 | k=n/4 | 4030 | 584 | 6.9x |
-| 65536 | k=n/2 | 4670 | 682 | 6.8x |
-| 65536 | k=n | 5610 | 811 | 6.9x |
+| 64 | k=10 | 0.0960 | 0.0610 | 1.6x |
+| 64 | k=50 | 0.340 | 0.108 | 3.1x |
+| 64 | k=100 | 0.443 | 0.120 | 3.7x |
+| 64 | k=n/4 | 0.126 | 0.0610 | 2.1x |
+| 64 | k=n/2 | 0.214 | 0.0690 | 3.1x |
+| 64 | k=n | 0.437 | 0.135 | 3.2x |
+| 128 | k=10 | 0.204 | 0.0910 | 2.2x |
+| 128 | k=50 | 0.703 | 0.174 | 4.0x |
+| 128 | k=100 | 1.30 | 0.248 | 5.2x |
+| 128 | k=n/4 | 0.479 | 0.124 | 3.9x |
+| 128 | k=n/2 | 0.887 | 0.181 | 4.9x |
+| 128 | k=n | 1.40 | 0.234 | 6.0x |
+| 256 | k=10 | 0.419 | 0.111 | 3.8x |
+| 256 | k=50 | 1.41 | 0.283 | 5.0x |
+| 256 | k=100 | 3.29 | 0.518 | 6.4x |
+| 256 | k=n/4 | 1.83 | 0.337 | 5.4x |
+| 256 | k=n/2 | 3.26 | 0.467 | 7.0x |
+| 256 | k=n | 3.69 | 0.519 | 7.1x |
+| 512 | k=10 | 0.868 | 0.171 | 5.1x |
+| 512 | k=50 | 3.60 | 0.644 | 5.6x |
+| 512 | k=100 | 6.60 | 1.03 | 6.4x |
+| 512 | k=n/4 | 7.03 | 1.19 | 5.9x |
+| 512 | k=n/2 | 8.38 | 1.25 | 6.7x |
+| 512 | k=n | 11.3 | 1.57 | 7.2x |
+| 1024 | k=10 | 1.70 | 0.338 | 5.0x |
+| 1024 | k=50 | 7.17 | 1.23 | 5.8x |
+| 1024 | k=100 | 13.1 | 2.24 | 5.8x |
+| 1024 | k=n/4 | 18.0 | 2.42 | 7.4x |
+| 1024 | k=n/2 | 21.2 | 2.83 | 7.5x |
+| 1024 | k=n | 28.0 | 3.94 | 7.1x |
+| 2048 | k=10 | 4.12 | 0.730 | 5.6x |
+| 2048 | k=50 | 14.4 | 2.41 | 6.0x |
+| 2048 | k=100 | 26.3 | 4.14 | 6.4x |
+| 2048 | k=n/4 | 44.9 | 5.89 | 7.6x |
+| 2048 | k=n/2 | 52.1 | 6.74 | 7.7x |
+| 2048 | k=n | 56.4 | 7.48 | 7.5x |
+| 4096 | k=10 | 8.24 | 1.37 | 6.0x |
+| 4096 | k=50 | 28.7 | 4.80 | 6.0x |
+| 4096 | k=100 | 52.5 | 8.70 | 6.0x |
+| 4096 | k=n/4 | 109 | 14.6 | 7.5x |
+| 4096 | k=n/2 | 124 | 16.8 | 7.4x |
+| 4096 | k=n | 137 | 18.0 | 7.6x |
+| 8192 | k=10 | 16.4 | 2.71 | 6.1x |
+| 8192 | k=50 | 57.2 | 9.46 | 6.0x |
+| 8192 | k=100 | 105 | 16.4 | 6.4x |
+| 8192 | k=n/4 | 284 | 40.6 | 7.0x |
+| 8192 | k=n/2 | 302 | 41.3 | 7.3x |
+| 8192 | k=n | 321 | 44.5 | 7.2x |
+| 16384 | k=10 | 32.7 | 5.38 | 6.1x |
+| 16384 | k=50 | 114 | 18.8 | 6.1x |
+| 16384 | k=100 | 210 | 33.6 | 6.2x |
+| 16384 | k=n/4 | 636 | 88.3 | 7.2x |
+| 16384 | k=n/2 | 712 | 98.4 | 7.2x |
+| 16384 | k=n | 753 | 108 | 7.0x |
+| 32768 | k=10 | 64.8 | 10.8 | 6.0x |
+| 32768 | k=50 | 232 | 37.8 | 6.1x |
+| 32768 | k=100 | 417 | 71.4 | 5.8x |
+| 32768 | k=n/4 | 1490 | 205 | 7.3x |
+| 32768 | k=n/2 | 1660 | 237 | 7.0x |
+| 32768 | k=n | 1790 | 258 | 6.9x |
+| 65536 | k=10 | 133 | 21.1 | 6.3x |
+| 65536 | k=50 | 460 | 76.1 | 6.0x |
+| 65536 | k=100 | 834 | 138 | 6.0x |
+| 65536 | k=n/4 | 3500 | 510 | 6.9x |
+| 65536 | k=n/2 | 3910 | 578 | 6.8x |
+| 65536 | k=n | 4150 | 647 | 6.4x |
 
 ### Parallel speedup - M3 Pro
 
@@ -91,20 +91,20 @@ At the 1-second boundary (from regenerated contour sweep, Q=256):
 | k | Serial n | Parallel n | Speedup |
 |---|----------|------------|---------|
 | 2 | 1,025,391 | 5,273,438 | 5.1x |
-| 100 | 78,209 | 453,134 | 5.8x |
-| 1000 | 33,156 | 206,734 | 6.2x |
-| 10000 | 18,125 | 99,062 | 5.5x |
-| 13000 | 16,250 | 104,406 | 6.4x |
+| 100 | 76,256 | 437,512 | 5.7x |
+| 1000 | 33,156 | 225,437 | 6.8x |
+| 10000 | 20,312 | 131,875 | 6.5x |
+| 13000 | 19,500 | 122,687 | 6.3x |
 
 Speedup varies by k due to engine dispatch: linear-only k values see ~5-6x (simple SIMD scaling),
-while hybrid-engine k values reach ~5.5-6.5x at this (extrapolated, past-grid) 1-second boundary
+while hybrid-engine k values reach ~5.7-6.8x at this (extrapolated, past-grid) 1-second boundary
 (FFT tree parallelism); the full performance grid above shows hybrid cells peaking around 7.5-7.7x
 at more moderate n. M3 Pro's 6P+6E topology limits peak parallel speedup well below Zen 4's ~14x on
 16 homogeneous P-cores.
 
-### 1-second threshold: n ≈ 16,900 (k=n, single-threaded), n ≈ 77,500 (k=n, 12-thread)
+### 1-second threshold: n ≈ 20,600 (k=n, single-threaded), n ≈ 91,000 (k=n, 12-thread)
 
-Serial: interpolated from bench_grid (n=16,384 at 967 ms, n=32,768 at 2,100 ms). Parallel: extrapolated from bench_grid (n=32,768 at 295 ms, n=65,536 at 811 ms); regenerated bench_grid using the widened B-selection tables (2026-08-01).
+Serial: interpolated from bench_grid (n=16,384 at 753 ms, n=32,768 at 1,790 ms). Parallel: extrapolated from bench_grid (n=32,768 at 258 ms, n=65,536 at 647 ms); regenerated bench_grid after fixing a B-selection calibration gap at n=8,192/16,384 large-k cells (2026-08-02).
 
 ### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈122-124 (empirical crossover table in `devices/m3_pro/fft_config.h`).
 
@@ -394,12 +394,10 @@ to prefer vDSP-supported sizes (e.g. 192 replaces 200 at saturated tree levels).
 - BQ=8 batched linear with interleaved layout (native AVX-512 width)
 - L2-aware checkpointing with 1MB per-core L2
 - B=24/32, cost model adapts to Zen 4's wider schoolbook-FFT crossover.
-  Empirical B-selection table in `devices/zen4/fft_config.h`. Note
-  `results/b_optimal_report_zen4.md` is a **superseded historical artifact**: it
-  validated the analytical `select_best_B` that was replaced by the empirical
-  table one commit later, and its 21/34 split refers to that earlier, much
-  smaller grid. The current table holds 1944 points. See the header of that
-  report and `VERDICTS.md` V11.
+  Empirical B-selection table in `devices/zen4/fft_config.h`, currently 1944
+  points. See `VERDICTS.md` V11 for the history (an earlier report validated
+  the analytical `select_best_B` that was replaced by this empirical table
+  one commit later; that report is no longer kept in the repo).
 
 ## FFT Phase Split (Zen 4 7950X)
 
@@ -577,7 +575,7 @@ pushed to a physically odd 631 ns to compensate.
 **This limitation no longer applies.** The regression it describes was removed;
 all six scalar constants are now pinned from direct microbenchmarks and the
 optimizer is skipped, so there is no fit whose RMS error could degrade.
-`FFT_OVERHEAD_NS` -- which this fit pushed to the physically odd value above --
+`FFT_OVERHEAD_NS` (which this fit pushed to the physically odd value above)
 has since been deleted entirely as confirmed dead code, redundant by
 construction with `calib_times_ns[]` already measuring the full pipeline. The
 identifiability failure recorded here is the *motivation* for that migration,
@@ -628,7 +626,7 @@ everywhere (most 0.000).
 not just a correctness fix, this one cell aside.** Diffing the new heatmap
 cell-by-cell against the original pre-session baseline
 (`results/gpu_heatmap_b200_20260728.csv`) at the same 210 `(n,k)` points:
-61 cells changed B, 54 improved (some substantially -- the 12 cells above
+61 cells changed B, 54 improved (some substantially: the 12 cells above
 n=1,572,864 that motivated this fix were up to 78.7% slower before it),
 1 regressed (above), 6 within noise. Total grid time drops from 451.7s to
 441.1s (-2.34% aggregate). This is a separate, later fix from the
@@ -654,7 +652,7 @@ sample points, not an actual search.
 
 GPU cost-model constants (`C_wrap`, `C_school`, `R`, `C_gap`) are fit
 separately from the CPU model via `tools/fit_gpu_cost_model.py` against
-empirical kernel benchmarks in `devices/b200/gpu_fft_config.h` -- see
+empirical kernel benchmarks in `devices/b200/gpu_fft_config.h`; see
 "GPU Cost Model (B200)" in `OPTIMIZATION_GUIDE.md` for the full pipeline.
 
 > **Diagnostic pass (July 2026):** The GPU planner was confirmed NOT to have the
