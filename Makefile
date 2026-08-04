@@ -1,9 +1,10 @@
-# ICM Equity Computation — Makefile
+# ICM Equity Computation Makefile
 #
 # Usage:
-#   make                    # serial build (bench_grid)
+#   make                    # serial build (bench_grid), uses devices/generic/
+#   make DEVICE=m3_pro      # build for Apple M3 Pro (macOS)
+#   make DEVICE=zen4        # build for AMD Zen 4 (Linux)
 #   make parallel           # OpenMP build (bench_grid)
-#   make DEVICE=zen4        # build for a different device
 #   make test               # quick verify
 #   make bench              # full benchmark grid
 #   make libicm.a           # build the static library
@@ -11,17 +12,36 @@
 #   make contour_1s         # contour sweep tool (serial)
 #   make contour_1s_par     # contour sweep tool (parallel)
 
-DEVICE ?= m3_pro
+DEVICE ?= generic
+
+# ── Uncalibrated-device warning ───────────────────────────────
+# When DEVICE=generic (no calibration data), results are CORRECT
+# but UNOPTIMIZED.  Print an impossible-to-miss message at build
+# time so the user knows exactly what they're getting and how to
+# fix it.
+ifeq ($(DEVICE),generic)
+$(info ======================================================================)
+$(info   BUILDING WITH DEVICE=generic: NO CALIBRATION DATA)
+$(info   Results will be CORRECT but UNOPTIMIZED (FFTW_ESTIMATE plans only).)
+$(info   To calibrate for real hardware performance, run:)
+$(info     ./tools/calibrate_full.sh <DEVICE>)
+$(info   then rebuild with DEVICE=<DEVICE>.)
+$(info ======================================================================)
+$(info )
+endif
 
 .DEFAULT_GOAL := all
 
 CC = gcc
 CFLAGS = -O3 -march=native -Wall
-INCLUDES = -Isrc -Idevices/$(DEVICE)
+INCLUDES = -Isrc/cpu -Idevices/$(DEVICE)
 LDFLAGS = -lfftw3 -lm
 NVCC ?= nvcc
 CUDA_ARCH ?= sm_100
-CUDA_FLAGS = -O3 -std=c++17 -arch=$(CUDA_ARCH)
+# cuFFTDx takes the target SM as an integer (sm_100 -> 1000, sm_90a -> 900);
+# gpu_kernels.cu gates per-arch unsupported FFT sizes via cufftdx::is_supported.
+ICM_CUFFTDX_ARCH = $(patsubst sm_%,%,$(patsubst %a,%,$(CUDA_ARCH)))0
+CUDA_FLAGS = -O3 -std=c++17 -arch=$(CUDA_ARCH) -DICM_CUFFTDX_ARCH=$(ICM_CUFFTDX_ARCH)
 CUDA_LIBS = -lcufft -lcudart
 CUFFTDX_INC ?=
 ifeq ($(strip $(CUFFTDX_INC)),)
@@ -73,8 +93,8 @@ LIBICM_OMP_OBJ = $(BUILD_DIR)/icm_omp.o
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(LIBICM_OBJ): src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+$(LIBICM_OBJ): src/cpu/icm.c src/cpu/icm.h src/cpu/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -c src/cpu/icm.c -o $@
 
 $(LIBICM): $(LIBICM_OBJ)
 	ar rcs $@ $^
@@ -90,8 +110,8 @@ endif
 
 LIBICM_SHARED = $(BUILD_DIR)/libicm.$(SHARED_EXT)
 
-$(BUILD_DIR)/icm_shared.o: src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -fPIC $(INCLUDES) -c src/icm.c -o $@
+$(BUILD_DIR)/icm_shared.o: src/cpu/icm.c src/cpu/icm.h src/cpu/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -fPIC $(INCLUDES) -c src/cpu/icm.c -o $@
 
 $(LIBICM_SHARED): $(BUILD_DIR)/icm_shared.o
 	$(CC) $(SHARED_FLAGS) -o $@ $^ $(LDFLAGS)
@@ -103,8 +123,8 @@ libicm.dylib: $(LIBICM_SHARED)
 libicm.so: $(LIBICM_SHARED)
 
 # OpenMP variant
-$(LIBICM_OMP_OBJ): src/icm.c src/icm.h src/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+$(LIBICM_OMP_OBJ): src/cpu/icm.c src/cpu/icm.h src/cpu/linear_batched_impl.inc devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -c src/cpu/icm.c -o $@
 
 $(BUILD_DIR)/libicm_omp.a: $(LIBICM_OMP_OBJ)
 	ar rcs $@ $^
@@ -113,7 +133,7 @@ libicm.a: $(LIBICM)
 
 # ── Bench grid (includes icm.c directly for profiling access) ──
 
-.PHONY: all parallel test bench calibrate clean libicm.a libicm libicm.dylib libicm.so
+.PHONY: all parallel test bench calibrate clean libicm.a libicm libicm.dylib libicm.so validate_best_b calibrate_best_b
 
 all:
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(OUT) $(SRC) $(LDFLAGS)
@@ -135,31 +155,23 @@ contour_1s: $(LIBICM)
 contour_1s_par: $(BUILD_DIR)/libicm_omp.a
 	$(CC) $(CFLAGS) $(OMP_CFLAGS) $(INCLUDES) -o $@ tools/contour_1s.c $(BUILD_DIR)/libicm_omp.a $(LDFLAGS) $(OMP_LDFLAGS)
 
+validate_best_b: $(LIBICM)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tools/validate_best_b.c $(LIBICM) $(LDFLAGS)
+
+calibrate_best_b: $(LIBICM)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tools/calibrate_best_b.c $(LIBICM) $(LDFLAGS)
+
 calibrate:
 	$(CC) $(CFLAGS) $(INCLUDES) -o calibrate tools/calibrate.c $(LDFLAGS)
 	@echo "Run: ./calibrate (then copy fft_config.h + fftw_wisdom.dat to devices/$(DEVICE)/)"
 
-# ── Regenerate results/ data for tools/plot_contour.py ──────────
-# Requires devices/$(DEVICE)/ to already be calibrated (see "Calibrating
-# for a New Device" in README.md). Writes stable (undated) files directly
-# into results/, overwriting any previous run -- plot_contour.py picks up
-# these files by name (via find_latest's mtime tiebreak), no renaming or
-# copying needed. DEVICE=zen4 must be run on Zen4 hardware; DEVICE=m3_pro
-# on Apple Silicon. Git history is the record of prior runs; file names are
-# not used for versioning.
-# plot_contour.py's DEVICE_CONFIGS use "m3pro" (no underscore) in filenames
-# even though the build device is "m3_pro" -- match that convention here.
-RESULTS_TAG := $(subst m3_pro,m3pro,$(DEVICE))
-results-refresh: all parallel contour_1s contour_1s_par
-	mkdir -p results
-	./$(OUT) > results/bench_grid_$(RESULTS_TAG)_serial.txt
-	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc)} \
-	    ./$(OUT) > results/bench_grid_$(RESULTS_TAG)_parallel.txt
-	./contour_1s --contour > results/contour_$(RESULTS_TAG)_serial_q256.csv
-	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc)} \
-	    ./contour_1s_par --contour > results/contour_$(RESULTS_TAG)_parallel_q256.csv
-	python3 tools/plot_contour.py --device $(DEVICE)
-	@echo "Refreshed results/ for DEVICE=$(DEVICE)."
+# ── Regenerate results/ data and plots ──────────────────────────
+# Delegates to tools/results/refresh_all.sh which rebuilds binaries,
+# regenerates all raw data files (bench_grid, contour CSVs, crossover,
+# subset-speed), and regenerates every publication plot in one shot.
+# DEVICE=zen4 must be run on Zen4 hardware; DEVICE=m3_pro on Apple Silicon.
+results-refresh:
+	bash tools/results/refresh_all.sh --device $(DEVICE)
 
 .PHONY: results-refresh
 
@@ -168,24 +180,26 @@ results-refresh: all parallel contour_1s contour_1s_par
 # CPU reference object for GPU benchmarks (cross-check against CPU results)
 CPU_REF_OBJ = $(BUILD_DIR)/icm_cpu_ref.o
 
-$(CPU_REF_OBJ): src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -c src/icm.c -o $@
+$(CPU_REF_OBJ): src/cpu/icm.c src/cpu/icm.h devices/$(DEVICE)/fft_config.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -c src/cpu/icm.c -o $@
 
 CUFFTDX_FLAGS = $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY
-VKFFT_FLAGS = $(if $(VKFFT_INC),$(VKFFT_INC) -DUSE_VKFFT)
-VKFFT_LIBS = $(if $(VKFFT_INC),-lnvrtc -lcuda)
-GPU_INCLUDES = $(INCLUDES) -Idevices/b200
+# GPU device config selection, mirroring the CPU's DEVICE=.  b200 is the
+# shipped calibration; for a new card, generate devices/<name>/gpu_fft_config.h
+# with ./calibrate_gpu and build with GPU_DEVICE=<name>.
+GPU_DEVICE ?= b200
+GPU_INCLUDES = $(INCLUDES) -Idevices/$(GPU_DEVICE)
 
 # ── Multi-file GPU compilation (separate compilation + device linking) ──
-GPU_SRCS = src/gpu/gpu_kernels.cu src/gpu/gpu_plan.cu src/gpu/gpu_exec.cu src/gpu/gpu_api.cu
+GPU_SRCS = src/gpu/gpu_kernels.cu src/gpu/gpu_cost_model.cu src/gpu/gpu_plan.cu src/gpu/gpu_memory.cu src/gpu/gpu_fft_plans.cu src/gpu/gpu_exec.cu src/gpu/gpu_api.cu
 GPU_OBJS = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
-GPU_HDRS = src/gpu/gpu_internal.h src/icm_gpu.h devices/b200/gpu_fft_config.h
+GPU_HDRS = src/gpu/gpu_internal.h src/gpu/icm_gpu.h devices/$(GPU_DEVICE)/gpu_fft_config.h
 
 $(BUILD_DIR)/gpu_%.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu -dc -o $@ $<
 
 $(BUILD_DIR)/gpu_%_fused.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $@ $<
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $@ $<
 
 GPU_OBJS_PLAIN = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
 GPU_OBJS_FUSED = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%_fused.o,$(GPU_SRCS))
@@ -201,44 +215,68 @@ bench_gpu: bench/bench_gpu.cu $(GPU_OBJS_PLAIN) $(BUILD_DIR)/gpu_dlink.o $(CPU_R
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu.o $(GPU_OBJS_PLAIN) $(BUILD_DIR)/gpu_dlink.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
 
 bench_gpu_fused: bench/bench_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ)
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/bench_gpu_fused.o bench/bench_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu_fused.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/bench_gpu_fused.o bench/bench_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/bench_gpu_fused.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CPU_REF_OBJ) $(LDFLAGS) $(CUDA_LIBS)
 
 calibrate_gpu: tools/calibrate_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu.o tools/calibrate_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu.o tools/calibrate_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 heatmap_gpu: tools/heatmap_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/heatmap_gpu.o tools/heatmap_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/heatmap_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/heatmap_gpu.o tools/heatmap_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/heatmap_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 push_limit_gpu: tools/push_limit_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/push_limit_gpu.o tools/push_limit_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/push_limit_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/push_limit_gpu.o tools/push_limit_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/push_limit_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 validate_planner_gpu: tools/validate_planner_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/validate_planner_gpu.o tools/validate_planner_gpu.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/validate_planner_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/validate_planner_gpu.o tools/validate_planner_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/validate_planner_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 gpu_sample_plans: tools/gpu_sample_plans.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/gpu_sample_plans.o tools/gpu_sample_plans.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_sample_plans.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/gpu_sample_plans.o tools/gpu_sample_plans.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_sample_plans.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
+
+calibrate_gpu_best_b: tools/calibrate_gpu_best_b.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/calibrate_gpu_best_b.o tools/calibrate_gpu_best_b.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/calibrate_gpu_best_b.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 gpu_phase_profile: tools/gpu_phase_profile.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/gpu_phase_profile.o tools/gpu_phase_profile.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_phase_profile.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/gpu_phase_profile.o tools/gpu_phase_profile.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_phase_profile.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
+
+gpu_dispatch_validate: tools/gpu_dispatch_validate.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/gpu_dispatch_validate.o tools/gpu_dispatch_validate.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_dispatch_validate.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
+
+threshold_search_gpu: tools/threshold_search_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/threshold_search_gpu.o tools/threshold_search_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/threshold_search_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 test_gpu_cost_model: tools/test_gpu_cost_model.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
-	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) $(VKFFT_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_cost_model.o tools/test_gpu_cost_model.cu
-	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_cost_model.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS) $(VKFFT_LIBS)
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_cost_model.o tools/test_gpu_cost_model.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_cost_model.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
-test_cpu_cost_model: tools/test_cpu_cost_model.c src/icm.c src/icm.h devices/$(DEVICE)/fft_config.h
+# Host-side only: no kernel launches, no device allocation. Compiles with
+# nvcc (it includes gpu_internal.h) but RUNS on any machine, including one
+# with no NVIDIA device present.
+test_gpu_wrap_feasibility: tools/test_gpu_wrap_feasibility.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_wrap_feasibility.o tools/test_gpu_wrap_feasibility.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_wrap_feasibility.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
+
+test_cpu_cost_model: tools/test_cpu_cost_model.c src/cpu/icm.c src/cpu/icm.h devices/$(DEVICE)/fft_config.h
 	# -Wno-unused-function: this tool only exercises a subset of icm.c
 	# (no naive-engine path), so some functions used elsewhere in the
 	# codebase are legitimately unreferenced from this translation unit.
 	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -o $@ tools/test_cpu_cost_model.c $(LDFLAGS)
 
-.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model campaign_b200
+test_bselect_lookup: tools/test_bselect_lookup.c src/cpu/fft_cost_model.h devices/$(DEVICE)/fft_config.h
+	# -Wno-unused-function: fft_cost_model.h defines three static
+	# functions; this test only calls empirical_best_B.
+	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -o $@ tools/test_bselect_lookup.c $(LDFLAGS)
+
+.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu gpu_dispatch_validate threshold_search_gpu test_gpu_cost_model test_gpu_wrap_feasibility test_cpu_cost_model test_bselect_lookup campaign_b200 calibrate_gpu_best_b
 
 campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	bash tools/run_b200_campaign.sh
@@ -246,7 +284,7 @@ campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate
 # ── Clean ───────────────────────────────────────────────────────
 
 clean:
-	rm -f $(OUT) calibrate contour_1s contour_1s_par accuracy_bench
-	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model
+	rm -f $(OUT) calibrate contour_1s contour_1s_par accuracy_bench validate_best_b calibrate_best_b
+	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu gpu_dispatch_validate threshold_search_gpu test_gpu_cost_model test_gpu_wrap_feasibility test_cpu_cost_model test_bselect_lookup
 	rm -rf $(BUILD_DIR)
 	rm -rf python/*.egg-info python/build python/dist

@@ -26,7 +26,7 @@ build/
 # Generated data (from calibration/benchmarking)
 # fft_config.h / fftw_wisdom.dat are ignored at repo root (raw ./calibrate
 # output before being copied to a device dir) but tracked under devices/*/
-# — those are the hand-validated, committed source of truth per device.
+# Those are the hand-validated, committed source of truth per device.
 calibration.csv
 fft_config.h
 fftw_wisdom.dat
@@ -43,10 +43,16 @@ fftw_wisdom.dat
 !results/runtime_vs_n_cpu.png
 !results/runtime_vs_n_gpu.png
 !results/gpu_contour.png
+!results/gpu_heatmap_time.png
+!results/gpu_heatmap_engine.png
+!results/gpu_heatmap_tier.png
+!results/gpu_heatmap_B.png
 !results/contour_1s_m3pro.png
 !results/parallel_speedup_m3pro.png
 !results/engine_dispatch_m3pro.png
 !results/runtime_vs_n_cpu_m3pro.png
+!results/wrap_fma_cost_curve.png
+!results/zen4_1dpc_vs_2dpc.png
 zen4_*.txt
 planner_validation.csv
 gpu_limit_frontier.csv
@@ -71,6 +77,12 @@ dist/
 
 # Claude Code
 .claude/
+
+# DeepSeek Deck worktrees (deck folder create --isolation worktree)
+.deck-worktrees/
+
+# Scratch investigation workspaces (not part of the shipped project)
+scratch/
 
 # OS
 .DS_Store
@@ -108,6 +120,11 @@ results_b200_optimized/
 # Compiled test binaries (leaked to repo root)
 test_cpu_cost_model
 test_cpu_cost_model_*
+test_bselect_lookup
+test_uncalibrated_fallback
+validate_best_b
+calibrate_best_b
+validate_dispatch
 
 # Jupyter artifacts
 .ipynb_checkpoints/
@@ -119,7 +136,21 @@ test_cpu_cost_model_*
 !results/contour_*.csv
 !results/gpu_heatmap_*.csv
 !results/accuracy_convergence.csv
+!results/b_optimal_sweep_*.csv
+!results/wrap_fma_bench_*.csv
+!results/crossover_*.txt
+!results/subset_speed_*.txt
+!results/threshold_*.txt
+!results/gpu_threshold_search_*.txt
+!results/dispatch_validation_*.csv
 .dsar/
 
 # AI agent project instructions -- not for public repo view
 CLAUDE.md
+
+# AI agent session logs / ephemeral sprint boards -- internal only, contain
+# rented-hardware IPs and cloud rental contract IDs, not for public repo view
+HANDOFF.md
+
+# Ephemeral supervisor-dag sprint boards (deleted at close; never ship)
+SPRINT_*_DAG.md

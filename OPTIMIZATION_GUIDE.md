@@ -1,4 +1,4 @@
-# ICM Equity Computation - Optimization Guide
+# ICM Equity Computation: Optimization Guide
 
 ## What We Did
 
@@ -16,7 +16,7 @@ no FFT. Baseline: n=1024 k=n took 689ms.
 Three engines with dispatch:
 
 ```c
-int B = select_engine(n, k);  // cost-based: compares linear vs hybrid
+int B = select_engine(n, k);  // empirical-table-based (subset queries use the same lookup, n_targets is unused)
 if (B > 0)
     use hybrid(B);        // block build + FFT tree + bidirectional divide
 else
@@ -37,7 +37,7 @@ n       k=10   k=50   k=100  k=n/4  k=n/2  k=n
 65536  130    453    836   6580   9710  10000
 ```
 
-## Optimizations - What Worked (ordered by impact)
+## Optimizations: What Worked (ordered by impact)
 
 ### 1. FFTW Tree Engine with Calibrated Per-Level Decisions (5-97x for large k)
 **The single biggest win.** Replaced schoolbook polynomial multiplication in the
@@ -45,32 +45,43 @@ subproduct tree with FFTW3's r2c/c2r transforms, with per-level decisions driven
 by offline-calibrated data.
 
 #### Offline calibration pipeline
-1. **PATIENT wisdom**: generate FFTW_PATIENT plans for all 749 smooth (7-smooth:
-   2^a·3^b·5^c·7^d) sizes up to 131072. Stored in `devices/<machine>/fftw_wisdom.dat`.
+1. **PATIENT wisdom**: generate FFTW_PATIENT plans for every 7-smooth
+   (2^a·3^b·5^c·7^d) size up to the calibration ceiling (`./calibrate --max-size N`,
+   default 131072; the shipped devices are calibrated higher, see
+   `N_CALIBRATED_SIZES`/`CALIBRATED_MAX_CONV_LEN` in each
+   `devices/<machine>/fft_config.h`). Stored in `devices/<machine>/fftw_wisdom.dat`.
 2. **Per-size benchmarking**: time the full r2c + pointwise + c2r pipeline at each
    smooth size (10K-10M reps). Stored in `devices/<machine>/fft_config.h` as
    `calib_sizes[]` and `calib_times_ns[]`.
-3. **`fastest_fft_ge(n)`**: for non-cyclic operations (standard multiply, correlate),
-   search all smooth sizes from n up to next_pow2(n) and return the one with the
-   lowest calibrated time. Critical: the *smallest* smooth ≥ n is often not the
-   *fastest* (e.g., 245 at 1144ns vs 256 at 740ns = 1.55x slower).
+3. **`best_fft_config(L)`**: for a convolution length L, search smooth sizes
+   from L/2+1 up to 2L and return the one with the lowest calibrated cost
+   (transform time plus any wrap correction). Critical: the *smallest* smooth
+   ≥ L is often not the *fastest* (e.g., 245 at 1144ns vs 256 at 740ns =
+   1.55x slower). Full mechanics in "Cyclic multiply with multi-coefficient
+   wrapping (m-wrap)" below.
 
 #### Per-level FFT vs schoolbook decision
 At each tree level, `tree_ctx_create_ex2` compares:
 ```
-fft_cost = calib_time[best_fft_size] + overhead(40ns) + correction(m)
-school_cost = (d_eff + 1)² × FMA_NS
+fft_cost = calib_time[best_fft_size] + fft_overhead + correction(m)
+school_cost = schoolbook_mul_ns[idx]  // direct per-size lookup table
 ```
-Where `d_eff = cps/2` at below-saturation levels (half the coefficients are zero)
-and `d_eff = cps - 1` at saturated levels. Using `cps²` instead of `(d_eff+1)²`
-overestimates schoolbook by 4x at below-sat levels - this was a bug that caused
-FFT at tiny sizes where schoolbook was faster. The 40ns overhead was measured via
-`./bench_grid profile` (plan lookup + buffer copies not in the calibration).
+`fft_overhead` is a hardcoded `0.0` in `icm.c` (the overhead is baked into
+`calib_times_ns[]`, which measures the full pipeline); the `FFT_OVERHEAD_NS`
+`#define` that used to hold this value was deleted as dead code (zero live
+callers), along with `src/cpu/cost_model.h`.
 
-`FMA_NS` is device-specific: **M3 Pro = 0.0839 ns**, Zen 4 = 0.0500 ns
-(AVX-512 scalar FMA).
+Where `schoolbook_mul_ns[]` is a per-size lookup table (indexed by `cps` into
+`calib_sizes[]`), replacing the old `(d_eff + 1)² × FMA_NS` formula (`FMA_NS`
+has likewise been deleted as dead code). The lookup table captures the real
+non-linear cost at small sizes where schoolbook is latency/dependency-chain-
+bound, not FMA-throughput-bound. `d_eff = cps/2` at below-saturation levels
+(half the coefficients are zero) and `d_eff = cps - 1` at saturated levels.
+Using `cps²` instead of `(d_eff+1)²` overestimates schoolbook by 4x at
+below-sat levels. This was a bug that caused FFT at tiny sizes where
+schoolbook was faster.
 
-Note: `school_cost_flops` must be `long long` - at cps=65536, `(65536)²` overflows
+Note: `school_cost_flops` must be `long long`; at cps=65536, `(65536)²` overflows
 a 32-bit int, which caused the root level to use schoolbook (4.3 billion FMAs)
 instead of FFT (1ms). This was the n=65536 blowup bug.
 
@@ -89,19 +100,21 @@ The cyclic multiply exploits the structure:
 ```
 for each smooth S from L/2+1 to 2L:
     m = (S >= L) ? 0 : L - S
-    cost = calib_time[S] + (m+1)² × WRAP_FMA_NS
+    cost = calib_time[S] + m*(m+1)/2 × WRAP_FMA_NS   (polymul, len_P=0)
+    //  or: calib_time[S] + m*(m+1) × WRAP_FMA_NS     (correlate, len_P>0)
     pick the S with minimum cost
 ```
 
 Example: for L=256 on M3 Pro, the FFT at size 240 (7-smooth) costs 676ns +
-17²×10.0 = 3576ns total, vs 256 (pow2) at 740ns. At WRAP_FMA_NS=10.0,
-the m=16 wrap is far worse - the optimizer correctly picks 256 here.
-At smaller m values (m≤4), wrapping is typically profitable.
+16×17/2×0.516 = 746ns total, vs 256 (pow2) at 740ns, nearly tied, so the
+optimizer picks the slightly faster 256 here. At smaller m values (m≤4),
+wrapping is typically profitable. WRAP_FMA_NS is device-specific: **M3 Pro =
+0.5160 ns**, Zen 4 = 0.4360 ns (measured via `./bench_grid profile`).
 
 For m=0 (no wrapping), this reduces to a standard cyclic convolution with a single
 subtraction to undo the one aliased term (the z^{2d} coefficient).
 
-m-wrap applies to ALL FFT operations - builds (both below-sat and saturated) and
+m-wrap applies to ALL FFT operations: builds (both below-sat and saturated) and
 correlates. The general function `polymul_fft_wrap` handles any input sizes.
 
 #### Joint build+correlate optimization with automatic caching decisions
@@ -113,35 +126,37 @@ cached from the build and reused in correlates. The paired correlate also shares
 FFT(g) across both siblings.
 ```
 joint_cost(S) = calib[S]                                // build (full pipeline)
-              + (m_build+1)² × FMA_NS                   // build correction
+              + m_build*(m_build+1)/2 × WRAP_FMA_NS     // build correction
               + calib[S] × PAIRED_CACHED_CORR_RATIO      // paired cached correlate
-              + 2 × (m_corr+1)² × FMA_NS                // 2 correlate corrections
+              + m_corr*(m_corr+1) × WRAP_FMA_NS          // 2 correlate corrections
 ```
 
 **Independent (uncached):** build and correlate each pick their own optimal FFT size.
 The pair shares FFT(g) but computes FFT(P_reversed) fresh.
 ```
 indep_cost = calib[build_size]                          // build (full pipeline)
-           + (m_build+1)² × FMA_NS                     // build correction
-           + INDEP_PAIR_RATIO × calib[corr_size]        // correlate_fft_pair
-           + 2 × (m_corr+1)² × FMA_NS                  // 2 correlate corrections
+           + m_build*(m_build+1)/2 × WRAP_FMA_NS        // build correction
+           + INDEP_PAIR_RATIO × calib[corr_size]         // correlate_fft_pair
+           + m_corr*(m_corr+1) × WRAP_FMA_NS             // 2 correlate corrections
 ```
 
 These ratios are derived from the measured FFT phase split (see RESULTS.md) and
 refit via `tools/fit_cost_model.py` against 200 sampled (n,k,B) plans on real hardware:
 
 - `PAIRED_CACHED_CORR_RATIO`: cost of paired cached correlate / full FFT pipeline.
-  **M3 Pro: 1.8205**, Zen 4: 2.9709.
+  **M3 Pro: 1.5600**, Zen 4: 1.5467.
 - `INDEP_PAIR_RATIO`: cost of correlate_fft_pair (shared g, fresh P FFTs) / full
-  FFT pipeline. **M3 Pro: 1.8205**, Zen 4: 2.9709 (fit_cost_model.py's single R,
-  applied to both ratios - the two ratios converged to the same value on both devices).
+  FFT pipeline. **M3 Pro: 2.4400**, Zen 4: 2.4400.
 
 All constants live as `#define`s in `fft_config.h` for per-device tuning.
 
 The code picks whichever is cheaper. In practice:
-- **Saturated levels** (build and correlate have similar conv_len): joint wins.
-- **Below-sat levels** (correlate conv_len ≈ 2× build): independent wins, because
+- **Saturated levels** (build and correlate have similar conv_len): joint usually wins.
+- **Below-sat levels** (correlate conv_len ≈ 2× build): independent often wins, because
   padding the build to the correlate's larger size costs more than the caching saves.
+  But this depends on the device-specific ratios, on both M3 Pro and Zen 4,
+  `PAIRED_CACHED_CORR_RATIO` (≈1.55) is substantially lower than `INDEP_PAIR_RATIO`
+  (≈2.44), so joint caching wins at more levels than the old equal-ratio model predicted.
 
 #### k-padding to fastest smooth size
 `best_k_pad(k)` searches smooth numbers near k and picks the one whose
@@ -161,20 +176,30 @@ for (int m = k-1; m >= 1; m--) {
 ```
 This works because the suffix update runs backward, so R[m] is read for the dot
 product before being overwritten. The fused version reduced linear times by 24%
-(e.g., n=8192 k=50: 98ms → 74ms), pushing the linear→hybrid crossover from
-k≈60 up to k≈95 for batched linear.
+(e.g., n=8192 k=50: 98ms → 74ms), pushing the linear→hybrid crossover upward.
 
-### 3. OpenMP Parallelism (~8-10x on 16 threads)
+The batched linear engine's cost model uses **5×n×k × BATCHED_FMA_NS** FMAs per
+quadrature point (forward pass: BQ×(2k-1) FMAs/player; fused backward pass:
+BQ×(3k-1) FMAs/player, ~5k total per player, not 4k as older formulas assumed).
+`BATCHED_FMA_NS` (M3 Pro: 0.0954 ns) is fit directly against real
+`icm_run_linear_batched()` measurements; it was historically distinct from the
+now-deleted `FMA_NS` (an unrelated scalar schoolbook microbenchmark, dead code
+with zero live callers); reusing that old constant here underpredicted real
+linear-engine cost by ~1.73-1.80×.
+
+### 3. OpenMP Parallelism (~6-8x on 12 threads)
 The Q=256 quadrature loop is embarrassingly parallel. Each thread gets its own
 engine context (cloned workspace). Thread-local equity arrays avoid false sharing.
 FFTW plan creation before parallel region (not thread-safe). Context cloning uses
-`FFTW_MEASURE | FFTW_WISDOM_ONLY` with ESTIMATE fallback - this gives cloned
+`FFTW_MEASURE | FFTW_WISDOM_ONLY` with ESTIMATE fallback; this gives cloned
 contexts the same PATIENT-quality plans as the original (critical for parallel
 performance; using bare ESTIMATE produces significantly slower plans).
-~9.5x on M3 Pro's P+E topology (n=8192 k=n: serial→parallel speedup, 16-thread).
-HybridCtx pre-allocates permutation buffers (`a_sorted`, `inner_sorted`) to avoid
-per-call malloc under parallel allocator contention - without this, tree beats hybrid
-in parallel despite hybrid winning in serial.
+~7.2x on M3 Pro's 6P+6E topology (n=8192 k=n: serial→parallel speedup, 12-thread;
+see `RESULTS.md`'s M3 Pro table for the full grid). HybridCtx pre-allocates
+permutation buffers (`a_sorted`, `inner_sorted`) to avoid per-call malloc under
+parallel allocator contention. Without this, tree can beat hybrid in parallel
+at large n/k, an effect that gets worse as B-selection calibration error grows
+(see `VERDICTS.md` for the M3 Pro B-selection gap found and fixed 2026-08-02).
 
 ### 4. Truncated Correlate (35-40% at below-saturation levels)
 Exploit sparsity of P (only d+1 non-zero terms) AND limited range of g (only need
@@ -196,12 +221,12 @@ loop vectorizes across quad points instead of across the tiny k dimension. The
 interleaved layout is cache-friendly (contiguous access) and eliminates L1 misses that
 occurred with the old strided layout. BQ=8 maps to 4 NEON FMA ports on Apple Silicon
 and native AVX-512 width on Zen 4. Only helps for n ≥ 2048 (interleave overhead
-exceeds savings at smaller n). Template in `src/linear_batched_impl.inc`.
+exceeds savings at smaller n). Template in `src/cpu/linear_batched_impl.inc`.
 
 ### 7. Hybrid Block-Divide Engine (8-12%)
 Replace the tree's bottom log₂(B) levels with: sequential block build (tight loop,
 no tree overhead) + bidirectional divide (stable on the complete block product).
-B is selected by cost model (`select_best_B`): typically B=16 on M3 Pro, B=32 on Zen 4.
+B is selected by an empirically-calibrated 2D nearest-neighbor lookup (`empirical_best_B(n,k)` in `src/cpu/fft_cost_model.h`, calibrated by `tools/calibrate_best_b.c`): typically B=32 on both M3 Pro and Zen 4. `select_best_B(n, k)` takes no `n_targets` parameter at all; subset queries get the same lookup as full-equity queries, which were the only case the calibration itself measured.
 Players sorted by stack size for branch-prediction-friendly divide direction.
 
 ### 8. Truncated Propagation (2-5%)
@@ -213,13 +238,13 @@ Cache FFT(P_child) during the build phase; reuse via conjugation during propagat
 Pad the build FFT to the correlate size so caching works at all saturated levels.
 
 ### 10. Skip Root Multiply (1-2%)
-The root product of the subproduct tree is never read - propagation only uses
+The root product of the subproduct tree is never read. Propagation only uses
 children's polynomials. Skipping saves the most expensive FFT multiply in the tree.
 
 ### 11. Ragged Tree (34% at non-pow2 n)
 Track `n_real[ell]` per level instead of padding to power-of-2. Skip padding nodes
 entirely in build and propagation. Lone children (odd n_real) are copied up without
-multiplication. Only O(log n) boundary nodes are affected - the savings come from
+multiplication. Only O(log n) boundary nodes are affected. The savings come from
 skipping ~39% of nodes at non-pow2 n.
 
 ### 12. Workspace Pre-allocation (1.4-2.5x from original baseline)
@@ -269,10 +294,13 @@ writes sequentially; the backward pass reads in reverse. Both are streaming acce
 patterns that the hardware prefetcher handles perfectly at 400 GB/s.
 
 Checkpointing reduces memory to O(√n·k) but adds 33% recomputation. On M3 Pro
-(unified memory at ~400 GB/s),
-the recomputation costs more than the cache miss savings because streaming is
-already fast. On bandwidth-limited hardware (Zen 4 at 80 GB/s), checkpointing
-becomes essential.
+(unified memory streaming at ~110.7 GB/s), the recomputation costs more than
+the cache miss savings because streaming is already fast. On bandwidth-limited
+hardware (Zen 4 at 33.0 GB/s streaming, well below the DDR5-5200 dual-channel
+theoretical peak), checkpointing becomes essential. (The `DRAM_BW_GBS` macro
+that used to carry these bandwidth measurements was deleted as dead code;
+it fed only `blended_bw()`/`linear_roofline_cost()` in the now-deleted
+`src/cpu/cost_model.h`, neither ever called live.)
 
 The hybrid engine IS the blocked linear: block build = forward within a block,
 divide = backward within a block, tree = inter-block structure. The block's working
@@ -298,7 +326,7 @@ OMP_NUM_THREADS=16 ./bench_grid
 ## Porting to a New Device (General)
 
 The codebase is designed for easy porting. All device-specific tuning lives in
-`devices/<DEVICE>/fft_config.h` — no changes to `src/icm.c` needed. The engines,
+`devices/<DEVICE>/fft_config.h`, no changes to `src/cpu/icm.c` needed. The engines,
 cost models, and dispatch logic are fully parameterized by the constants in that header.
 
 For the GPU planner (B200), the equivalent tuning lives in
@@ -310,7 +338,9 @@ For the GPU planner (B200), the equivalent tuning lives in
 
 ### Key Architectural Differences from M3 Pro
 - **SIMD**: AVX-512 (8 FP64/vector) vs NEON (2 FP64/vector)
-- **Memory BW**: ~60 GB/s DDR5 vs 400 GB/s unified
+- **Memory BW (streaming, measured by `tools/calibrate.c`'s bandwidth probe)**:
+  33.0 GB/s DDR5 vs 110.7 GB/s unified (well below either platform's
+  theoretical peak)
 - **L1 cache**: 32KB vs 192KB
 - **L2 cache**: 1MB/core vs 32MB cluster
 - **Cores**: 16P (no E-cores) vs M3 Pro's P+E topology
@@ -321,7 +351,7 @@ For the GPU planner (B200), the equivalent tuning lives in
 
 **Step 1: Generate calibration data.**
 
-This is the most important step - all cost models depend on accurate per-size FFT
+This is the most important step: all cost models depend on accurate per-size FFT
 timings. Run on the target machine with minimal background load.
 
 ```bash
@@ -338,7 +368,8 @@ cp fftw_wisdom.dat devices/zen4/fftw_wisdom.dat
 ```
 
 This generates:
-- FFTW PATIENT wisdom for all 749 smooth sizes (2^a·3^b·5^c·7^d up to 131072)
+- FFTW PATIENT wisdom for every 7-smooth size (2^a·3^b·5^c·7^d) up to the
+  `--max-size` ceiling (default 131072)
 - `calib_sizes[]` and `calib_times_ns[]` arrays with per-size FFT pipeline costs
 - Skeleton `#define`s for platform constants (need manual update in Step 3)
 
@@ -351,39 +382,47 @@ make DEVICE=zen4
 
 The profile output has three measurement sections. Record these values:
 
-1. **FFT overhead table** - The "overhead" column is the per-call constant cost
+1. **FFT overhead table**: the "overhead" column is the per-call constant cost
    not captured in calibration (plan lookup, buffer copies, result extraction).
-   → `FFT_OVERHEAD_NS`
+   This was always 0.0 on every calibrated device (the overhead is baked into
+   `calib_times_ns[]`, which measures the full pipeline); the `FFT_OVERHEAD_NS`
+   `#define` that used to carry this value has been deleted as dead code
+   (zero live callers) and is no longer emitted for new device ports.
 
-2. **Schoolbook row** in the overhead table - `school_ns / cps²` at the largest
-   schoolbook size gives the scalar FMA cost.
-   → `FMA_NS` (measured: 0.0500 on Zen4 with AVX-512)
+2. **Schoolbook row** in the overhead table: `school_ns / cps²` at the largest
+   schoolbook size gives the scalar FMA cost, historically recorded as
+   `FMA_NS`. That `#define` has likewise been deleted as dead code: schoolbook
+   cost decisions use the per-size lookup tables (`schoolbook_mul_ns[]`,
+   `schoolbook_corr_ns[]`), not a scalar FMA rate, and nothing else read
+   `FMA_NS` either. Nothing needs recording here for a new device port.
 
-3. **Phase split table** - `f_fwd`, `f_pw`, `f_ifft` fractions at each FFT size.
+3. **Phase split table**: `f_fwd`, `f_pw`, `f_ifft` fractions at each FFT size.
    Compute the paired/independent correlate ratios:
    - `PAIRED_CACHED_CORR_RATIO`: shares FFT(g) and reuses cached FFT(P).
      Cost = fwd(g) + 2×(pw + ifft). Ratio = this / full_pipeline_calib.
-     M3 Pro measured 1.6806 (fit_cost_model.py), Zen 4 measured 2.9709.
+     M3 Pro measured 1.5600, Zen 4 measured 1.5467.
    - `INDEP_PAIR_RATIO`: shares FFT(g), computes FFT(P) fresh.
      Cost = fwd(g) + 2×(fwd(P) + pw + ifft). Ratio = this / full_pipeline_calib.
-     M3 Pro measured 1.6806 (fit_cost_model.py), Zen 4 measured 2.9709.
+     Both M3 Pro and Zen 4 measured 2.4400.
 
 **Step 3: Update platform constants in `devices/zen4/fft_config.h`.**
 
 Edit the `#define`s at the top of the file with measured values:
 
 ```c
-#define FMA_NS             0.0500  /* scalar FMA cost from profile schoolbook row */
-#define FFT_OVERHEAD_NS    0.0     /* per-call FFT overhead, converged to 0 in fit */
-#define PAIRED_CACHED_CORR_RATIO 2.9709  /* from phase split + fit_cost_model.py */
-#define INDEP_PAIR_RATIO   2.9709  /* from phase split + fit_cost_model.py */
+#define WRAP_FMA_NS        0.4360  /* ns per FMA in wrap correction */
+#define BATCHED_FMA_NS     0.0973  /* effective ns per FMA in batched linear engine */
+#define PAIRED_CACHED_CORR_RATIO 1.5467  /* from phase split + fit_cost_model.py */
+#define INDEP_PAIR_RATIO   2.4400  /* from phase split + fit_cost_model.py */
 #define L2_CACHE_SIZE      (1 * 1024 * 1024)  /* 1MB per-core L2 */
 ```
 
 **Important**: `L2_CACHE_SIZE` controls the checkpointing interval in the batched
 linear engine (`ckpt_interval_batched`). Zen 4's 1MB L2 vs M3 Pro's 32MB means
-checkpointing activates much earlier, which is critical - without it, the linear
-engine would stream through DRAM at 60 GB/s instead of L2 at ~1 TB/s.
+checkpointing activates much earlier, which is critical; without it, the linear
+engine would stream through DRAM at 33.0 GB/s instead of L2 at 131.5 GB/s
+(both measured values, not theoretical peaks; the `DRAM_BW_GBS`/`L2_BW_GBS`
+macros that used to carry them were deleted as dead code).
 
 **Step 4: Rebuild and verify.**
 
@@ -392,20 +431,49 @@ make DEVICE=zen4
 ./bench_grid verify     # ALL TESTS PASSED required - do not proceed without this
 ```
 
-**Step 5: Verify dispatch decisions.**
+**Step 5: Calibrate the empirical dispatch tables.**
+
+The linear-vs-hybrid crossover and the within-hybrid B selection no longer use
+summed analytical cost-model constants for the go/no-go decision on full-equity
+queries. Instead, they use small empirically-measured lookup tables (LAPACK
+ILAENV NX precedent: direct measurement, not closed-form modeling; see
+`src/cpu/fft_cost_model.h` header comments for the rationale). Two calibration
+tools produce these tables:
+
+```bash
+# Calibrate linear-vs-hybrid crossover (full equity only, not subset queries)
+# Built from tools/calibrate_crossover.c; see tools/calibrate_full.sh step 12
+# for the exact compile line. Produces a binary at the repo root.
+./calibrate_crossover   # writes N_CROSSOVER_POINTS, crossover_n[], crossover_k[]
+                          # into devices/<DEVICE>/fft_config.h
+
+# Calibrate within-hybrid block-size selection (full equity only)
+make calibrate_best_b   # builds ./calibrate_best_b from tools/calibrate_best_b.c
+./calibrate_best_b      # writes N_BSELECT_POINTS, bselect_n[], bselect_k[], bselect_B[]
+                          # into devices/<DEVICE>/fft_config.h
+```
+
+`select_engine_ex()` and `select_best_B()` apply the same empirical tables to
+subset queries (`n_targets > 0`) as to full-equity ones; the old analytical
+fallback lived in the now-deleted `src/cpu/cost_model.h` (zero live callers).
+The empirical tables themselves were calibrated only against full-equity
+measurements, so subset dispatch quality was never directly validated.
+Revisit if subset dispatch is shown to need its own calibration.
+
+**Step 6: Verify dispatch decisions.**
 
 ```bash
 ./bench_grid crossover    # sweep k=40-150 at n=512-8192
 ```
 
-This runs both linear and hybrid at each (n, k) and shows which wins. The
-`select_engine()` cost model should match the empirical crossover. If it doesn't,
-check that `FMA_NS` and `FFT_OVERHEAD_NS` are correct - the
-dispatch is fully derived from these constants and the calibration table.
+This runs both linear and hybrid at each (n, k) and compares which wins against
+the empirical crossover table. If mismatches occur, re-run the calibration tools
+above on the target machine. The old analytical cost-model constants
+(`BATCHED_FMA_NS`, `PAIRED_CACHED_CORR_RATIO`, etc.) do NOT affect the
+engine-dispatch decision anymore (full-equity or subset alike), they only
+matter for the intra-engine per-level FFT-vs-schoolbook decisions within the tree.
 
-No manual `K_CROSS` tuning is needed - dispatch is cost-based.
-
-**Step 6: Run the full benchmark grid.**
+**Step 7: Run the full benchmark grid.**
 
 ```bash
 ./bench_grid              # full grid, single-threaded
@@ -420,11 +488,13 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 
 | Feature | How it adapts |
 |---|---|
-| `select_engine(n,k)` | Compares linear roofline cost vs hybrid cost (using `calib_times_ns[]`). Zen 4's faster schoolbook shifts crossover to higher k |
-| `select_best_B(n,k)` | Derives optimal block size from calibration data. Typically B=32 on Zen 4 (vs B=16 on M3 Pro) because wider schoolbook regime |
+| `select_engine(n,k)` (full equity) | Uses empirical crossover table `empirical_crossover_k(n)`, log-linear interpolation between calibrated (n, k_cross) points (`tools/calibrate_crossover.c`). Zen 4's table has higher k_cross values, shifting the crossover upward |
+| `select_engine(n,k)` (subset) | `n_targets` is currently unused inside `select_engine_ex()`; it calls the same empirical crossover table as full-equity dispatch. The old analytical fallback lived in the now-deleted `src/cpu/cost_model.h` (zero live callers) |
+| `select_best_B(n,k)` (full equity) | Uses `empirical_best_B(n,k)` 2D nearest-neighbor lookup over a calibrated (n,k,B) grid (`tools/calibrate_best_b.c`). No interpolation, B is discrete in {8,16,24,32,48,64}. Typically B=32 on both Zen 4 and M3 Pro |
+| `select_best_B(n,k)` (subset) | `select_best_B()` takes no `n_targets` parameter; subset queries get the same empirical lookup as full-equity ones, which is what the calibration itself measured |
 | `ckpt_interval_batched` | Sized to fit working set in `L2_CACHE_SIZE`. Activates much earlier on Zen 4 (1MB vs 32MB) |
 | BQ=8 batched linear | Same interleaved `a_batch[j*BQ+qi]` layout. AVX-512 processes 8 doubles natively per instruction |
-| Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |
+| Per-level FFT vs schoolbook | Each tree level uses `calib_times_ns[]` and `schoolbook_mul_ns[]` lookup tables to decide. Zen 4's faster schoolbook (AVX-512) means more levels use schoolbook |
 | `best_fft_config()` | Picks optimal FFT size + wrap correction from Zen 4-specific calibration table |
 | vDSP dispatch | Auto-disabled (not Apple Silicon). All FFTs use FFTW |
 
@@ -432,11 +502,19 @@ These features automatically adapt to Zen 4 via the calibration data and constan
 
 | Constant | Why manual | How to measure |
 |---|---|---|
-| `FMA_NS` | Hardware-specific scalar FMA cost | `./bench_grid profile` schoolbook row |
-| `FFT_OVERHEAD_NS` | Plan lookup + buffer copy cost | `./bench_grid profile` overhead column |
-| `PAIRED_CACHED_CORR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split |
-| `INDEP_PAIR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split |
+| `WRAP_FMA_NS` | Memory-latency-bound wrap correction | `./bench_grid profile` wrap phase |
+| `BATCHED_FMA_NS` | Linear engine's interleaved inner-loop throughput | Fit against `icm_run_linear_batched()` measurements |
+| `PAIRED_CACHED_CORR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split + `fit_cost_model.py` |
+| `INDEP_PAIR_RATIO` | Depends on FFT phase balance | `./bench_grid profile` phase split + `fit_cost_model.py` |
 | `L2_CACHE_SIZE` | Hardware spec | CPU datasheet |
+| `schoolbook_mul_ns[]` | Per-size schoolbook multiply cost | `tools/bench_schoolbook_tree.c` |
+| `schoolbook_corr_ns[]` | Per-size schoolbook correlate cost | `tools/bench_schoolbook_tree.c` |
+| `block_build_ns_per_player[]` | Per-B block build cost (non-linear in B) | `tools/bench_block_build.c` |
+| `leaf_fma_ns_per_player[]` | Per-B leaf extraction cost | `tools/probe_leaf_extract.c` |
+
+`FMA_NS`, `FFT_OVERHEAD_NS`, and `FP64_DIV_NS` were deleted as dead code
+(zero live callers) along with `src/cpu/cost_model.h`; new device ports no
+longer need to measure or set them.
 
 ### Optional: Karatsuba at intermediate sizes
 
@@ -444,7 +522,7 @@ AVX-512 makes schoolbook ~4x faster than on NEON, potentially opening a gap betw
 schoolbook and FFT where Karatsuba (O(n^1.585)) could win. Prior from M3 Pro testing:
 Karatsuba was 1.5x slower at all sizes (FMA hardware makes schoolbook's n² FMAs cheap).
 On Zen 4, wider SIMD inflates the schoolbook regime further, making Karatsuba even less
-likely to help - but measure to be sure.
+likely to help, but measure to be sure.
 
 ### Optional: Intel MKL as alternative FFT backend
 
@@ -452,25 +530,25 @@ See "FFT library choice: FFTW vs Intel MKL" section below for dual-library dispa
 
 ### FFT library choice: FFTW vs Intel MKL
 
-Both are supported - the code uses only the standard FFTW3 API.
+Both are supported: the code uses only the standard FFTW3 API.
 
 **FFTW with AVX-512** (`--enable-avx512` at configure time, or distro package):
-PATIENT wisdom is still essential - AVX-512 adds more codelet variants to the
+PATIENT wisdom is still essential: AVX-512 adds more codelet variants to the
 search space, making the gap between ESTIMATE and PATIENT even larger (20-50%).
 The calibration tool's wisdom generation step is critical.
 
 **Intel MKL** (oneMKL, free, `apt install intel-mkl` or `conda install mkl`):
-MKL's FFTW wrapper ignores all planning flags - `FFTW_PATIENT/MEASURE/ESTIMATE`
+MKL's FFTW wrapper ignores all planning flags: `FFTW_PATIENT/MEASURE/ESTIMATE`
 are accepted but have no effect. MKL always uses pre-tuned algorithms internally.
 Wisdom import/export are no-ops. This means:
 - Wisdom generation is unnecessary (skip `--wisdom-only` step)
 - Plan creation is always fast and always optimal
 - The clone code's `FFTW_MEASURE | FFTW_WISDOM_ONLY` works fine (MKL always succeeds)
-- **Per-size calibration is still essential** - MKL still has size-dependent costs
+- **Per-size calibration is still essential**: MKL still has size-dependent costs
 
 MKL is typically 10-30% faster than FFTW on x86 for power-of-2 sizes, but FFTW
 sometimes wins at composite (non-power-of-2) smooth sizes due to its specialized
-codelets. For maximum performance, use **both** - dispatch to whichever is faster
+codelets. For maximum performance, use **both**: dispatch to whichever is faster
 per FFT size.
 
 #### Dual-library dispatch (per-size best-of-both)
@@ -520,50 +598,58 @@ static inline void fft_execute(FFTPlan *p) {
 ```
 
 All downstream code (`polymul_fft_wrap`, `correlate_fft_cached_pair_wrap`, etc.)
-calls `fft_execute(plan)` instead of `fftw_execute(plan->fwd_plan)` - one
+calls `fft_execute(plan)` instead of `fftw_execute(plan->fwd_plan)`: one
 indirection, zero overhead (branch predictor learns the per-size pattern instantly).
 
 **Expected payoff**: 5-15% on sizes where one library significantly beats the other.
 The composite smooth sizes (where m-wrap saves FFT size) are where the libraries
-diverge most - FFTW's specialized codelets vs MKL's radix-2/3/5 focus.
+diverge most: FFTW's specialized codelets vs MKL's radix-2/3/5 focus.
 
 ### Compile
 ```bash
 # Serial (FFTW only)
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
-    -Isrc -Idevices/zen4 -o bench_grid bench/bench.c -lfftw3 -lm
+    -Isrc/cpu -Idevices/zen4 -o bench_grid bench/bench.c -lfftw3 -lm
 
 # Parallel (FFTW only)
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
-    -fopenmp -Isrc -Idevices/zen4 -o bench_grid bench/bench.c \
+    -fopenmp -Isrc/cpu -Idevices/zen4 -o bench_grid bench/bench.c \
     -lfftw3 -lfftw3_threads -lm
 
 # Parallel (dual-library: dlopen both at runtime, no direct link dependency)
 gcc -O3 -march=znver4 -Wall -Wno-unused-variable -Wno-unused-function \
-    -fopenmp -Isrc -Idevices/zen4 -o bench_grid bench/bench.c -ldl -lm
+    -fopenmp -Isrc/cpu -Idevices/zen4 -o bench_grid bench/bench.c -ldl -lm
 ```
 
 ## GPU Cost Model (B200)
 
-The GPU planner uses a separate cost model from the CPU. Unlike the CPU's
-9-parameter physics-based model, the GPU model fits only 4 constants —
-`C_wrap`, `C_school`, `R`, `C_gap` — with all other costs (compute-a,
-block-build, leaf-extract, accumulate) interpolated from empirical kernel
-benchmarks and cuFFT/cuFFTDx calibration tables in
-`devices/b200/gpu_fft_config.h`.
+The shipped GPU planner is driven by measured calibration data, not by
+fitted parameters: tier dispatch compares real per-pipeline measurements
+(`gpu_calib_cufft_ns[]` vs `gpu_calib_cufftdx_r2c_build_ns[]`), FFT-size
+selection reads the same tables, `estimate_candidate_cost()` uses directly
+measured constants (`GPU_BLOCK_BUILD_OVERHEAD_NS`, `GPU_BLOCK_BUILD_BASE_FMA_NS`,
+`GPU_SCHOOL_FMA_NS`), and B selection uses the empirical `gbselect_*` table
+in `devices/b200/gpu_fft_config.h`. Verified 2026-07-30 by tracing every
+live call site.
 
-The 4 fitted parameters are tuned via `tools/fit_gpu_cost_model.py`:
+`tools/fit_gpu_cost_model.py` fits four parameters (`C_wrap`, `C_school`,
+`R`, `C_gap`) via differential evolution against sampled (n,k,B) plans, but
+**writes nothing**: no corresponding macros exist in
+`devices/b200/gpu_fft_config.h` or anywhere in `src/gpu/`. Treat it as an
+analysis/validation script, not part of the shipped decision path. (An
+earlier revision of this file claimed those 4 parameters drive the
+planner; that was wrong.)
 
 ```bash
 python3 tools/fit_gpu_cost_model.py gpu_sample_plans.csv devices/b200/gpu_fft_config.h [bench_kernels.csv]
 ```
 
-The script uses differential evolution to minimize log-relative error
-across sampled (n,k,B) plans. The GPU calibration pipeline is:
-1. `calibrate_gpu.cu` — measure per-size cuFFT pipeline times →
+The GPU calibration pipeline that *does* feed the shipped planner:
+1. `calibrate_gpu.cu`, measure per-size cuFFT pipeline times →
    `devices/b200/gpu_fft_config.h`
-2. `gpu_sample_plans.cu` — sample planner decisions → `gpu_sample_plans.csv`
-3. `bench_kernels` — measure individual kernel costs → `bench_kernels_b200.csv`
-4. `fit_gpu_cost_model.py` — fit C_wrap, C_school, R, C_gap from the above
+2. `gpu_sample_plans.cu`, sample planner decisions → `gpu_sample_plans.csv`
+   (used for `fit_gpu_cost_model.py`'s offline analysis, not for writing config)
+3. `calibrate_gpu_best_b.cu`, measure the empirical `gbselect_*` B-selection
+   table directly (the actual live dispatch input, not a fit)
 
 Or run the full campaign: `./tools/run_b200_campaign.sh`.

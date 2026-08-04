@@ -1,4 +1,4 @@
-/* gpu_phase_profile.cu — Per-phase GPU timing for cost model fitting.
+/* gpu_phase_profile.cu; Per-phase GPU timing for cost model fitting.
  *
  * Runs icm_gpu_equity_with_plan in verbose (instrumented) mode to get
  * per-phase breakdown: compute_a, block_build, tree_build, tree_prop_cached,
@@ -22,7 +22,7 @@
 
 #include "icm.h"
 #include "icm_gpu.h"
-#include "gpu/gpu_internal.h"
+#include "gpu_internal.h"
 
 using namespace icm_gpu_detail;
 
@@ -119,7 +119,7 @@ int main(void) {
     icm_gpu_init(0);
 
     // Representative (n, k, B) triples spanning the space
-    // Fewer than sample_plans — these are slower due to per-kernel sync
+    // Fewer than sample_plans; these are slower due to per-kernel sync
     struct Triple { int n, k, B; };
     std::vector<Triple> triples;
 

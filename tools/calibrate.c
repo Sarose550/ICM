@@ -1,10 +1,14 @@
 /*
- * calibrate.c — Generate fft_config.h for the current machine.
+ * calibrate.c: generate fft_config.h for the current machine.
  *
  * Produces:
- *   1. fftw_wisdom.dat  — FFTW PATIENT plans for all 7-smooth sizes up to MAX_SIZE
- *   2. fft_config.h     — C header with calib_sizes[], calib_times_ns[], and
- *                          best_fft_config() / best_fft_config_joint() functions
+ *   1. fftw_wisdom.dat:  FFTW PATIENT plans for all 7-smooth sizes up to max_size
+ *   2. fft_config.h:     C header with calib_sizes[], calib_times_ns[],
+ *                          CALIBRATED_MAX_CONV_LEN, and per-device constants
+ *
+ * The cost-model *functions* (best_fft_config, best_fft_config_joint) are not
+ * generated here; they live once, for all devices, in src/cpu/fft_cost_model.h
+ * and consume the data this tool emits.
  *
  * The generated fft_config.h should be placed in devices/<DEVICE>/fft_config.h.
  *
@@ -18,6 +22,12 @@
  *   ./calibrate                   # full calibration (may take 10-30 minutes)
  *   ./calibrate --wisdom-only     # only generate wisdom (skip timing)
  *   ./calibrate --quick           # fewer reps (faster, less accurate)
+ *   ./calibrate --max-size N      # calibrate up to N (default 131072)
+ *
+ * --max-size tradeoff: a higher ceiling means a longer offline calibration
+ * run (more FFT sizes to benchmark) but gives a larger fully-optimal range
+ * before the uncalibrated FFTW_ESTIMATE fallback engages at runtime.
+ * The default 131072 keeps calibration under ~30 minutes on modern hardware.
  *
  * On Linux, pin to one core for stable results:
  *   taskset -c 0 nice -20 ./calibrate
@@ -32,7 +42,7 @@
 #include <time.h>
 #include <fftw3.h>
 
-#define MAX_SIZE 131072
+static int max_size = 131072;  /* overridable via --max-size N */
 #define WISDOM_FILE "fftw_wisdom.dat"
 
 static inline double now_ns(void) {
@@ -41,17 +51,32 @@ static inline double now_ns(void) {
     return ts.tv_sec * 1e9 + ts.tv_nsec;
 }
 
-/* ── Generate all 7-smooth numbers up to MAX_SIZE ── */
+/* ── Generate all 7-smooth numbers up to max_size ── */
 
-static int smooth_nums[800];
+static int *smooth_nums = NULL;
 static int n_smooth = 0;
 
+/* Count 7-smooth numbers ≤ limit without storing them. */
+static int count_smooth(int limit) {
+    int cnt = 0;
+    for (int a = 1; a <= limit; a *= 2)
+        for (int b = a; b <= limit; b *= 3)
+            for (int c = b; c <= limit; c *= 5)
+                for (int d = c; d <= limit; d *= 7)
+                    cnt++;
+    return cnt;
+}
+
 static void build_smooth_table(void) {
-    for (int a = 1; a <= MAX_SIZE; a *= 2)
-        for (int b = a; b <= MAX_SIZE; b *= 3)
-            for (int c = b; c <= MAX_SIZE; c *= 5)
-                for (int d = c; d <= MAX_SIZE; d *= 7)
-                    smooth_nums[n_smooth++] = d;
+    n_smooth = count_smooth(max_size);
+    smooth_nums = (int *)malloc((size_t)n_smooth * sizeof(int));
+    if (!smooth_nums) { fprintf(stderr, "malloc smooth_nums failed\n"); exit(1); }
+    int idx = 0;
+    for (int a = 1; a <= max_size; a *= 2)
+        for (int b = a; b <= max_size; b *= 3)
+            for (int c = b; c <= max_size; c *= 5)
+                for (int d = c; d <= max_size; d *= 7)
+                    smooth_nums[idx++] = d;
     /* Sort */
     for (int i = 1; i < n_smooth; i++) {
         int key = smooth_nums[i], j = i - 1;
@@ -93,7 +118,7 @@ static void generate_wisdom(void) {
 
 /* ── Phase 2: Benchmark each size ── */
 
-static double calib_times[800];
+static double *calib_times = NULL;  /* allocated after n_smooth is known */
 
 /* ── Phase 2.5: Measure streaming bandwidth at each cache level ── */
 
@@ -116,9 +141,21 @@ static double measure_bw(size_t bytes) {
     if (reps < 10) reps = 10;
     if (reps > 100000) reps = 100000;
 
+    /* The inner loop body doesn't depend on r, so a[i]=b[i]*s+c[i] computes
+     * the identical value on every repetition. Without a barrier, -O3 can
+     * (and on Zen4/GCC, does) prove the repeated stores are redundant and
+     * collapse the whole outer loop to ~1 real pass while `reps` full
+     * passes are still charged in total_bytes below -- inflating the
+     * reported bandwidth by ~reps x. The asm volatile forces the compiler
+     * to treat memory as externally observed after each pass, so it can't
+     * eliminate the "redundant" work. (Confirmed post hoc: dividing the
+     * pre-fix Zen4 numbers by their respective reps gives 112/34/32 GB/s
+     * for L2/L3/DRAM -- physically plausible -- matching this exactly.) */
     double t0 = now_ns();
-    for (int r = 0; r < reps; r++)
+    for (int r = 0; r < reps; r++) {
         for (size_t i = 0; i < n; i++) a[i] = b[i] * s + c[i];
+        __asm__ __volatile__("" : : "r"(a) : "memory");
+    }
     double elapsed_ns = now_ns() - t0;
 
     volatile double sink = a[n/2];
@@ -155,7 +192,7 @@ static void benchmark_sizes(int quick) {
         memset(rbuf, 0, sz * sizeof(double));
         memset(rbuf2, 0, sz * sizeof(double));
 
-        /* Create MEASURE plans (from PATIENT wisdom — instant) */
+        /* Create MEASURE plans (from PATIENT wisdom, instant) */
         fftw_plan fwd = fftw_plan_dft_r2c_1d(sz, rbuf, cbuf, FFTW_MEASURE | FFTW_WISDOM_ONLY);
         fftw_plan inv = fftw_plan_dft_c2r_1d(sz, cbuf, rbuf, FFTW_MEASURE | FFTW_WISDOM_ONLY);
         if (!fwd || !inv) {
@@ -180,7 +217,7 @@ static void benchmark_sizes(int quick) {
 
         /* Full pipeline = memcpy_in + fwd(a) + fwd(b) + pointwise + ifft + scale.
          * This matches what polymul_fft_wrap actually does per parent in the tree.
-         * Measured warm (second pass) — matches 255/256 Q-points. */
+         * Measured warm (second pass), matching 255/256 Q-points. */
 
         /* Warm up (plan + µop cache) */
         for (int r = 0; r < 5; r++) {
@@ -234,7 +271,39 @@ static void write_config(const char *filename) {
     if (!f) { perror(filename); exit(1); }
 
     fprintf(f, "/* Auto-generated FFT configuration from calibrate */\n");
-    fprintf(f, "/* Generated on this machine — do not use on different hardware */\n\n");
+    fprintf(f, "/* Generated on this machine; do not use on different hardware */\n\n");
+
+    /* CALIBRATED_MAX_CONV_LEN: largest convolution length the calibrated
+     * path is TRUSTED to handle, not merely the largest it can technically
+     * still produce an answer for.
+     *
+     * best_fft_config(L) structurally returns a non-sentinel answer for any
+     * L <= 2*max(calib_sizes)-1 (that's the widest L for which max(calib_sizes)
+     * still falls inside its [L/2+1, 2L] search window). But reaching a valid
+     * answer near the top of that range can require wrap_m up to
+     * max(calib_sizes)-1 -- and WRAP_FMA_NS was only ever fit over the
+     * realistic operating range wrap_m in [64,384] (bench_wrap_fma.c). Beyond
+     * that, its cost estimate is untrustworthy, not just imprecise: this is
+     * the exact mechanism behind the n=89,856 / 433.7s regression (found
+     * 2026-08-03, see HANDOFF.md) -- the model picked a huge, underpriced
+     * wrap correction because nothing stopped it from considering one.
+     *
+     * So this ceiling is deliberately TIGHTER than the structural maximum:
+     * max(calib_sizes) + WRAP_SAFE_MARGIN, where WRAP_SAFE_MARGIN is the top
+     * of the validated wrap_m range. Past it, the uncalibrated fallback
+     * (always FFT, wrap-free, FFTW_ESTIMATE) engages -- slower, but every
+     * cost number it relies on is either exact (wrap_m=0) or within its
+     * validated range, never extrapolated. */
+    int max_calib = smooth_nums[n_smooth - 1];
+    int wrap_safe_margin = 384;
+    int calib_max_conv_len = max_calib + wrap_safe_margin;
+    fprintf(f, "/* Largest convolution length the calibrated path is TRUSTED to handle\n");
+    fprintf(f, " * (not the structural max -- see tools/calibrate.c for why).\n");
+    fprintf(f, " * max(calib_sizes) = %d + WRAP_SAFE_MARGIN(%d) = %d. */\n",
+            max_calib, wrap_safe_margin, calib_max_conv_len);
+    fprintf(f, "#ifndef CALIBRATED_MAX_CONV_LEN\n");
+    fprintf(f, "#define CALIBRATED_MAX_CONV_LEN %d\n", calib_max_conv_len);
+    fprintf(f, "#endif\n\n");
 
     /* calib_sizes[] */
     fprintf(f, "#define N_CALIBRATED_SIZES %d\n", n_smooth);
@@ -259,14 +328,10 @@ static void write_config(const char *filename) {
     fprintf(f,
 "/* ── Device constants ── */\n"
 "/* calib_times_ns now measures the full polymul_fft_wrap pipeline\n"
-" * (memcpy + 2×FFT + pointwise + scale), so FFT_OVERHEAD_NS = 0.\n"
-" * Wrap correction is modeled separately with WRAP_FMA_NS. */\n"
-"#ifndef FMA_NS\n"
-"#define FMA_NS 0.25  /* ns per scalar FMA — re-measure via ./bench_grid profile */\n"
-"#endif\n"
-"#ifndef FFT_OVERHEAD_NS\n"
-"#define FFT_OVERHEAD_NS 0.0  /* baked into calib_times_ns (full pipeline) */\n"
-"#endif\n"
+" * (memcpy + 2×FFT + pointwise + scale), so the old FFT_OVERHEAD_NS\n"
+" * constant is obsolete (the overhead is baked into calib_times_ns).\n"
+" * Wrap correction is modeled with WRAP_FMA_NS, measured via\n"
+" * tools/bench_wrap_fma.c. */\n"
 "#ifndef WRAP_FMA_NS\n"
 "#define WRAP_FMA_NS 4.0  /* ns per FMA in wrap correction (memory-latency-bound) */\n"
 "#endif\n"
@@ -275,114 +340,17 @@ static void write_config(const char *filename) {
 "#endif\n"
 "#ifndef INDEP_PAIR_RATIO\n"
 "#define INDEP_PAIR_RATIO 1.25  /* correlate_fft_pair / full pipeline */\n"
-"#endif\n"
-"/* Hybrid-engine block/leaf constants — placeholders until\n"
-" * tools/fit_cost_model.py --write overwrites them with a real fit. */\n"
-"#ifndef FP64_DIV_NS\n"
-"#define FP64_DIV_NS 10.0  /* ns per FP64 division — re-fit via fit_cost_model.py */\n"
-"#endif\n"
-"#ifndef LEAF_FMA_NS\n"
-"#define LEAF_FMA_NS 0.25  /* ns per FMA in leaf blocks — re-fit via fit_cost_model.py */\n"
-"#endif\n"
-"#ifndef LEAF_BLOCK_NS\n"
-"#define LEAF_BLOCK_NS 100.0  /* ns per leaf block overhead — re-fit via fit_cost_model.py */\n"
-"#endif\n"
-"#ifndef BLOCK_FMA_NS\n"
-"#define BLOCK_FMA_NS 0.05  /* ns per FMA in block build — re-fit via fit_cost_model.py */\n"
-"#endif\n"
-"#ifndef BLOCK_MEM_NS\n"
-"#define BLOCK_MEM_NS 0.1  /* ns per block-build memory op — re-fit via fit_cost_model.py */\n"
 "#endif\n\n");
 
-    /* Cache and bandwidth constants */
+    /* Cache constants */
     fprintf(f,
 "/* ── Cache hierarchy ── */\n"
 "#ifndef L2_CACHE_SIZE\n"
-"#define L2_CACHE_SIZE 1048576  /* per-core L2 in bytes — update for this hardware */\n"
+"#define L2_CACHE_SIZE 1048576  /* per-core L2 in bytes, update for this hardware */\n"
 "#endif\n"
 "#ifndef L3_CACHE_SIZE\n"
-"#define L3_CACHE_SIZE 33554432  /* shared L3 in bytes — update for this hardware */\n"
+"#define L3_CACHE_SIZE 33554432  /* shared L3 in bytes, update for this hardware */\n"
 "#endif\n\n");
-
-    /* Bandwidth constants from measurement */
-    fprintf(f,
-"/* ── Streaming bandwidth (measured by calibrate) ── */\n"
-"#ifndef L2_BW_GBS\n"
-"#define L2_BW_GBS %.1f\n"
-"#endif\n"
-"#ifndef L3_BW_GBS\n"
-"#define L3_BW_GBS %.1f\n"
-"#endif\n"
-"#ifndef DRAM_BW_GBS\n"
-"#define DRAM_BW_GBS %.1f\n"
-"#endif\n\n",
-        bw_l2_gbs, bw_l3_gbs, bw_dram_gbs);
-
-    /* best_fft_config_joint() — 6-arg version with p_eff for input-wrap cost */
-    fprintf(f,
-"/* ── Cost model functions ── */\n\n"
-"/* Joint optimization of build + paired cached correlate at one shared FFT size.\n"
-" * p_eff = build_conv/2 + 1 (polynomial size at this level) for input-wrap cost. */\n"
-"static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,\n"
-"                                     int *out_size, int *out_build_m, int *out_corr_m) {\n"
-"    int max_conv = (build_conv > corr_conv) ? build_conv : corr_conv;\n"
-"    int min_size = max_conv / 2 + 1;\n"
-"\n"
-"    int lo = 0, hi = N_CALIBRATED_SIZES - 1;\n"
-"    int half = min_size;\n"
-"    while (lo < hi) { int mid = (lo+hi)>>1; if (calib_sizes[mid] < half) lo = mid+1; else hi = mid; }\n"
-"\n"
-"    double best_cost = 1e18;\n"
-"    *out_size = 0; *out_build_m = 0; *out_corr_m = 0;\n"
-"\n"
-"    for (int i = lo; i < N_CALIBRATED_SIZES; i++) {\n"
-"        int S = calib_sizes[i];\n"
-"        if (S > 2 * max_conv) break;\n"
-"        if (S < min_size) continue;\n"
-"        int mb = (S >= build_conv) ? 0 : build_conv - S;\n"
-"        int mc = (S >= corr_conv) ? 0 : corr_conv - S;\n"
-"        double cost = calib_times_ns[i]\n"
-"                    + (double)mb*(mb+1)/2.0 * FMA_NS\n"
-"                    + calib_times_ns[i] * PAIRED_CACHED_CORR_RATIO\n"
-"                    + (double)mc*(mc+1) * FMA_NS;\n"
-"        if (cost < best_cost) {\n"
-"            best_cost = cost;\n"
-"            *out_size = S;\n"
-"            *out_build_m = mb;\n"
-"            *out_corr_m = mc;\n"
-"        }\n"
-"    }\n"
-"    return best_cost;\n"
-"}\n\n");
-
-    /* best_fft_config() — 4-arg version with len_P for input-wrap cost */
-    fprintf(f,
-"/* For a needed convolution length L, find the fastest FFT size.\n"
-" * len_P: polynomial size for input-wrap cost (pass 0 for pure convolution). */\n"
-"static void best_fft_config(int L, int *out_size, int *out_wrap_m, int len_P) {\n"
-"    int lo = 0, hi = N_CALIBRATED_SIZES - 1;\n"
-"    int half_L = L > 1 ? L / 2 : 1;\n"
-"    while (lo < hi) { int mid = (lo+hi)>>1; if (calib_sizes[mid] < half_L) lo = mid+1; else hi = mid; }\n"
-"\n"
-"    double best_cost = 1e18;\n"
-"    *out_size = 0; *out_wrap_m = 0;\n"
-"\n"
-"    int min_size = L / 2 + 1;\n"
-"    for (int i = lo; i < N_CALIBRATED_SIZES; i++) {\n"
-"        int S = calib_sizes[i];\n"
-"        if (S > 2 * L) break;\n"
-"        if (S < min_size) continue;\n"
-"        int m = (S >= L) ? 0 : L - S;\n"
-"        double correction = (len_P > 0) ? (double)m * (m + 1) * FMA_NS\n"
-"                                        : (double)m * (m + 1) / 2.0 * FMA_NS;\n"
-"        double cost = calib_times_ns[i] + correction;\n"
-"        if (cost < best_cost) {\n"
-"            best_cost = cost;\n"
-"            *out_size = S;\n"
-"            *out_wrap_m = m;\n"
-"        }\n"
-"    }\n"
-"}\n");
 
     fclose(f);
     printf("  Written %s (%d sizes)\n\n", filename, n_smooth);
@@ -393,26 +361,43 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--wisdom-only") == 0) wisdom_only = 1;
         if (strcmp(argv[i], "--quick") == 0) quick = 1;
+        if (strcmp(argv[i], "--max-size") == 0 && i + 1 < argc) {
+            max_size = atoi(argv[++i]);
+            if (max_size < 2) { fprintf(stderr, "--max-size must be >= 2\n"); return 1; }
+        }
     }
 
     build_smooth_table();
-    printf("Found %d 7-smooth numbers up to %d\n\n", n_smooth, MAX_SIZE);
+    calib_times = (double *)calloc((size_t)n_smooth, sizeof(double));
+    if (!calib_times) { fprintf(stderr, "calloc calib_times failed\n"); return 1; }
+    printf("Found %d 7-smooth numbers up to %d\n\n", n_smooth, max_size);
 
     generate_wisdom();
-    if (wisdom_only) { printf("Done (wisdom only).\n"); return 0; }
+    if (wisdom_only) { printf("Done (wisdom only).\n"); free(smooth_nums); free(calib_times); return 0; }
 
     benchmark_sizes(quick);
     benchmark_bandwidth();
     write_config("fft_config.h");
 
+    int max_calib = smooth_nums[n_smooth - 1];
+    /* Must match write_config()'s CALIBRATED_MAX_CONV_LEN exactly, or this
+     * closing banner reports a trusted range the emitted header does not
+     * actually back. */
+    int calib_max_conv_len = max_calib + 384;
     printf("Done. Next steps:\n");
-    printf("  1. cp fft_config.h devices/<DEVICE>/fft_config.h\n");
-    printf("  2. cp fftw_wisdom.dat devices/<DEVICE>/fftw_wisdom.dat\n");
+    printf("  1. Merge into the device header (do NOT plain-cp over an\n");
+    printf("     already-calibrated device -- that destroys the crossover,\n");
+    printf("     B-selection, wrap-FMA and schoolbook tables layered in by\n");
+    printf("     other tools):\n");
+    printf("       python3 tools/extend_calib_sizes.py --device <DEVICE> fft_config.h\n");
+    printf("     (A plain cp is correct only for a brand-new device.)\n");
+    printf("  2. cp fftw_wisdom.dat devices/<DEVICE>/fftw_wisdom.dat  (wholesale is fine)\n");
     printf("  3. make DEVICE=<DEVICE> && ./bench_grid verify\n");
-    printf("  4. ./bench_grid profile   # measure device constants\n");
-    printf("  5. Update #defines in fft_config.h with measured values:\n");
-    printf("     FMA_NS, FFT_OVERHEAD_NS, PAIRED_CACHED_CORR_RATIO,\n");
-    printf("     INDEP_PAIR_RATIO, L2_CACHE_SIZE, L3_CACHE_SIZE\n");
-    printf("  6. ./bench_grid verify && ./bench_grid\n");
+    printf("  4. Run full calibration pipeline: ./tools/calibrate_full.sh <DEVICE>\n");
+    printf("\n  Calibration ceiling: conv lengths up to %d are fully optimal;\n", calib_max_conv_len);
+    printf("  beyond that the uncalibrated FFTW_ESTIMATE fallback engages.\n");
+    printf("  To raise the ceiling, re-run with --max-size N (higher N = longer calibration).\n");
+    free(smooth_nums);
+    free(calib_times);
     return 0;
 }

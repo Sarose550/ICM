@@ -38,8 +38,8 @@ int single_kernel_max_n(int k) {
      * one block, leaving the GPU severely underutilised.
      *
      * The hybrid engine (plan creation + FFT-based tree) is available for
-     * all n and is faster at large k even for small n.  This function now
-     * returns a k-dependent cutoff: permissive for small-k (typical poker
+     * all n and is faster at large k even for small n.  Hence the
+     * k-dependent cutoff below: permissive for small-k (typical poker
      * payout structures), restrictive for large-k (worst-case schoolbook).
      *
      * Thresholds are conservative and tunable via the env var above.  The
@@ -63,10 +63,6 @@ int single_kernel_max_n(int k) {
 
 bool destroy_fft_buffers(GpuPlan *plan, GpuFftBuffers &b, cudaStream_t stream) {
     (void)plan; (void)stream;
-#if ICM_HAVE_VKFFT
-    if (b.vkfft_fwd_initialized) { destroy_vkfft_app(&b.vkfft_app_fwd); b.vkfft_fwd_initialized = 0; }
-    if (b.vkfft_inv_initialized) { destroy_vkfft_app(&b.vkfft_app_inv); b.vkfft_inv_initialized = 0; }
-#endif
     if (b.plan_fwd) { if (!CUFFT_OK(cufftDestroy(b.plan_fwd))) return false; b.plan_fwd = 0; }
     if (b.plan_inv) { if (!CUFFT_OK(cufftDestroy(b.plan_inv))) return false; b.plan_inv = 0; }
     b = GpuFftBuffers{};
@@ -84,12 +80,12 @@ void destroy_plan(GpuPlan *plan) {
     }
 
     if (plan->shared_cufft_workspace) {
-        cudaFree(plan->shared_cufft_workspace);
+        free_device(plan, plan->shared_cufft_workspace, stream);
         plan->shared_cufft_workspace = nullptr;
     }
 
     if (plan->arena_base) {
-        cudaFree(plan->arena_base);
+        free_device(plan, plan->arena_base, stream);
         plan->arena_base = nullptr;
     }
 
@@ -108,55 +104,17 @@ void destroy_plan(GpuPlan *plan) {
 /* ── Single-Q build level runners ──────────────────────────────── */
 
 bool run_build_level_schoolbook(GpuPlan *plan, int ell) {
-    int cps = plan->psz[ell - 1];
-    int pps = plan->psz[ell];
-    int child_stride = plan->fft_stride[ell - 1];
-    int parent_stride = plan->fft_stride[ell];
-    int nparents = plan->nn[ell];
-    if (nparents <= 0 || cps <= 0 || pps <= 0) return true;
-
-    int conv = plan->levels[ell].build_conv;
-    bool use_warp_regime = (conv <= GPU_SCHOOL_WARP_MAX_CONV && nparents > 1);
-    if (use_warp_regime) {
-        int threads = GPU_SCHOOL_WARPS_PER_BLOCK * 32;
-        int blocks = (nparents + GPU_SCHOOL_WARPS_PER_BLOCK - 1) / GPU_SCHOOL_WARPS_PER_BLOCK;
-        size_t shmem = (size_t)GPU_SCHOOL_WARPS_PER_BLOCK * (size_t)(2 * cps) * sizeof(double);
-        if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
-            k_schoolbook_build_warp_batch<<<blocks, threads, shmem, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents,
-                child_stride, parent_stride);
-        } else {
-            int fb_threads = GPU_THREADS_PER_BLOCK;
-            size_t total = (size_t)nparents * (size_t)pps;
-            int fb_blocks = (int)((total + fb_threads - 1) / fb_threads);
-            k_schoolbook_build<<<fb_blocks, fb_threads, 0, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents,
-                child_stride, parent_stride);
-        }
-    } else {
-        int threads = GPU_THREADS_PER_BLOCK;
-        int blocks = nparents;
-        size_t shmem = (size_t)(2 * cps) * sizeof(double);
-        if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
-            k_schoolbook_build_smem_parent<<<blocks, threads, shmem, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents,
-                child_stride, parent_stride);
-        } else {
-            size_t total = (size_t)nparents * (size_t)pps;
-            int fb_blocks = (int)((total + threads - 1) / threads);
-            k_schoolbook_build<<<fb_blocks, threads, 0, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], cps,
-                plan->d_poly_levels[ell], pps, nparents,
-                child_stride, parent_stride);
-        }
-    }
-    if (!CUDA_OK(cudaGetLastError())) return false;
-    return true;
+    return run_build_level_schoolbook_qb(plan, ell, 1);
 }
 
+/* The cuFFT tier deliberately keeps the full nn[]-wide batch even on a
+ * ragged level.  A batched cuFFT plan has one fixed transform count and one
+ * fixed distance, so it cannot skip the phantom tail that sits inside every
+ * Q-plane; doing so would need one exec call per Q-plane (hundreds of extra
+ * launches per level at Q=256), which costs more than the padding it saves.
+ * Running these levels at full width stays correct because phantom slots
+ * hold the convolution identity: identity*identity = identity, so the
+ * invariant the reduced-width levels rely on is preserved either way. */
 bool run_build_level_fft(GpuPlan *plan, int ell) {
     int pps = plan->psz[ell];
     int child_batch = plan->nn[ell - 1];
@@ -170,82 +128,8 @@ bool run_build_level_fft(GpuPlan *plan, int ell) {
     int total_child = qb * child_batch;
     int total_parent = qb * parent_batch;
 
-#if ICM_HAVE_VKFFT
-    if (b.use_vkfft) {
-        int fft_n = b.fft_n;
-        int cn = b.cn;
 
-        /* Gather: poly_levels[ell-1] (psz stride) → scratch (fft_n stride) */
-        {
-            size_t g_total = (size_t)total_child * fft_n;
-            int g_blocks = (int)((g_total + threads - 1) / threads);
-            k_gather_to_fft<<<g_blocks, threads, 0, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], child_stride, plan->d_fft_scratch, fft_n, total_child);
-            if (!CUDA_OK(cudaGetLastError())) return false;
-        }
-
-        /* VkFFT R2C forward: scratch → spec_in */
-        {
-            double *input_ptr = plan->d_fft_scratch;
-            VkFFTLaunchParams lp_fwd = {};
-            lp_fwd.buffer = (void **)&b.spec_in;
-            lp_fwd.inputBuffer = (void **)&input_ptr;
-            VkFFTResult res = VkFFTAppend(&b.vkfft_app_fwd, -1, &lp_fwd);
-            if (res != VKFFT_SUCCESS) return false;
-        }
-
-        cufftDoubleComplex *fwd_out = (lp.cache_fft && plan->d_fft_cache[ell]) ? plan->d_fft_cache[ell] : b.spec_in;
-        if (fwd_out != b.spec_in) {
-            size_t copy_bytes = (size_t)total_child * cn * sizeof(cufftDoubleComplex);
-            if (!CUDA_OK(cudaMemcpyAsync(fwd_out, b.spec_in, copy_bytes,
-                                          cudaMemcpyDeviceToDevice, plan->stream_compute))) return false;
-        }
-        if (lp.cache_fft && plan->d_fft_cache[ell]) {
-            if (ell < (int)plan->fft_cache_valid.size()) plan->fft_cache_valid[ell] = true;
-        }
-
-        cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
-        size_t mul_total = (size_t)total_parent * (size_t)cn;
-        int blocks_mul = (int)((mul_total + threads - 1) / threads);
-        double inv_fft_n = 1.0 / (double)fft_n;
-        k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(
-            fwd_out, cn, mul_out, total_parent, inv_fft_n);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-
-        /* VkFFT C2R inverse: mul_out → scratch */
-        {
-            double *output_ptr = plan->d_fft_scratch;
-            VkFFTLaunchParams lp_inv = {};
-            lp_inv.buffer = (void **)&mul_out;
-            lp_inv.outputBuffer = (void **)&output_ptr;
-            VkFFTResult res = VkFFTAppend(&b.vkfft_app_inv, 1, &lp_inv);
-            if (res != VKFFT_SUCCESS) return false;
-        }
-
-        /* Scatter: scratch (fft_n stride) → poly_levels[ell] (psz stride) */
-        {
-            int scatter_len = std::min(pps, fft_n);
-            size_t s_total = (size_t)total_parent * scatter_len;
-            int s_blocks = (int)((s_total + threads - 1) / threads);
-            k_scatter_from_fft<<<s_blocks, threads, 0, plan->stream_compute>>>(
-                plan->d_fft_scratch, fft_n, plan->d_poly_levels[ell], parent_stride, scatter_len, total_parent);
-            if (!CUDA_OK(cudaGetLastError())) return false;
-        }
-
-        if (lp.build_wrap_m > 0) {
-            int cps = plan->psz[ell - 1];
-            k_wrap_build<<<total_parent, 64, 0, plan->stream_compute>>>(
-                plan->d_poly_levels[ell], pps, total_parent,
-                plan->d_poly_levels[ell - 1], cps, lp.build_conv,
-                fft_n, lp.build_wrap_m,
-                parent_stride, child_stride);
-            if (!CUDA_OK(cudaGetLastError())) return false;
-        }
-        return true;
-    }
-#endif /* ICM_HAVE_VKFFT */
-
-    /* cuFFT path — bypass scratch when stride already matches fft_n */
+    /* cuFFT path: bypass scratch when stride already matches fft_n */
     int fft_n_b = b.fft_n;
     double *fwd_src = plan->d_poly_levels[ell - 1];
     if (child_stride != fft_n_b) {
@@ -289,8 +173,77 @@ bool run_build_level_fft(GpuPlan *plan, int ell) {
             plan->d_poly_levels[ell], pps, parent_batch,
             plan->d_poly_levels[ell - 1], cps, lp.build_conv,
             b.fft_n, lp.build_wrap_m,
-            parent_stride, child_stride);
+            parent_stride, child_stride, 0, 0);
         if (!CUDA_OK(cudaGetLastError())) return false;
+    }
+    return true;
+}
+
+/* Lazily create cuFFT plans for a FUSED-tier level whose cuFFTDx dispatch
+ * failed at runtime.  Plans were skipped in allocate_level_buffers() because
+ * cuFFTDx needs zero workspace for power-of-2 sizes, so the cuFFT plan (and
+ * its batch-scaled VRAM reservation) is only needed if we actually fall back.
+ * Also ensures shared_cufft_workspace is large enough for the new plans. */
+static bool ensure_cufft_plans_for_level(GpuPlan *plan, int ell) {
+    auto &b = plan->build_fft[ell];
+    auto &c = plan->corr_fft[ell];
+    int fft_n = plan->levels[ell].fft_n;
+
+    if (!b.plan_fwd) {
+        if (!create_cufft_plan(&b.plan_fwd, fft_n, b.batch_fwd, true)) return false;
+        if (!CUFFT_OK(cufftSetStream(b.plan_fwd, plan->stream_compute))) return false;
+    }
+    if (!b.plan_inv) {
+        if (!create_cufft_plan(&b.plan_inv, fft_n, b.batch_inv, false)) return false;
+        if (!CUFFT_OK(cufftSetStream(b.plan_inv, plan->stream_compute))) return false;
+    }
+    if (!c.plan_fwd) {
+        if (!create_cufft_plan(&c.plan_fwd, fft_n, c.batch_fwd, true)) return false;
+        if (!CUFFT_OK(cufftSetStream(c.plan_fwd, plan->stream_compute))) return false;
+    }
+    if (!c.plan_inv) {
+        if (!create_cufft_plan(&c.plan_inv, fft_n, c.batch_inv, false)) return false;
+        if (!CUFFT_OK(cufftSetStream(c.plan_inv, plan->stream_compute))) return false;
+    }
+
+    /* Grow shared workspace if the new plans need more than pre-allocated.
+     * FUSED-tier sizes are small (≤8192) so the existing workspace (sized
+     * for CUFFT-tier levels at much larger n) should already cover this;
+     * the realloc path is a safety net for the edge case where ALL levels
+     * are FUSED-tier and shared_cufft_workspace was never allocated.
+     * When the buffer moves, update EVERY live cuFFT plan's work area. */
+    size_t needed = 0;
+    { size_t ws; cufftGetSize(b.plan_fwd,  &ws); needed = std::max(needed, ws); }
+    { size_t ws; cufftGetSize(b.plan_inv,  &ws); needed = std::max(needed, ws); }
+    { size_t ws; cufftGetSize(c.plan_fwd,  &ws); needed = std::max(needed, ws); }
+    { size_t ws; cufftGetSize(c.plan_inv,  &ws); needed = std::max(needed, ws); }
+    if (needed > plan->shared_cufft_workspace_bytes) {
+        if (plan->shared_cufft_workspace) {
+            free_device(plan, plan->shared_cufft_workspace, plan->stream_compute);
+            plan->current_vram_bytes -= plan->shared_cufft_workspace_bytes;
+        }
+        plan->shared_cufft_workspace = nullptr;
+        plan->shared_cufft_workspace_bytes = 0;
+        if (!alloc_device(plan, &plan->shared_cufft_workspace, needed, plan->stream_compute))
+            return false;
+        plan->shared_cufft_workspace_bytes = needed;
+        /* Re-bind all pre-existing cuFFT plans to the new workspace */
+        for (int e = 1; e < plan->L; ++e) {
+            auto &bf = plan->build_fft[e];
+            auto &cf = plan->corr_fft[e];
+            if (bf.plan_fwd) CUFFT_OK(cufftSetWorkArea(bf.plan_fwd, plan->shared_cufft_workspace));
+            if (bf.plan_inv) CUFFT_OK(cufftSetWorkArea(bf.plan_inv, plan->shared_cufft_workspace));
+            if (cf.plan_fwd) CUFFT_OK(cufftSetWorkArea(cf.plan_fwd, plan->shared_cufft_workspace));
+            if (cf.plan_inv) CUFFT_OK(cufftSetWorkArea(cf.plan_inv, plan->shared_cufft_workspace));
+        }
+    } else {
+        /* Workspace didn't move; just bind the four new plans */
+        if (plan->shared_cufft_workspace) {
+            CUFFT_OK(cufftSetWorkArea(b.plan_fwd, plan->shared_cufft_workspace));
+            CUFFT_OK(cufftSetWorkArea(b.plan_inv, plan->shared_cufft_workspace));
+            CUFFT_OK(cufftSetWorkArea(c.plan_fwd, plan->shared_cufft_workspace));
+            CUFFT_OK(cufftSetWorkArea(c.plan_inv, plan->shared_cufft_workspace));
+        }
     }
     return true;
 }
@@ -305,29 +258,36 @@ bool run_build_level_fused(GpuPlan *plan, int ell) {
     int pps = plan->psz[ell];
     int child_stride = plan->fft_stride[ell - 1];
     int parent_stride = plan->fft_stride[ell];
-    int nparents = plan->nn[ell];
+    LevelLaunch w = level_launch(plan, ell, 1);
+    int nparents = w.parents;
     if (nparents <= 0 || cps <= 0 || pps <= 0) return true;
     bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n,
                                                 plan->d_poly_levels[ell - 1], cps,
                                                 plan->d_poly_levels[ell], pps, nparents,
                                                 1.0 / (double)lp.fft_n,
                                                 plan->stream_compute,
-                                                child_stride, parent_stride);
+                                                child_stride, parent_stride,
+                                                w.qplanes, w.parent_plane, w.child_plane);
     if (!ok) {
         ok = launch_cufftdx_build_dispatch(lp.fft_n,
                                            plan->d_poly_levels[ell - 1], child_stride,
                                            plan->d_poly_levels[ell], parent_stride, nparents,
                                            1.0 / (double)lp.fft_n,
                                            plan->stream_compute,
-                                           child_stride, parent_stride);
+                                           child_stride, parent_stride,
+                                           w.qplanes, w.parent_plane, w.child_plane);
     }
-    if (!ok) return run_build_level_fft(plan, ell);
+    if (!ok) {
+        if (!ensure_cufft_plans_for_level(plan, ell)) return false;
+        return run_build_level_fft(plan, ell);
+    }
     if (lp.build_wrap_m > 0) {
-        k_wrap_build<<<nparents, 64, 0, plan->stream_compute>>>(
+        k_wrap_build<<<dim3(nparents, w.qplanes), 64, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, nparents,
             plan->d_poly_levels[ell - 1], cps, lp.build_conv,
             lp.fft_n, lp.build_wrap_m,
-            parent_stride, child_stride);
+            parent_stride, child_stride,
+            w.parent_plane, w.child_plane);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -336,63 +296,7 @@ bool run_build_level_fused(GpuPlan *plan, int ell) {
 /* ── Single-Q prop level runners ───────────────────────────────── */
 
 bool run_prop_level_schoolbook(GpuPlan *plan, int ell) {
-    int parent_gsz = plan->psz[ell];
-    int child_gsz = plan->psz[ell - 1];
-    int cps = plan->psz[ell - 1];
-    int parent_stride = plan->fft_stride[ell];
-    int child_stride = plan->fft_stride[ell - 1];
-    int nparents = plan->nn[ell];
-    auto &lp = plan->levels[ell];
-    int len_g = lp.g_eff;
-    int len_P = lp.p_eff;
-    int len_out = lp.out_needed;
-    if (nparents <= 0 || len_out <= 0 || len_g <= 0 || len_P <= 0) return true;
-
-    int conv = lp.corr_conv;
-    bool use_warp_regime = (conv <= GPU_SCHOOL_WARP_MAX_CONV && nparents > 1);
-    if (use_warp_regime) {
-        int threads = GPU_SCHOOL_WARPS_PER_BLOCK * 32;
-        int blocks = (nparents + GPU_SCHOOL_WARPS_PER_BLOCK - 1) / GPU_SCHOOL_WARPS_PER_BLOCK;
-        size_t shmem = (size_t)GPU_SCHOOL_WARPS_PER_BLOCK
-            * (size_t)(len_g + 2 * len_P) * sizeof(double);
-        if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
-            k_schoolbook_corr_pair_warp_batch<<<blocks, threads, shmem, plan->stream_compute>>>(
-                plan->d_g_levels[ell], parent_gsz, len_g,
-                plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
-                parent_stride, child_stride, child_stride);
-        } else {
-            int fb_threads = GPU_THREADS_PER_BLOCK;
-            size_t total = (size_t)nparents * (size_t)len_out;
-            int fb_blocks = (int)((total + fb_threads - 1) / fb_threads);
-            k_schoolbook_corr_pair<<<fb_blocks, fb_threads, 0, plan->stream_compute>>>(
-                plan->d_g_levels[ell], parent_gsz, len_g,
-                plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
-                parent_stride, child_stride, child_stride);
-        }
-    } else {
-        int threads = GPU_THREADS_PER_BLOCK;
-        int blocks = nparents;
-        size_t shmem = (size_t)(len_g + 2 * len_P) * sizeof(double);
-        if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
-            k_schoolbook_corr_pair_smem_parent<<<blocks, threads, shmem, plan->stream_compute>>>(
-                plan->d_g_levels[ell], parent_gsz, len_g,
-                plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
-                parent_stride, child_stride, child_stride);
-        } else {
-            size_t total = (size_t)nparents * (size_t)len_out;
-            int fb_blocks = (int)((total + threads - 1) / threads);
-            k_schoolbook_corr_pair<<<fb_blocks, threads, 0, plan->stream_compute>>>(
-                plan->d_g_levels[ell], parent_gsz, len_g,
-                plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents,
-                parent_stride, child_stride, child_stride);
-        }
-    }
-    if (!CUDA_OK(cudaGetLastError())) return false;
-    return true;
+    return run_prop_level_schoolbook_qb(plan, ell, 1);
 }
 
 bool run_prop_level_fft(GpuPlan *plan, int ell) {
@@ -408,105 +312,8 @@ bool run_prop_level_fft(GpuPlan *plan, int ell) {
     int len_out = lp.out_needed;
     int threads = GPU_THREADS_PER_BLOCK;
     int n_children = 2 * nparents;
-#if ICM_HAVE_VKFFT
-    if (c.use_vkfft) {
-        int fft_n = c.fft_n;
-        int cn = c.cn;
 
-        /* Gather g_levels[ell] → scratch */
-        {
-            size_t g_total = (size_t)nparents * fft_n;
-            int g_blocks = (int)((g_total + threads - 1) / threads);
-            k_gather_to_fft<<<g_blocks, threads, 0, plan->stream_compute>>>(
-                plan->d_g_levels[ell], parent_stride, plan->d_fft_scratch, fft_n, nparents);
-            if (!CUDA_OK(cudaGetLastError())) return false;
-        }
-
-        /* VkFFT R2C forward: scratch → spec_in */
-        {
-            double *input_ptr = plan->d_fft_scratch;
-            VkFFTLaunchParams lp_fwd = {};
-            lp_fwd.buffer = (void **)&c.spec_in;
-            lp_fwd.inputBuffer = (void **)&input_ptr;
-            VkFFTResult res = VkFFTAppend(&c.vkfft_app_fwd, -1, &lp_fwd);
-            if (res != VKFFT_SUCCESS) return false;
-        }
-
-        /* Child spectra (from cache or recompute) */
-        const cufftDoubleComplex *child_spec = nullptr;
-        if (plan->d_fft_cache[ell] && ell < (int)plan->fft_cache_valid.size() && plan->fft_cache_valid[ell]) {
-            child_spec = plan->d_fft_cache[ell];
-        }
-        if (!child_spec) {
-            int child_batch = plan->nn[ell - 1];
-            /* Gather poly_levels[ell-1] → scratch */
-            {
-                size_t g2_total = (size_t)child_batch * fft_n;
-                int g2_blocks = (int)((g2_total + threads - 1) / threads);
-                k_gather_to_fft<<<g2_blocks, threads, 0, plan->stream_compute>>>(
-                    plan->d_poly_levels[ell - 1], child_stride, plan->d_fft_scratch, fft_n, child_batch);
-                if (!CUDA_OK(cudaGetLastError())) return false;
-            }
-            if (b_fft.use_vkfft) {
-                double *child_input = plan->d_fft_scratch;
-                VkFFTLaunchParams lp_bfwd = {};
-                lp_bfwd.buffer = (void **)&b_fft.spec_in;
-                lp_bfwd.inputBuffer = (void **)&child_input;
-                VkFFTResult res = VkFFTAppend(&b_fft.vkfft_app_fwd, -1, &lp_bfwd);
-                if (res != VKFFT_SUCCESS) return false;
-            } else {
-                if (!CUFFT_OK(cufftExecD2Z(b_fft.plan_fwd, plan->d_fft_scratch, b_fft.spec_in))) return false;
-            }
-            child_spec = b_fft.spec_in;
-        }
-
-        /* Paired correlate in frequency domain */
-        size_t corr_total = (size_t)nparents * (size_t)cn;
-        int blocks_corr = (int)((corr_total + threads - 1) / threads);
-        double inv_fft_n_corr = 1.0 / (double)fft_n;
-        k_paired_corr_freq<<<blocks_corr, threads, 0, plan->stream_compute>>>(
-            c.spec_in, child_spec, cn, nparents, c.spec_mid, inv_fft_n_corr);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-
-        /* VkFFT C2R inverse: spec_mid → scratch */
-        {
-            double *output_ptr = plan->d_fft_scratch;
-            VkFFTLaunchParams lp_inv = {};
-            lp_inv.buffer = (void **)&c.spec_mid;
-            lp_inv.outputBuffer = (void **)&output_ptr;
-            VkFFTResult res = VkFFTAppend(&c.vkfft_app_inv, 1, &lp_inv);
-            if (res != VKFFT_SUCCESS) return false;
-        }
-
-        /* Scatter: scratch → g_levels[ell-1] */
-        {
-            int scatter_len = std::min(child_gsz, fft_n);
-            size_t s_total = (size_t)n_children * scatter_len;
-            int s_blocks = (int)((s_total + threads - 1) / threads);
-            k_scatter_from_fft<<<s_blocks, threads, 0, plan->stream_compute>>>(
-                plan->d_fft_scratch, fft_n, plan->d_g_levels[ell - 1], child_stride, scatter_len, n_children);
-            if (!CUDA_OK(cudaGetLastError())) return false;
-        }
-
-        if (lp.corr_wrap_m > 0) {
-            k_wrap_corr_pair<<<nparents, 64, 0, plan->stream_compute>>>(
-                plan->d_g_levels[ell - 1], child_gsz, nparents,
-                plan->d_g_levels[ell], plan->psz[ell], len_g,
-                plan->d_poly_levels[ell - 1], plan->psz[ell - 1], len_P,
-                len_out,
-                fft_n, lp.corr_wrap_m,
-                child_stride, parent_stride, child_stride);
-            if (!CUDA_OK(cudaGetLastError())) return false;
-        }
-
-        if (plan->opts.memory_strategy >= 2 && ell < (int)plan->fft_cache_valid.size()) {
-            plan->fft_cache_valid[ell] = false;
-        }
-        return true;
-    }
-#endif /* ICM_HAVE_VKFFT */
-
-    /* cuFFT path — bypass scratch when stride already matches fft_n */
+    /* cuFFT path: bypass scratch when stride already matches fft_n */
     {
         int fft_n = c.fft_n;
         /* D2Z on g_levels[ell]: bypass gather when parent_stride == fft_n */
@@ -570,7 +377,7 @@ bool run_prop_level_fft(GpuPlan *plan, int ell) {
             plan->d_poly_levels[ell - 1], plan->psz[ell - 1], len_P,
             len_out,
             c.fft_n, lp.corr_wrap_m,
-            child_stride, parent_stride, child_stride);
+            child_stride, parent_stride, child_stride, 0, 0);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
 
@@ -591,7 +398,8 @@ bool run_prop_level_fused(GpuPlan *plan, int ell) {
     int cps = plan->psz[ell - 1];
     int parent_stride = plan->fft_stride[ell];
     int child_stride = plan->fft_stride[ell - 1];
-    int nparents = plan->nn[ell];
+    LevelLaunch w = level_launch(plan, ell, 1);
+    int nparents = w.parents;
     int len_g = lp.g_eff;
     int len_P = lp.p_eff;
     int len_out = lp.out_needed;
@@ -602,7 +410,8 @@ bool run_prop_level_fused(GpuPlan *plan, int ell) {
                                                plan->d_g_levels[ell - 1], child_stride, len_out, nparents,
                                                1.0 / (double)lp.fft_n,
                                                plan->stream_compute,
-                                               parent_stride, child_stride, child_stride);
+                                               parent_stride, child_stride, child_stride,
+                                               w.qplanes, w.parent_plane, w.child_plane);
     if (!ok) {
         ok = launch_cufftdx_corr_dispatch(lp.fft_n,
                                           plan->d_g_levels[ell], parent_stride, len_g,
@@ -610,17 +419,22 @@ bool run_prop_level_fused(GpuPlan *plan, int ell) {
                                           plan->d_g_levels[ell - 1], child_stride, len_out, nparents,
                                           1.0 / (double)lp.fft_n,
                                           plan->stream_compute,
-                                          parent_stride, child_stride, child_stride);
+                                          parent_stride, child_stride, child_stride,
+                                          w.qplanes, w.parent_plane, w.child_plane);
     }
-    if (!ok) return run_prop_level_fft(plan, ell);
+    if (!ok) {
+        if (!ensure_cufft_plans_for_level(plan, ell)) return false;
+        return run_prop_level_fft(plan, ell);
+    }
     if (lp.corr_wrap_m > 0) {
-        k_wrap_corr_pair<<<nparents, 64, 0, plan->stream_compute>>>(
+        k_wrap_corr_pair<<<dim3(nparents, w.qplanes), 64, 0, plan->stream_compute>>>(
             plan->d_g_levels[ell - 1], child_gsz, nparents,
             plan->d_g_levels[ell], parent_gsz, len_g,
             plan->d_poly_levels[ell - 1], cps, len_P,
             len_out,
             lp.fft_n, lp.corr_wrap_m,
-            child_stride, parent_stride, child_stride);
+            child_stride, parent_stride, child_stride,
+            w.parent_plane, w.child_plane);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -631,35 +445,40 @@ bool run_prop_level_fused(GpuPlan *plan, int ell) {
 bool run_build_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
     int cps = plan->psz[ell - 1]; int pps = plan->psz[ell];
     int cs = plan->fft_stride[ell - 1]; int ps = plan->fft_stride[ell];
-    int nparents_total = qb * plan->nn[ell];
+    LevelLaunch w = level_launch(plan, ell, qb);
+    int nparents_total = w.parents;
     if (nparents_total <= 0 || cps <= 0 || pps <= 0) return true;
     int conv = plan->levels[ell].build_conv;
-    bool use_warp_regime = (conv <= GPU_SCHOOL_WARP_MAX_CONV && nparents_total > 1);
+    bool use_warp_regime = (conv <= GPU_SCHOOL_WARP_MAX_CONV && w.total() > 1);
     if (use_warp_regime) {
         int threads = GPU_SCHOOL_WARPS_PER_BLOCK * 32;
         int blocks = (nparents_total + GPU_SCHOOL_WARPS_PER_BLOCK - 1) / GPU_SCHOOL_WARPS_PER_BLOCK;
         size_t shmem = (size_t)GPU_SCHOOL_WARPS_PER_BLOCK * (size_t)(2 * cps) * sizeof(double);
         if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
-            k_schoolbook_build_warp_batch<<<blocks, threads, shmem, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], cps, plan->d_poly_levels[ell], pps, nparents_total, cs, ps);
+            k_schoolbook_build_warp_batch<<<dim3(blocks, w.qplanes), threads, shmem, plan->stream_compute>>>(
+                plan->d_poly_levels[ell - 1], cps, plan->d_poly_levels[ell], pps, nparents_total, cs, ps,
+                w.parent_plane, w.child_plane);
         } else {
             int fb_threads = GPU_THREADS_PER_BLOCK;
-            size_t total = (size_t)nparents_total * (size_t)pps;
+            size_t total = (size_t)nparents_total * (size_t)ps;
             int fb_blocks = (int)((total + fb_threads - 1) / fb_threads);
-            k_schoolbook_build<<<fb_blocks, fb_threads, 0, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], cps, plan->d_poly_levels[ell], pps, nparents_total, cs, ps);
+            k_schoolbook_build<<<dim3(fb_blocks, w.qplanes), fb_threads, 0, plan->stream_compute>>>(
+                plan->d_poly_levels[ell - 1], cps, plan->d_poly_levels[ell], pps, nparents_total, cs, ps,
+                w.parent_plane, w.child_plane);
         }
     } else {
         int threads = GPU_THREADS_PER_BLOCK; int blocks = nparents_total;
         size_t shmem = (size_t)(2 * cps) * sizeof(double);
         if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
-            k_schoolbook_build_smem_parent<<<blocks, threads, shmem, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], cps, plan->d_poly_levels[ell], pps, nparents_total, cs, ps);
+            k_schoolbook_build_smem_parent<<<dim3(blocks, w.qplanes), threads, shmem, plan->stream_compute>>>(
+                plan->d_poly_levels[ell - 1], cps, plan->d_poly_levels[ell], pps, nparents_total, cs, ps,
+                w.parent_plane, w.child_plane);
         } else {
-            size_t total = (size_t)nparents_total * (size_t)pps;
+            size_t total = (size_t)nparents_total * (size_t)ps;
             int fb_blocks = (int)((total + threads - 1) / threads);
-            k_schoolbook_build<<<fb_blocks, threads, 0, plan->stream_compute>>>(
-                plan->d_poly_levels[ell - 1], cps, plan->d_poly_levels[ell], pps, nparents_total, cs, ps);
+            k_schoolbook_build<<<dim3(fb_blocks, w.qplanes), threads, 0, plan->stream_compute>>>(
+                plan->d_poly_levels[ell - 1], cps, plan->d_poly_levels[ell], pps, nparents_total, cs, ps,
+                w.parent_plane, w.child_plane);
         }
     }
     if (!CUDA_OK(cudaGetLastError())) return false;
@@ -675,64 +494,8 @@ bool run_build_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     auto &lp = plan->levels[ell]; auto &b = plan->build_fft[ell];
     int threads = GPU_THREADS_PER_BLOCK;
 
-#if ICM_HAVE_VKFFT
-    if (b.use_vkfft) {
-        int fft_n = b.fft_n; int cn = b.cn;
 
-        /* Gather: poly_levels[ell-1] → scratch */
-        { size_t g_total = (size_t)child_batch * fft_n;
-          int g_blocks = (int)((g_total + threads - 1) / threads);
-          k_gather_to_fft<<<g_blocks, threads, 0, plan->stream_compute>>>(
-              plan->d_poly_levels[ell - 1], child_stride, plan->d_fft_scratch, fft_n, child_batch);
-          if (!CUDA_OK(cudaGetLastError())) return false; }
-
-        /* VkFFT R2C forward: scratch → spec_in */
-        { double *input_ptr = plan->d_fft_scratch;
-          VkFFTLaunchParams lp_fwd = {}; lp_fwd.buffer = (void **)&b.spec_in;
-          lp_fwd.inputBuffer = (void **)&input_ptr;
-          if (VkFFTAppend(&b.vkfft_app_fwd, -1, &lp_fwd) != VKFFT_SUCCESS) return false; }
-
-        cufftDoubleComplex *fwd_out = (lp.cache_fft && plan->d_fft_cache[ell]) ? plan->d_fft_cache[ell] : b.spec_in;
-        if (fwd_out != b.spec_in) {
-            size_t copy_bytes = (size_t)child_batch * cn * sizeof(cufftDoubleComplex);
-            if (!CUDA_OK(cudaMemcpyAsync(fwd_out, b.spec_in, copy_bytes,
-                                          cudaMemcpyDeviceToDevice, plan->stream_compute))) return false;
-        }
-        if (lp.cache_fft && plan->d_fft_cache[ell]) {
-            if (ell < (int)plan->fft_cache_valid.size()) plan->fft_cache_valid[ell] = true;
-        }
-        cufftDoubleComplex *mul_out = (fwd_out != b.spec_in) ? b.spec_in : b.spec_mid;
-        size_t mul_total = (size_t)parent_batch * (size_t)cn;
-        int blocks_mul = (int)((mul_total + threads - 1) / threads);
-        double inv_fft_n_qb = 1.0 / (double)fft_n;
-        k_pairwise_mul<<<blocks_mul, threads, 0, plan->stream_compute>>>(fwd_out, cn, mul_out, parent_batch, inv_fft_n_qb);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-
-        /* VkFFT C2R inverse: mul_out → scratch */
-        { double *output_ptr = plan->d_fft_scratch;
-          VkFFTLaunchParams lp_inv = {}; lp_inv.buffer = (void **)&mul_out;
-          lp_inv.outputBuffer = (void **)&output_ptr;
-          if (VkFFTAppend(&b.vkfft_app_inv, 1, &lp_inv) != VKFFT_SUCCESS) return false; }
-
-        /* Scatter: scratch → poly_levels[ell] */
-        { int scatter_len = std::min(pps, fft_n);
-          size_t s_total = (size_t)parent_batch * scatter_len;
-          int s_blocks = (int)((s_total + threads - 1) / threads);
-          k_scatter_from_fft<<<s_blocks, threads, 0, plan->stream_compute>>>(
-              plan->d_fft_scratch, fft_n, plan->d_poly_levels[ell], parent_stride, scatter_len, parent_batch);
-          if (!CUDA_OK(cudaGetLastError())) return false; }
-
-        if (lp.build_wrap_m > 0) {
-            k_wrap_build<<<parent_batch, 64, 0, plan->stream_compute>>>(
-                plan->d_poly_levels[ell], pps, parent_batch,
-                plan->d_poly_levels[ell - 1], cps, lp.build_conv, fft_n, lp.build_wrap_m, parent_stride, child_stride);
-            if (!CUDA_OK(cudaGetLastError())) return false;
-        }
-        return true;
-    }
-#endif
-
-    /* cuFFT path — bypass scratch when stride already matches fft_n */
+    /* cuFFT path: bypass scratch when stride already matches fft_n */
     int fft_n_b = b.fft_n;
     double *fwd_src = plan->d_poly_levels[ell - 1];
     if (child_stride != fft_n_b) {
@@ -768,7 +531,8 @@ bool run_build_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     if (lp.build_wrap_m > 0) {
         k_wrap_build<<<parent_batch, 64, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, parent_batch,
-            plan->d_poly_levels[ell - 1], cps, lp.build_conv, b.fft_n, lp.build_wrap_m, parent_stride, child_stride);
+            plan->d_poly_levels[ell - 1], cps, lp.build_conv, b.fft_n, lp.build_wrap_m, parent_stride, child_stride,
+            0, 0);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -776,27 +540,34 @@ bool run_build_level_fft_qb(GpuPlan *plan, int ell, int qb) {
 
 bool run_build_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     auto &lp = plan->levels[ell];
-    int nparents_total = qb * plan->nn[ell];
     if (!plan->opts.use_cufftdx || g_runtime_fused_max_conv_len <= 0 ||
         lp.build_conv > g_runtime_fused_max_conv_len || !is_cufftdx_supported_fft_n(lp.fft_n)) {
         return run_build_level_fft_qb(plan, ell, qb);
     }
     int cps = plan->psz[ell - 1]; int pps = plan->psz[ell];
     int cs = plan->fft_stride[ell - 1]; int ps = plan->fft_stride[ell];
+    LevelLaunch w = level_launch(plan, ell, qb);
+    int nparents_total = w.parents;
     if (nparents_total <= 0 || cps <= 0 || pps <= 0) return true;
     bool ok = launch_cufftdx_build_r2c_dispatch(lp.fft_n, plan->d_poly_levels[ell - 1], cps,
                                                 plan->d_poly_levels[ell], pps, nparents_total,
                                                 1.0 / (double)lp.fft_n, plan->stream_compute,
-                                                cs, ps);
+                                                cs, ps,
+                                                w.qplanes, w.parent_plane, w.child_plane);
     if (!ok) ok = launch_cufftdx_build_dispatch(lp.fft_n, plan->d_poly_levels[ell - 1], cs,
                                                  plan->d_poly_levels[ell], ps, nparents_total,
                                                  1.0 / (double)lp.fft_n, plan->stream_compute,
-                                                 cs, ps);
-    if (!ok) return run_build_level_fft_qb(plan, ell, qb);
+                                                 cs, ps,
+                                                 w.qplanes, w.parent_plane, w.child_plane);
+    if (!ok) {
+        if (!ensure_cufft_plans_for_level(plan, ell)) return false;
+        return run_build_level_fft_qb(plan, ell, qb);
+    }
     if (lp.build_wrap_m > 0) {
-        k_wrap_build<<<nparents_total, 64, 0, plan->stream_compute>>>(
+        k_wrap_build<<<dim3(nparents_total, w.qplanes), 64, 0, plan->stream_compute>>>(
             plan->d_poly_levels[ell], pps, nparents_total,
-            plan->d_poly_levels[ell - 1], cps, lp.build_conv, lp.fft_n, lp.build_wrap_m, ps, cs);
+            plan->d_poly_levels[ell - 1], cps, lp.build_conv, lp.fft_n, lp.build_wrap_m, ps, cs,
+            w.parent_plane, w.child_plane);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
@@ -806,45 +577,50 @@ bool run_prop_level_schoolbook_qb(GpuPlan *plan, int ell, int qb) {
     int parent_gsz = plan->psz[ell]; int child_gsz = plan->psz[ell - 1];
     int cps = plan->psz[ell - 1];
     int ps = plan->fft_stride[ell]; int cs = plan->fft_stride[ell - 1];
-    int nparents_total = qb * plan->nn[ell];
+    LevelLaunch w = level_launch(plan, ell, qb);
+    int nparents_total = w.parents;
     auto &lp = plan->levels[ell];
     int len_g = lp.g_eff; int len_P = lp.p_eff; int len_out = lp.out_needed;
     if (nparents_total <= 0 || len_out <= 0 || len_g <= 0 || len_P <= 0) return true;
     int conv = lp.corr_conv;
-    bool use_warp_regime = (conv <= GPU_SCHOOL_WARP_MAX_CONV && nparents_total > 1);
+    bool use_warp_regime = (conv <= GPU_SCHOOL_WARP_MAX_CONV && w.total() > 1);
     if (use_warp_regime) {
         int threads = GPU_SCHOOL_WARPS_PER_BLOCK * 32;
         int blocks = (nparents_total + GPU_SCHOOL_WARPS_PER_BLOCK - 1) / GPU_SCHOOL_WARPS_PER_BLOCK;
         size_t shmem = (size_t)GPU_SCHOOL_WARPS_PER_BLOCK * (size_t)(len_g + 2 * len_P) * sizeof(double);
         if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
-            k_schoolbook_corr_pair_warp_batch<<<blocks, threads, shmem, plan->stream_compute>>>(
+            k_schoolbook_corr_pair_warp_batch<<<dim3(blocks, w.qplanes), threads, shmem, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total, ps, cs, cs);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total, ps, cs, cs,
+                w.parent_plane, w.child_plane);
         } else {
             int fb_threads = GPU_THREADS_PER_BLOCK;
             size_t total = (size_t)nparents_total * (size_t)len_out;
             int fb_blocks = (int)((total + fb_threads - 1) / fb_threads);
-            k_schoolbook_corr_pair<<<fb_blocks, fb_threads, 0, plan->stream_compute>>>(
+            k_schoolbook_corr_pair<<<dim3(fb_blocks, w.qplanes), fb_threads, 0, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total, ps, cs, cs);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total, ps, cs, cs,
+                w.parent_plane, w.child_plane);
         }
     } else {
         int threads = GPU_THREADS_PER_BLOCK; int blocks = nparents_total;
         size_t shmem = (size_t)(len_g + 2 * len_P) * sizeof(double);
         if (shmem <= GPU_SCHOOL_SMEM_SAFE_BYTES) {
-            k_schoolbook_corr_pair_smem_parent<<<blocks, threads, shmem, plan->stream_compute>>>(
+            k_schoolbook_corr_pair_smem_parent<<<dim3(blocks, w.qplanes), threads, shmem, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total, ps, cs, cs);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total, ps, cs, cs,
+                w.parent_plane, w.child_plane);
         } else {
             size_t total = (size_t)nparents_total * (size_t)len_out;
             int fb_blocks = (int)((total + threads - 1) / threads);
-            k_schoolbook_corr_pair<<<fb_blocks, threads, 0, plan->stream_compute>>>(
+            k_schoolbook_corr_pair<<<dim3(fb_blocks, w.qplanes), threads, 0, plan->stream_compute>>>(
                 plan->d_g_levels[ell], parent_gsz, len_g,
                 plan->d_poly_levels[ell - 1], cps, len_P,
-                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total, ps, cs, cs);
+                plan->d_g_levels[ell - 1], child_gsz, len_out, nparents_total, ps, cs, cs,
+                w.parent_plane, w.child_plane);
         }
     }
     if (!CUDA_OK(cudaGetLastError())) return false;
@@ -861,78 +637,8 @@ bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
     int threads = GPU_THREADS_PER_BLOCK;
     int n_children = 2 * nparents_total;
 
-#if ICM_HAVE_VKFFT
-    if (c.use_vkfft) {
-        int fft_n = c.fft_n; int cn = c.cn;
 
-        /* Gather g_levels[ell] → scratch */
-        { size_t g_total = (size_t)nparents_total * fft_n;
-          int g_blocks = (int)((g_total + threads - 1) / threads);
-          k_gather_to_fft<<<g_blocks, threads, 0, plan->stream_compute>>>(
-              plan->d_g_levels[ell], ps, plan->d_fft_scratch, fft_n, nparents_total);
-          if (!CUDA_OK(cudaGetLastError())) return false; }
-
-        /* VkFFT R2C forward: scratch → spec_in */
-        { double *input_ptr = plan->d_fft_scratch;
-          VkFFTLaunchParams lp_fwd = {}; lp_fwd.buffer = (void **)&c.spec_in;
-          lp_fwd.inputBuffer = (void **)&input_ptr;
-          if (VkFFTAppend(&c.vkfft_app_fwd, -1, &lp_fwd) != VKFFT_SUCCESS) return false; }
-
-        const cufftDoubleComplex *child_spec = (plan->d_fft_cache[ell] && ell < (int)plan->fft_cache_valid.size() && plan->fft_cache_valid[ell]) ? plan->d_fft_cache[ell] : nullptr;
-        if (!child_spec) {
-            int child_batch = qb * plan->nn[ell - 1];
-            /* Gather poly_levels[ell-1] → scratch */
-            { size_t g2_total = (size_t)child_batch * fft_n;
-              int g2_blocks = (int)((g2_total + threads - 1) / threads);
-              k_gather_to_fft<<<g2_blocks, threads, 0, plan->stream_compute>>>(
-                  plan->d_poly_levels[ell - 1], cs, plan->d_fft_scratch, fft_n, child_batch);
-              if (!CUDA_OK(cudaGetLastError())) return false; }
-            if (b_fft.use_vkfft) {
-                double *child_input = plan->d_fft_scratch;
-                VkFFTLaunchParams lp_bfwd = {}; lp_bfwd.buffer = (void **)&b_fft.spec_in;
-                lp_bfwd.inputBuffer = (void **)&child_input;
-                if (VkFFTAppend(&b_fft.vkfft_app_fwd, -1, &lp_bfwd) != VKFFT_SUCCESS) return false;
-            } else {
-                if (!CUFFT_OK(cufftExecD2Z(b_fft.plan_fwd, plan->d_fft_scratch, b_fft.spec_in))) return false;
-            }
-            child_spec = b_fft.spec_in;
-        }
-        size_t corr_total = (size_t)nparents_total * (size_t)cn;
-        int blocks_corr = (int)((corr_total + threads - 1) / threads);
-        double inv_fft_n_cqb = 1.0 / (double)fft_n;
-        k_paired_corr_freq<<<blocks_corr, threads, 0, plan->stream_compute>>>(c.spec_in, child_spec, cn, nparents_total, c.spec_mid, inv_fft_n_cqb);
-        if (!CUDA_OK(cudaGetLastError())) return false;
-
-        /* VkFFT C2R inverse: spec_mid → scratch */
-        { double *output_ptr = plan->d_fft_scratch;
-          VkFFTLaunchParams lp_inv = {}; lp_inv.buffer = (void **)&c.spec_mid;
-          lp_inv.outputBuffer = (void **)&output_ptr;
-          if (VkFFTAppend(&c.vkfft_app_inv, 1, &lp_inv) != VKFFT_SUCCESS) return false; }
-
-        /* Scatter: scratch → g_levels[ell-1] */
-        { int scatter_len = std::min(child_gsz, fft_n);
-          size_t s_total = (size_t)n_children * scatter_len;
-          int s_blocks = (int)((s_total + threads - 1) / threads);
-          k_scatter_from_fft<<<s_blocks, threads, 0, plan->stream_compute>>>(
-              plan->d_fft_scratch, fft_n, plan->d_g_levels[ell - 1], cs, scatter_len, n_children);
-          if (!CUDA_OK(cudaGetLastError())) return false; }
-
-        if (lp.corr_wrap_m > 0) {
-            k_wrap_corr_pair<<<nparents_total, 64, 0, plan->stream_compute>>>(
-                plan->d_g_levels[ell - 1], child_gsz, nparents_total,
-                plan->d_g_levels[ell], plan->psz[ell], len_g,
-                plan->d_poly_levels[ell - 1], plan->psz[ell - 1], len_P, len_out,
-                fft_n, lp.corr_wrap_m, cs, ps, cs);
-            if (!CUDA_OK(cudaGetLastError())) return false;
-        }
-        if (plan->opts.memory_strategy >= 2 && ell < (int)plan->fft_cache_valid.size()) {
-            plan->fft_cache_valid[ell] = false;
-        }
-        return true;
-    }
-#endif
-
-    /* cuFFT path — bypass scratch when stride already matches fft_n */
+    /* cuFFT path: bypass scratch when stride already matches fft_n */
     {
         int fft_n = c.fft_n;
         /* D2Z on g_levels[ell]: bypass gather when ps == fft_n */
@@ -989,7 +695,7 @@ bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
             plan->d_g_levels[ell - 1], child_gsz, nparents_total,
             plan->d_g_levels[ell], plan->psz[ell], len_g,
             plan->d_poly_levels[ell - 1], plan->psz[ell - 1], len_P, len_out,
-            c.fft_n, lp.corr_wrap_m, cs, ps, cs);
+            c.fft_n, lp.corr_wrap_m, cs, ps, cs, 0, 0);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     if (plan->opts.memory_strategy >= 2 && ell < (int)plan->fft_cache_valid.size()) {
@@ -1000,7 +706,6 @@ bool run_prop_level_fft_qb(GpuPlan *plan, int ell, int qb) {
 
 bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     auto &lp = plan->levels[ell];
-    int nparents_total = qb * plan->nn[ell];
     if (!plan->opts.use_cufftdx || g_runtime_fused_max_conv_len <= 0 ||
         lp.corr_conv > g_runtime_fused_max_conv_len || !is_cufftdx_supported_fft_n(lp.fft_n)) {
         return run_prop_level_fft_qb(plan, ell, qb);
@@ -1009,37 +714,41 @@ bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
     int cps = plan->psz[ell - 1];
     int ps = plan->fft_stride[ell]; int cs = plan->fft_stride[ell - 1];
     int len_g = lp.g_eff; int len_P = lp.p_eff; int len_out = lp.out_needed;
+    LevelLaunch w = level_launch(plan, ell, qb);
+    int nparents_total = w.parents;
     if (nparents_total <= 0 || len_out <= 0 || len_g <= 0 || len_P <= 0) return true;
     bool ok = launch_cufftdx_corr_r2c_dispatch(lp.fft_n, plan->d_g_levels[ell], ps, len_g,
                                                plan->d_poly_levels[ell - 1], cs, len_P,
                                                plan->d_g_levels[ell - 1], cs, len_out, nparents_total,
                                                1.0 / (double)lp.fft_n, plan->stream_compute,
-                                               ps, cs, cs);
+                                               ps, cs, cs,
+                                               w.qplanes, w.parent_plane, w.child_plane);
     if (!ok) ok = launch_cufftdx_corr_dispatch(lp.fft_n, plan->d_g_levels[ell], ps, len_g,
                                                 plan->d_poly_levels[ell - 1], cs, len_P,
                                                 plan->d_g_levels[ell - 1], cs, len_out, nparents_total,
                                                 1.0 / (double)lp.fft_n, plan->stream_compute,
-                                                ps, cs, cs);
-    if (!ok) return run_prop_level_fft_qb(plan, ell, qb);
+                                                ps, cs, cs,
+                                                w.qplanes, w.parent_plane, w.child_plane);
+    if (!ok) {
+        if (!ensure_cufft_plans_for_level(plan, ell)) return false;
+        return run_prop_level_fft_qb(plan, ell, qb);
+    }
     if (lp.corr_wrap_m > 0) {
-        k_wrap_corr_pair<<<nparents_total, 64, 0, plan->stream_compute>>>(
+        k_wrap_corr_pair<<<dim3(nparents_total, w.qplanes), 64, 0, plan->stream_compute>>>(
             plan->d_g_levels[ell - 1], child_gsz, nparents_total,
             plan->d_g_levels[ell], parent_gsz, len_g,
             plan->d_poly_levels[ell - 1], cps, len_P, len_out,
-            lp.fft_n, lp.corr_wrap_m, cs, ps, cs);
+            lp.fft_n, lp.corr_wrap_m, cs, ps, cs,
+            w.parent_plane, w.child_plane);
         if (!CUDA_OK(cudaGetLastError())) return false;
     }
     return true;
 }
 
 /* ── run_hybrid_batched_q / run_hybrid_single_q ────────────────── */
-/* These are large functions copied verbatim from the original.
- * They orchestrate kernel launches using the level runners above. */
 
 bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     int threads = GPU_THREADS_PER_BLOCK;
-    int blocks_n = (plan->n + threads - 1) / threads;
-    (void)blocks_n;
 
 
 
@@ -1075,9 +784,10 @@ bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
         int threads_block = ((plan->B + 32) / 32) * 32;
         if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
         size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-        k_block_build_qbatch<<<qb * plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
+        int blocks_per_q = leaf_build_blocks(plan);
+        k_block_build_qbatch<<<qb * blocks_per_q, threads_block, shmem_block, plan->stream_compute>>>(
             (const double * const *)d_a_ptrs, plan->n, plan->B,
-            plan->nblocks, plan->N_tree, qb,
+            plan->nblocks, plan->N_tree, qb, blocks_per_q,
             plan->fft_stride[0], plan->d_poly_levels[0], leaf_stride,
             plan->d_block_prods_qbatch, bp_stride);
         if (!CUDA_OK(cudaGetLastError())) return false;
@@ -1201,7 +911,7 @@ bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
             int threads_block = ((plan->B + 32) / 32) * 32;
             if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
             size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-            k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
+            k_block_build<<<leaf_build_blocks(plan), threads_block, shmem_block, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->B,
                 plan->nblocks, plan->N_tree, plan->fft_stride[0], plan->d_poly_levels[0], plan->d_block_prods);
         }
@@ -1257,7 +967,7 @@ bool run_hybrid_single_q(GpuPlan *plan, int a_buf_idx,
         int threads_block = ((plan->B + 32) / 32) * 32;
         if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
         size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-        k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
+        k_block_build<<<leaf_build_blocks(plan), threads_block, shmem_block, plan->stream_compute>>>(
             plan->d_a_sorted[curr], plan->n, plan->B,
             plan->nblocks, plan->N_tree, plan->fft_stride[0], plan->d_poly_levels[0], plan->d_block_prods);
         if (!CUDA_OK(cudaGetLastError())) return false;
@@ -1358,7 +1068,7 @@ bool create_graph_stub(GpuPlan *plan) {
             k_set_leaves_b1<<<bl, GPU_THREADS_PER_BLOCK, 0, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->N_tree, plan->fft_stride[0], plan->d_poly_levels[0]);
         } else {
-            k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_compute>>>(
+            k_block_build<<<leaf_build_blocks(plan), threads_block, shmem_block, plan->stream_compute>>>(
                 plan->d_a_sorted[curr], plan->n, plan->B,
                 plan->nblocks, plan->N_tree, plan->fft_stride[0], plan->d_poly_levels[0], plan->d_block_prods);
         }

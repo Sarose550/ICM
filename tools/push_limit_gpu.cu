@@ -116,7 +116,6 @@ int main(int argc, char **argv) {
             for (int M = 0; M <= maxM; ++M) {
                 for (int T = 0; T <= maxT; ++T) {
                     IcmGpuOptions opts{};
-                    opts.device_id = 0;
                     opts.use_cufftdx = 1;
                     opts.enable_graphs = 0;
                     opts.enable_q_pipeline = 1;

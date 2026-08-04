@@ -1,11 +1,11 @@
 [![CI](https://github.com/Sarose550/ICM/actions/workflows/ci.yml/badge.svg)](https://github.com/Sarose550/ICM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-# ICM -- Independent Chip Model Equity Computation
+# ICM: Independent Chip Model Equity Computation
 
-High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to ~17,216 players / payouts in 1 second*. A CUDA backend extends this to over 1.5 million players in about a second on an NVIDIA B200. Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
+High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to 26,816 players / payouts in 1 second single-threaded, or 65,536 across 16 threads, on the AMD Zen 4 reference box (18,368 / 88,064 on Apple M3 Pro; see [RESULTS.md](RESULTS.md) for per-device figures). All are direct binary-search measurements, not interpolations. A CUDA backend extends this to up to 1.49 million players in under a second on an NVIDIA B200 (full field, `k=n`). Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
 
-> 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf) - full derivation, proofs, and performance evaluation.
+> 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf): full derivation, proofs, and performance evaluation.
 >
 > **Status:** arXiv submission pending.
 
@@ -13,7 +13,8 @@ High-performance C library for computing tournament placement equities using gen
 
 The Independent Chip Model (ICM) is a tournament equity model that converts
 chip stacks into real-money expected payouts by accounting for the payout
-structure. In a poker tournament, chips do not have a fixed dollar value - your last chip is worth far less than your first - and ICM computes each
+structure. In a poker tournament, chips do not have a fixed dollar value
+(your last chip is worth far less than your first), and ICM computes each
 player's fair expected share of the prize pool. For a general introduction,
 see the [ICM Wikipedia page](https://en.wikipedia.org/wiki/Independent_Chip_Model).
 
@@ -35,26 +36,27 @@ make
 ```c
 #include "icm.h"
 
-// Initialize (call once -- loads FFTW wisdom, builds lookup tables)
+// Initialize (call once; loads FFTW wisdom, builds lookup tables)
 icm_init("fftw_wisdom.dat");
 
 // Compute equities for all n players
-//   S[n]       -- chip stacks
-//   Q          -- quadrature points (typically 256)
-//   payout[k]  -- payout coefficients
-//   equity[n]  -- output (caller-allocated)
+//   S[n]       : chip stacks
+//   Q          : quadrature points (typically 256)
+//   payout[k]  : payout coefficients
+//   equity[n]  : output (caller-allocated)
 icm_equity(n, S, Q, payout, k, equity);
 
 // Compute equities for a subset of players
 icm_equity_subset(n, S, Q, payout, k, equity, targets, n_targets);
 ```
 
-All correctness tests pass at < 2e-10 relative error.
+All correctness tests pass at < 1.6e-10 relative error.
 
 **Subset equity.** `icm_equity_subset()` computes equities for only a chosen
 subset of players (`targets`) instead of all `n`. It prunes the hybrid
 engine's propagate pass with a per-level hot/cold bitmask marking which
-tree branches can contain a target player, skipping cold branches entirely - the sort order used by the rest of the engine is untouched, so this is
+tree branches can contain a target player, skipping cold branches entirely.
+The sort order used by the rest of the engine is untouched, so this is
 purely a pruning optimization, not a different algorithm. Worthwhile when
 you only need a handful of players' equities out of a large field; the
 speedup is workload-dependent (larger `n`, smaller target fraction helps
@@ -63,7 +65,7 @@ most).
 **Python bindings.** `python/` provides a ctypes wrapper (`icm.equity(stacks, payouts)`)
 that calls straight into the same compiled shared library the C API uses.
 See [python/README.md](python/README.md) for setup (`make libicm`, then
-`import icm`). These bindings cover the CPU library only -- no Python
+`import icm`). These bindings cover the CPU library only; no Python
 wrapper exists for the CUDA API below.
 
 ## CUDA API
@@ -71,7 +73,7 @@ wrapper exists for the CUDA API below.
 ```c
 #include "icm_gpu.h"
 
-// Initialize (call once -- selects the CUDA device)
+// Initialize (call once; selects the CUDA device)
 icm_gpu_init(/* device_id */ 0);
 
 // Compute equities for all n players; opts=NULL uses defaults.
@@ -84,82 +86,61 @@ int status = icm_gpu_equity(n, S, Q, payout, k, equity, /* opts */ NULL, &stats)
 icm_gpu_shutdown();
 ```
 
+The CUDA device is selected once, by `icm_gpu_init(device_id)`, before any
+other call; the `device_id` field in `IcmGpuOptions` is informational only
+and ignored as an input.
+
 All correctness tests pass at < 1e-8 relative error against the CPU reference
-(`bench_gpu verify`). See [src/icm_gpu.h](src/icm_gpu.h) for the full API,
+(`bench_gpu verify`). See [src/gpu/icm_gpu.h](src/gpu/icm_gpu.h) for the full API,
 including the reusable `IcmGpuPlan` (amortizes planning cost across repeated
 calls at the same `n`/`k`) and calibration/diagnostics helpers.
 
-## How It Works
-
-The algorithm reformulates ICM equity as a one-dimensional integral over
-generating-function coefficients, evaluated by Gaussian quadrature
-($Q = 256$ nodes, relative error $< 5 \times 10^{-12}$). The central
-challenge - computing leave-one-out polynomial products for all $n$ players
-simultaneously - is solved by an FFT-accelerated binary subproduct tree
-whose propagation phase is the adjoint of its build phase, reducing cost
-from $O(nk)$ to $O(n \log^2 k)$ per quadrature point.
-
-A roofline cost model dispatches automatically between a batched linear
-engine (optimal for small $k$) and a hybrid block-tree engine (optimal for
-large $k$). The GPU path (NVIDIA B200) uses cuFFTDx fused device-side
-kernels with CUDA graph capture, computing 6.3 million player equities
-($k = 100$) in 626 ms.
-
-**For the full derivation, complexity analysis, correctness proofs, and
-performance evaluation, see the paper:**
-[**paper/icm_paper.pdf**](paper/icm_paper.pdf)
-
 ## Accuracy
 
-Validated against exact closed-form reference equities (`v1_exact()`,
-`v2_exact()` in `src/icm.c`) for two payout structures -- linear and
-quadratic -- that are exact for *any* $n$ via linearity of expectation over
-player pairs/triples, not by enumerating elimination orderings. This avoids
-capping validation at the ~20-30 players a slow general-purpose reference
-would allow.
-
-`tools/accuracy_bench.c` sweeps the quadrature node count `Q` against both
-closed forms across four stack distributions (uniform, 100:1 adversarial,
-geometric, and an extreme 1e9:1 case). Gauss-Legendre quadrature (the
-production choice) converges to $\sim 5 \times 10^{-13}$ relative error by
-`Q = 1024` on all of them; tanh-sinh (double-exponential) quadrature converges
-faster on easy distributions but stalls around $10^{-7}$ - $10^{-8}$ on the
-1e9:1 case and doesn't improve from `Q = 512` to `Q = 1024`, which is why
-Gauss-Legendre is used in production rather than tanh-sinh. The production
-default `Q = 256` already delivers under $2 \times 10^{-12}$ relative error on
-uniform stacks and under $1.6 \times 10^{-10}$ at the 1e9:1 bound.
-
-Full derivation (the V1/V2 closed forms, the exponential-clock argument they
-rely on, and the complete Gauss-Legendre vs. tanh-sinh convergence tables)
-is in the paper; raw sweep data is in `results/accuracy_convergence.csv`.
+Validated against exact closed-form reference equities for two payout
+structures (linear and quadratic), exact for *any* `n` rather than by
+enumerating elimination orderings, so validation isn't capped at the small
+`n` a slow general-purpose reference would allow. The production default
+(`Q = 256`, Gauss-Legendre quadrature) delivers under 1.6e-10 relative
+error, including at a 1e9:1 stack-ratio extreme. See the paper for the full
+quadrature-convergence study (Gauss-Legendre vs. tanh-sinh, four stack
+distributions) and `results/accuracy_convergence.csv` for the raw sweep.
 
 ![Accuracy convergence](results/accuracy_convergence.png)
 
 ## Performance
 
-**CPU, single-threaded (ms, Q=256):**
+**CPU, single-threaded (ms, Q=256, uniform stacks, median of 5):**
 
 | n | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n | | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n |
 |---|------|------|-------|-------|-------|-----|-|------|------|-------|-------|-------|-----|
-| | **M3 Pro** |||||| | **Zen 4 7950X** |||||
-| 1024  | 1.71 | 7.16 | 13.2 | 24.4 | 28.9 | 34.8 | | 1.28 | 3.95 | 7.61 | 26.5 | 29.1 | 34.0 |
-| 2048  | 4.11 | 14.3 | 26.3 | 60.9 | 75.2 | 99.8 | | 3.18 | 6.83 | 13.9 | 63.0 | 73.7 | 75.1 |
-| 4096  | 8.18 | 28.5 | 52.6 | 159  | 214  | 232  | | 7.32 | 14.1 | 28.3 | 153  | 161  | 168  |
-| 8192  | 16.2 | 56.6 | 104  | 438  | 483  | 516  | | 14.5 | 28.6 | 53.4 | 343  | 376  | 382  |
-| 16384 | 32.5 | 113  | 208  | 1020 | 1090 | 1480 | | 29.6 | 62.7 | 112  | 805  | 866  | 835  |
-| 32768 | 64.9 | 226  | 418  | 2330 | 3090 | 4680 | | 63.4 | 116  | 217  | 1880 | 1810 | 1840 |
-| 65536 | 130  | 453  | 836  | 6580 | 9710 | 10000| | 117  | 244  | 419  | 3920 | 4170 | 4490 |
+| | **M3 Pro** |||||| | **Zen 4 7950X** (AOCL-FFTW) ||||||
+| 1024  | 1.71 | 7.05 | 13.0 | 17.8 | 20.9 | 29.5 | | 1.33 | 3.53 | 7.54 | 15.8 | 17.3 | 19.7 |
+| 2048  | 4.80 | 14.5 | 26.1 | 45.3 | 51.4 | 55.8 | | 3.11 | 6.99 | 13.9 | 36.3 | 39.3 | 45.0 |
+| 4096  | 8.14 | 28.1 | 51.9 | 108  | 122  | 135  | | 6.21 | 15.0 | 28.5 | 82.6 | 95.0 | 103  |
+| 8192  | 16.2 | 56.2 | 105  | 280  | 298  | 320  | | 12.6 | 31.5 | 57.9 | 194  | 206  | 232  |
+| 16384 | 32.3 | 116  | 208  | 625  | 701  | 751  | | 25.5 | 74.0 | 127  | 442  | 484  | 525  |
+| 32768 | 64.9 | 227  | 415  | 1470 | 1650 | 1760 | | 52.9 | 118  | 252  | 991  | 1060 | 1240 |
+| 65536 | 130  | 451  | 830  | 3460 | 3820 | 4060 | | 107  | 252  | 727  | 2570 | 2850 | 3160 |
 
 **GPU, NVIDIA B200 (ms, Q=256):**
 
 | n | k=64 | k=1024 | k=n/2 | k=n |
 |---|------|--------|-------|-----|
-| 4,096 | 0.37 | 0.75 | 0.82 | 0.86 |
-| 16,384 | 1.19 | 2.86 | 4.07 | 4.37 |
-| 65,536 | 4.40 | 10.83 | 19.85 | 20.64 |
-| 262,144 | 17.14 | 42.21 | 97.60 | 101.3 |
-| 1,048,576 | 68.09 | 167.34 | 683.06 | 687.67 |
-| 4,194,304 | 273.28 | 873.28 | 2475.64 | 2500.45 |
+| 4,096 | 0.37 | 0.76 | 0.87 | 0.89 |
+| 16,384 | 1.18 | 2.81 | 3.93 | 4.17 |
+| 65,536 | 4.29 | 10.62 | 19.43 | 20.26 |
+| 262,144 | 16.58 | 41.01 | 95.95 | 100.09 |
+| 1,048,576 | 65.68 | 178.26 | 501.84 | 507.90 |
+| 4,194,304 | 272.47 | 753.65 | 2,352.43 | 2,320.45 |
+| 33,554,432 | 2,506.71 | 5,059.26 | 22,321.49 | 22,865.76 |
+
+The Zen 4 reference box runs its DIMMs at 3600 MT/s (an AMD AM5
+two-DIMMs-per-channel electrical limit, not a misconfiguration; measured
+streaming DRAM bandwidth is 32.7 GB/s, consistent with that ceiling). Memory
+bandwidth matters here only where the FFT-heavy hybrid engine dominates: the
+compute-bound linear engine is essentially insensitive to it. See
+[RESULTS.md](RESULTS.md) and the paper for the full grids.
 
 See the paper for the full grids, contour plots, and dispatch analysis.
 
@@ -191,9 +172,9 @@ make
 make parallel
 ```
 
-Automatically detects MKL (via dlopen) for dual-dispatch FFT when available.
+Uses system FFTW3. For AMD platforms, AOCL-FFTW is recommended, see below.
 
-### Linux with AOCL-FFTW (AMD)
+### Linux with AOCL-FFTW (AMD Zen 4)
 
 ```bash
 # Install AOCL-FFTW to /usr/local/aocl-fftw
@@ -201,12 +182,14 @@ make DEVICE=zen4
 make DEVICE=zen4 parallel
 ```
 
-Auto-detected if installed at `/usr/local/aocl-fftw`.
+AOCL-FFTW is the sole FFT backend for Zen 4, a direct A/B test confirmed it is
+cleanly faster than plain FFTW at every calibrated size. Auto-detected if
+installed at `/usr/local/aocl-fftw`.
 
 ### GPU (NVIDIA)
 
 ```bash
-make bench_gpu_fused CUDA_ARCH=sm_100    # B200/B100
+make bench_gpu_fused CUDA_ARCH=sm_100    # B200/B100 (uses devices/b200/ calibration)
 make bench_gpu_fused CUDA_ARCH=sm_90     # H100/H200
 ```
 
@@ -214,46 +197,68 @@ Requires CUDA toolkit and cuFFTDx. See the [Performance](#performance) section
 above for B200 timings, and `devices/b200/gpu_fft_config.h` for calibration
 data.
 
+To calibrate your own card, generate a device config and build against it
+(`GPU_DEVICE=` mirrors the CPU's `DEVICE=`; the shipped `b200` data is the
+default):
+
+```bash
+make calibrate_gpu CUDA_ARCH=<your_arch>
+mkdir -p devices/<name>
+./calibrate_gpu devices/<name>/gpu_fft_config.h
+make clean && make bench_gpu_fused CUDA_ARCH=<your_arch> GPU_DEVICE=<name>
+./bench_gpu_fused verify
+```
+
+`CUDA_ARCH` also selects the cuFFTDx kernel instantiations; FFT sizes an
+architecture cannot compile (shared-memory limits) are excluded automatically
+via `cufftdx::is_supported`, and the planner falls back to batched cuFFT for
+them. Optional: layer in a per-card block-size (B) calibration with
+`tools/calibrate_gpu_best_b.cu` + `tools/splice_calib_points.py`; until then
+the planner uses a fixed B=64 fallback on uncalibrated cards.
+
+## Platform Support
+
+| Device | Architecture | FFT Backend | Status |
+|--------|-------------|-------------|--------|
+| Apple M3 Pro | ARM (Apple Silicon) | FFTW + vDSP dispatch at supported sizes | Calibrated, verified |
+| AMD Ryzen 9 7950X (Zen 4) | x86-64 (AVX-512) | AOCL-FFTW | Calibrated, verified |
+| NVIDIA B200 | Blackwell GPU (sm_100) | cuFFT + cuFFTDx | Calibrated, verified |
+
+An uncalibrated device falls back to `devices/generic/` and still produces
+correct results; every tree level uses FFT with `FFTW_ESTIMATE` plans, the
+engine always dispatches hybrid with B=32, and a build-time warning is
+printed. Run `./tools/calibrate_full.sh <DEVICE>` to add real calibration for
+your hardware.
+
 ## Calibrating for a New Device
 
-If your hardware matches an already-calibrated device (`devices/m3_pro`, `devices/zen4`), you don't need to run `./calibrate` at all - build straight against the shipped wisdom and config:
+If your hardware matches an already-calibrated device, build straight
+against the shipped wisdom and config, then confirm dispatch is still
+correct on your specific unit:
 
 ```bash
 make DEVICE=m3_pro   # or zen4 - whichever matches your machine
 ./bench_grid verify
-./bench_grid crossover   # confirm dispatch decisions match measured winners on YOUR unit
+./bench_grid crossover   # confirm dispatch agrees with measured winners on YOUR unit
 ```
 
-`fftw_wisdom.dat` and the `calib_times_ns[]` table are measured on one specific physical machine. FFTW will happily load wisdom from a different unit of the same CPU model - it just isn't guaranteed to have picked the fastest codelet for *your* silicon, and the nanosecond timings the cost model reads for FFT-vs-schoolbook and engine-dispatch decisions won't necessarily match your machine's actual behavior (different DIMM speed, microcode revision, thermal/boost profile, or memory bandwidth can all shift these numbers). `./bench_grid crossover` is the check that catches this: if every cell's dispatch decision agrees with the measured winner, the shipped calibration is good enough and you're done. Only recalibrate from scratch (below) if it disagrees - and definitely recalibrate if you're on hardware unlike anything already in `devices/`.
-
-One command runs the whole pipeline (FFTW calibration, hybrid-engine timing,
-and cost-model constant fitting) and finishes with a `verify` + `crossover`
+If `crossover` disagrees, or your hardware isn't already in `devices/`, one
+command runs the full calibration pipeline (FFTW calibration, hybrid-engine
+timing, cost-model fitting) and finishes with a `verify` + `crossover`
 check:
 
 ```bash
-./tools/calibrate_full.sh mydevice   # add --quick for a faster, less precise FFTW pass
+./tools/calibrate_full.sh mydevice   # add --quick for a faster, less precise pass
 ```
 
-If you want to see (or run) each step by hand
-instead:
+Expect 10-30+ minutes on an otherwise-idle machine (FFTW's PATIENT planner
+dominates the time). See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md#porting-to-a-new-device-general)
+for the manual step-by-step version and what each calibrated constant means.
 
-```bash
-# Generate calibration data
-# macOS: add -I/opt/homebrew/include -L/opt/homebrew/lib (Homebrew FFTW)
-gcc -O3 -march=native -o calibrate tools/calibrate.c -lfftw3 -lm
-./calibrate
-
-# Copy to device directory
-mkdir -p devices/mydevice
-cp fft_config.h fftw_wisdom.dat devices/mydevice/
-
-# Build and verify
-make DEVICE=mydevice
-./bench_grid verify
-./bench_grid profile    # measure FMA_NS, FFT_OVERHEAD_NS, etc.
-```
-
-Update the `#define` constants in `fft_config.h` with measured values from `./bench_grid profile`. See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for details on each constant.
+**GPU (NVIDIA)** devices calibrate separately from the CPU pipeline; see
+["GPU Cost Model (B200)"](OPTIMIZATION_GUIDE.md#gpu-cost-model-b200) in
+`OPTIMIZATION_GUIDE.md`, or run `./tools/run_b200_campaign.sh` for the
+whole pipeline in one shot.
 
 ## Python Bindings
 
@@ -266,32 +271,63 @@ make libicm.a
 ## Project Structure
 
 ```
-src/icm.h                    -- public CPU API
-src/icm.c                    -- all CPU engines + FFT infrastructure
-src/linear_batched_impl.inc  -- batched linear engine template
-src/icm_gpu.h                -- GPU API header
-src/gpu/                     -- GPU implementation (split modules)
-  gpu_internal.h             -- shared GPU types and helpers
-  gpu_kernels.cu             -- CUDA kernels
-  gpu_plan.cu                -- GPU planner and cost model
-  gpu_exec.cu                -- GPU execution engine
-  gpu_api.cu                 -- GPU public API
-bench/bench.c                -- CPU benchmark + verification harness
-bench/bench_gpu.cu           -- GPU benchmark + verification harness
-tools/calibrate.c            -- FFTW calibration tool
-tools/calibrate_gpu.cu       -- GPU FFT calibration tool
-devices/                     -- per-device calibration data
-python/                      -- Python ctypes bindings
+src/cpu/     : CPU engines (linear/hybrid/tree) + FFT infrastructure
+src/gpu/     : CUDA implementation (kernels, planner, execution, API)
+bench/       : benchmark + verification harnesses (CPU and GPU)
+tools/       : calibration, validation, and diagnostic tools
+devices/     : per-device calibration data (m3_pro, zen4, b200, generic)
+python/      : Python ctypes bindings
+results/     : benchmark results, CSVs, and plots
+paper/       : paper PDF
 ```
 
 ## Documentation
 
-- [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) -- detailed optimization notes, porting guide, and algorithm descriptions
-- [RESULTS.md](RESULTS.md) -- complete performance tables, head-to-head comparisons, and phase-split analysis
+- [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md): detailed optimization notes, porting guide, and algorithm descriptions
+- [RESULTS.md](RESULTS.md): complete performance tables, head-to-head comparisons, and phase-split analysis
+
+## How It Works
+
+The algorithm reformulates ICM equity as a one-dimensional integral over
+generating-function coefficients, evaluated by Gaussian quadrature, and
+computes the per-player leave-one-out products via an FFT-accelerated
+subproduct tree. Three engines (linear, hybrid, tree) cover different
+`(n, k)` regimes; which one runs is decided automatically at every level,
+from offline-calibrated lookup tables rather than analytical cost formulas
+(the same empirical-measurement-over-modeling approach FFTW's `PATIENT`
+planner and LAPACK's `ILAENV` use). The GPU path (NVIDIA B200) uses
+cuFFTDx fused device-side kernels with CUDA graph capture.
+
+**For the full derivation, complexity analysis, correctness proofs, and
+performance evaluation, see the paper:**
+[**paper/icm_paper.pdf**](paper/icm_paper.pdf) (the dispatch mechanism is
+in the Algorithm section). For an implementation-level walkthrough, see
+[OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md).
+
+## Getting Help / Reporting Issues
+
+Open an issue on the [GitHub repository](https://github.com/Sarose550/ICM/issues).
+Include:
+
+- Your device (CPU model or GPU model)
+- The exact `make` line you ran (including `DEVICE=`)
+- Output of `./bench_grid verify`
+
+## Citation
+
+There is no arXiv ID or published paper yet. Until then, cite the GitHub
+repository and the in-repo PDF:
+
+```bibtex
+@misc{icm_2026,
+  author       = {Sam Rosenstrauch},
+  title        = {{ICM}: Independent Chip Model Equity Computation},
+  howpublished = {\url{https://github.com/Sarose550/ICM}},
+  note         = {Paper: \texttt{paper/icm\_paper.pdf}},
+  year         = {2026}
+}
+```
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
----
-\* Single-threaded, AMD Ryzen 9 7950X.

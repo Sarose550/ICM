@@ -1,0 +1,773 @@
+#!/usr/bin/env python3
+"""
+calibrate_adaptive.py - Adaptive mesh-refinement calibration orchestrator.
+
+Replaces calibrate_block_size.py with a priority-queue-driven adaptive
+refinement strategy directly analogous to adaptive quadrature: maintain a
+candidate pool scored by expected value of information, always measure the
+highest-scoring candidate next, stop when a fixed budget is exhausted OR the
+queue's top score drops below a convergence threshold.
+
+Key fixes over the old orchestrator:
+  1. No second binary call - the validate probe already runs a full
+     candidate-timing search internally; we take its best_B directly.
+  2. No --narrow-around guess - there is no second call to attach a guess
+     to, and the old approach assumed the true answer was close to the
+     (known-wrong) dispatched answer, which real data disproved.
+
+Canary safety net (2026-07-31, see VERDICTS.md V6): even with every
+individual measurement now correct (no single-rep noise), a run that
+populates a previously-sparse region from scratch can STILL make things
+worse in aggregate. B*(n,k) has real local structure; a nearest-neighbor
+answer measured at one point can be the wrong answer for a nearby,
+never-probed query even when the measurement itself is perfectly honest.
+Proven twice on real B200 data: once with the noise bug present, once
+after fixing it. This is a second, separate failure mode from measurement
+noise, not fixed by the median/cv-convergence fix above.
+
+The fix here is NOT a heuristic - it re-runs the exact same trustworthy,
+converged measurement (run_validate_probe) at a fixed, held-out canary
+set, before and after the run, and auto-reverts the entire config header
+to its pre-run snapshot if the canaries got worse. No back-and-forth: the
+tool decides for itself whether its own work was net-positive before
+committing to it. See --skip-canary-check to bypass (testing only; a
+production run should never need to).
+
+Usage:
+  python3 tools/calibrate_adaptive.py --device m3_pro --budget 100
+  python3 tools/calibrate_adaptive.py --device b200 --budget 30m
+  python3 tools/calibrate_adaptive.py --device zen4 --budget 2h --dry-run
+"""
+
+import argparse
+import math
+import os
+import random
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Optional
+
+from calib_common import (inject_table, read_existing_table,
+                          run_validate_probe, _draw_log_uniform_nk)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Constants
+# ────────────────────────────────────────────────────────────────────────────
+
+POOL_REFILL_SIZE = 200
+DISAGREEMENT_BONUS = 1.0
+DEFAULT_CONVERGENCE_THRESHOLD = 0.15
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Priority-queue scoring
+# ────────────────────────────────────────────────────────────────────────────
+
+def _joint_log_distance(n1: int, k1: int, n2: int, k2: int) -> float:
+    """
+    The exact same metric the production lookup itself uses:
+    hypot(log(n1)-log(n2), log(k1)-log(k2)).
+    """
+    return math.hypot(math.log(n1) - math.log(n2),
+                      math.log(k1) - math.log(k2))
+
+
+def _joint_log_distance_to_nearest(
+        n: int, k: int,
+        live_table: dict[tuple[int, int], int]) -> float:
+    """
+    Minimum joint-log-distance from (n,k) to any currently-calibrated point.
+    This is the primary "value of information" driver: points far from
+    any calibrated anchor have higher priority.
+    """
+    if not live_table:
+        return float('inf')
+    best = float('inf')
+    for (ni, ki) in live_table:
+        d = _joint_log_distance(n, k, ni, ki)
+        if d < best:
+            best = d
+    return best
+
+
+def _two_nearest_disagree(n: int, k: int,
+                          live_table: dict[tuple[int, int], int]) -> bool:
+    """
+    Return True if the two nearest calibrated points (by joint-log-distance)
+    disagree on B.
+    """
+    if len(live_table) < 2:
+        return False
+    # Collect all distances, take the two smallest
+    dists: list[tuple[float, int]] = []
+    for (ni, ki), bi in live_table.items():
+        d = _joint_log_distance(n, k, ni, ki)
+        dists.append((d, bi))
+    dists.sort(key=lambda x: x[0])
+    return dists[0][1] != dists[1][1]
+
+
+def _score_candidate(n: int, k: int,
+                     live_table: dict[tuple[int, int], int]) -> float:
+    """
+    Score a candidate (n,k) for priority:
+      distance to nearest calibrated point + (1.0 if 2-nearest disagree else 0.0)
+    """
+    dist = _joint_log_distance_to_nearest(n, k, live_table)
+    bonus = DISAGREEMENT_BONUS if _two_nearest_disagree(n, k, live_table) else 0.0
+    return dist + bonus
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Skeleton generation wrapper
+# ────────────────────────────────────────────────────────────────────────────
+
+def _run_skeleton_for_landmarks(
+        device: str, is_gpu: bool,
+        lo: Optional[int], hi: Optional[int],
+        ratio: Optional[float]) -> list[int]:
+    """
+    Call gen_calib_skeleton.py to get a sparse set of landmark n-values.
+    Uses a coarser ratio (~3x the device's normal ratio) to get far fewer
+    n-anchors than the full skeleton.
+    """
+    script = os.path.join(os.path.dirname(__file__), "gen_calib_skeleton.py")
+
+    # Build command: pass through user-specified --lo/--hi/--ratio if set;
+    # if ratio is not set, multiply the device's default by 3 for sparseness.
+    cmd = [sys.executable, script, "--device", device]
+    if is_gpu:
+        cmd += ["--gpu"]
+    if lo is not None:
+        cmd += ["--lo", str(lo)]
+    if hi is not None:
+        cmd += ["--hi", str(hi)]
+
+    # Determine effective ratio: user-specified, or compute ~3x default
+    if ratio is not None:
+        effective_ratio = ratio
+    else:
+        default_ratio = 1.8 if is_gpu else 1.6
+        effective_ratio = default_ratio * 3.0
+    cmd += ["--ratio", str(effective_ratio)]
+
+    # Temporary files for output
+    skel_fd, skel_path = tempfile.mkstemp(suffix=".csv", prefix="skeleton_")
+    bands_fd, bands_path = tempfile.mkstemp(suffix=".csv", prefix="bands_")
+    os.close(skel_fd)
+    os.close(bands_fd)
+
+    cmd += ["--skeleton-out", skel_path, "--bands-out", bands_path]
+
+    print(f"[skeleton] Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[skeleton] stderr:\n{result.stderr}")
+        raise RuntimeError(
+            f"gen_calib_skeleton.py failed with code {result.returncode}")
+    print(result.stderr.strip())
+
+    # Parse skeleton CSV - extract just the unique n values
+    landmark_ns: set[int] = set()
+    with open(skel_path, "r") as f:
+        header = f.readline()  # skip "n,k"
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            n_str = line.split(",")[0]
+            landmark_ns.add(int(n_str))
+
+    os.unlink(skel_path)
+    os.unlink(bands_path)
+    return sorted(landmark_ns)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Canary safety net
+# ────────────────────────────────────────────────────────────────────────────
+
+CANARY_K_FRACTIONS = (6, 3, 1.5)  # n/6, n/3, 2n/3 - deliberately NOT the
+                                   # landmark k-fractions (2, 16, n/8, n/4,
+                                   # n/2, n), so canaries are genuinely
+                                   # held-out, not just re-checking points
+                                   # the run already probed directly.
+CANARY_REGRESSION_TOLERANCE = 0.05  # per-cell: >5% slower fails a canary
+CANARY_AGGREGATE_TOLERANCE = 0.02   # total time: >2% slower fails the run
+
+
+def _generate_canaries(landmark_ns: list[int]) -> list[tuple[int, int]]:
+    """
+    Fixed, held-out (n,k) set for the before/after safety check: 3 k
+    fractions per landmark n-anchor, chosen to avoid the landmark
+    points' own k-fraction set (see CANARY_K_FRACTIONS comment).
+    """
+    canaries: list[tuple[int, int]] = []
+    for n in landmark_ns:
+        seen: set[int] = set()
+        for frac in CANARY_K_FRACTIONS:
+            k = max(2, min(n, int(n / frac)))
+            if k not in seen:
+                seen.add(k)
+                canaries.append((n, k))
+    return canaries
+
+
+def _measure_canary_set(validate_bin: str, canaries: list[tuple[int, int]],
+                        is_gpu: bool) -> dict[tuple[int, int], float]:
+    """
+    Measure auto_ms (current dispatch's own converged timing) at every
+    canary point. Reuses run_validate_probe -- the same adaptive
+    median/cv-convergence oracle everything else in this tool trusts,
+    not a separate ad-hoc timing path.
+    """
+    times: dict[tuple[int, int], float] = {}
+    for n, k in canaries:
+        probe = run_validate_probe(validate_bin, n, k, is_gpu)
+        times[(n, k)] = probe["auto_ms"]
+    return times
+
+
+def _compare_canaries(
+        before: dict[tuple[int, int], float],
+        after: dict[tuple[int, int], float]
+) -> tuple[bool, str]:
+    """
+    Compare before/after canary timings. Returns (passed, report_text).
+    FAILS if any single canary regressed beyond CANARY_REGRESSION_TOLERANCE
+    or if the aggregate total regressed beyond CANARY_AGGREGATE_TOLERANCE.
+    """
+    lines = []
+    total_before = 0.0
+    total_after = 0.0
+    worst_regressions: list[tuple[tuple[int, int], float]] = []
+    for key in before:
+        tb = before[key]
+        ta = after.get(key, tb)
+        total_before += tb
+        total_after += ta
+        if tb > 0:
+            pct = (ta - tb) / tb
+            if pct > CANARY_REGRESSION_TOLERANCE:
+                worst_regressions.append((key, pct))
+    worst_regressions.sort(key=lambda x: -x[1])
+
+    agg_pct = (total_after - total_before) / total_before if total_before > 0 else 0.0
+    lines.append(f"  Canary cells:          {len(before)}")
+    lines.append(f"  Total time before:     {total_before:.3f}")
+    lines.append(f"  Total time after:      {total_after:.3f}  ({agg_pct*100:+.2f}%)")
+    lines.append(f"  Cells regressed >{CANARY_REGRESSION_TOLERANCE*100:.0f}%:    {len(worst_regressions)}")
+    for (n, k), pct in worst_regressions[:10]:
+        lines.append(f"    n={n} k={k}: {pct*100:+.1f}%")
+    if len(worst_regressions) > 10:
+        lines.append(f"    ... and {len(worst_regressions) - 10} more")
+
+    passed = (agg_pct <= CANARY_AGGREGATE_TOLERANCE) and (len(worst_regressions) == 0)
+    return passed, "\n".join(lines)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Budget parsing
+# ────────────────────────────────────────────────────────────────────────────
+
+def _parse_budget(budget_str: str) -> tuple[Optional[int], Optional[float]]:
+    """
+    Parse --budget argument.
+
+    Returns (max_probes, max_seconds). Exactly one will be None.
+
+    Bare integer → probe-count cap.
+    Suffixed: 30s, 20m, 2h → time cap in seconds.
+    """
+    budget_str = budget_str.strip()
+    if budget_str[-1].isdigit():
+        # Bare integer
+        return (int(budget_str), None)
+    suffix = budget_str[-1].lower()
+    number_str = budget_str[:-1]
+    if suffix not in ('s', 'm', 'h'):
+        raise argparse.ArgumentTypeError(
+            f"Unrecognized budget suffix: '{suffix}'. "
+            f"Use N, Ns, Nm, or Nh.")
+    try:
+        value = float(number_str)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"Invalid budget number: '{number_str}'")
+    if suffix == 's':
+        seconds = value
+    elif suffix == 'm':
+        seconds = value * 60
+    else:  # 'h'
+        seconds = value * 3600
+    return (None, seconds)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Main
+# ────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Adaptive calibration orchestrator - priority-queue "
+                    "refinement replacing calibrate_block_size.py."
+    )
+    parser.add_argument("--device", required=True,
+                        help="Device name (any string; used to locate "
+                             "devices/<device>/fft_config.h or "
+                             "devices/<device>/gpu_fft_config.h).")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Device is a GPU (CPU otherwise). Controls "
+                             "config header path, array prefix, macro "
+                             "names, and domain defaults.")
+    parser.add_argument("--budget", required=True, type=str,
+                        help="Probe budget: bare integer (probe count) or "
+                             "time-suffixed (30s, 20m, 2h). Required, no "
+                             "default - force an explicit choice every run.")
+    parser.add_argument("--validate-bin", type=str, default=None,
+                        help="Path to validate_best_b / validate_planner_gpu "
+                             "binary.")
+    parser.add_argument("--n-min", type=int, default=None,
+                        help="Minimum n to calibrate (inclusive). Default: "
+                             "the device's full real domain -- only narrow "
+                             "this for a deliberately scoped/cheap run.")
+    parser.add_argument("--n-max", type=int, default=None,
+                        help="Maximum n to calibrate (inclusive). Default: "
+                             "the device's full real domain -- only narrow "
+                             "this for a deliberately scoped/cheap run.")
+    parser.add_argument("--landmark-ratio", type=float, default=None,
+                        help="Log-spacing ratio between landmark n-anchors "
+                             "(if set, used directly; else ~3x the device's "
+                             "own calibration ratio, for sparse seeding).")
+    parser.add_argument("--config-header", type=str, default=None,
+                        help="Override path to config header (for testing).")
+    parser.add_argument("--convergence-threshold", type=float,
+                        default=DEFAULT_CONVERGENCE_THRESHOLD,
+                        help=f"Stop when top pool score drops below this "
+                             f"(default {DEFAULT_CONVERGENCE_THRESHOLD}).")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Run Step 1 skeleton generation only, print "
+                             "a domain summary, then exit before any "
+                             "measurement.")
+    parser.add_argument("--skip-canary-check", action="store_true",
+                        help="Skip the before/after canary safety net (see "
+                             "module docstring). Testing only -- a "
+                             "production run should never need this, and "
+                             "skipping it means a net-negative run can ship "
+                             "silently, exactly what caused the regression "
+                             "this check exists to catch (VERDICTS.md V6).")
+    parser.add_argument("--rebuild-cmd", type=str, default=None,
+                        help="Shell command that rebuilds --validate-bin "
+                             "from the config header this run writes to. "
+                             "REQUIRED unless --skip-canary-check is set: "
+                             "validate_bin is a compiled binary with the "
+                             "config #include'd at build time, so the "
+                             "post-run canary re-measurement is silently "
+                             "meaningless (reads the OLD table) without a "
+                             "real rebuild in between. There is no safe "
+                             "default -- GPU builds need an environment- "
+                             "specific CUFFTDX_INC path, and validate_best_b "
+                             "has no Makefile target at all (manual gcc "
+                             "only, see its own docstring), so a guessed "
+                             "default here could silently build nothing "
+                             "or the wrong thing. Example (GPU): "
+                             "'make validate_planner_gpu CUDA_ARCH=sm_100 "
+                             "CUFFTDX_INC=-I/path/to/mathdx/include'.")
+    args = parser.parse_args()
+
+    if not args.skip_canary_check and args.rebuild_cmd is None and not args.dry_run:
+        parser.error(
+            "--rebuild-cmd is required (or pass --skip-canary-check to "
+            "explicitly opt out, testing only). The canary safety net "
+            "re-measures dispatch after this run's changes, which needs "
+            "validate_bin rebuilt against the NEW config header first -- "
+            "otherwise the 'after' measurement silently reads the OLD "
+            "table and the whole check is meaningless. See --help.")
+
+    device = args.device
+    is_gpu = args.gpu
+
+    # Derive config header path: devices/<device>/[gpu_]fft_config.h
+    if args.config_header:
+        config_header = args.config_header
+    else:
+        config_header = f"devices/{device}/{'gpu_' if is_gpu else ''}fft_config.h"
+
+    meta = {
+        "is_gpu": is_gpu,
+        "config_header": config_header,
+        "array_prefix": "gbselect" if is_gpu else "bselect",
+        "n_macro": "GPU_N_BSELECT_POINTS" if is_gpu else "N_BSELECT_POINTS",
+    }
+
+    # Budget
+    max_probes, max_seconds = _parse_budget(args.budget)
+    if max_probes is not None:
+        budget_label = f"{max_probes} probes"
+    else:
+        budget_label = args.budget
+
+    # Validate binary (the Makefile places these at the repo root, not
+    # build/ -- confirmed 2026-07-31 after this default silently pointed
+    # at a nonexistent path, see VERDICTS.md V6)
+    validate_bin = args.validate_bin
+    if validate_bin is None:
+        if is_gpu:
+            validate_bin = "./validate_planner_gpu"
+        else:
+            validate_bin = "./validate_best_b"
+
+    if not os.path.isfile(validate_bin):
+        print(f"WARNING: validate binary not found at '{validate_bin}'. "
+              f"Will attempt to run anyway (may fail if not on PATH).",
+              file=sys.stderr)
+
+    # ── Step 1: Skeleton generation for landmarks ──────────────────────
+    print("── Step 1: Generate sparse landmark n-anchors ──")
+    landmark_ns = _run_skeleton_for_landmarks(
+        device, is_gpu, args.n_min, args.n_max, args.landmark_ratio)
+
+    # Determine effective domain lo/hi for reporting
+    # (gen_calib_skeleton.py applied its defaults; use the min/max
+    # from the landmark set itself as a reasonable proxy, and also
+    # re-derive from gen_calib_skeleton's own defaults for reporting.)
+    if args.n_min is not None:
+        domain_lo = args.n_min
+    else:
+        domain_lo = 1024 if is_gpu else 256
+    if args.n_max is not None:
+        domain_hi = args.n_max
+    else:
+        domain_hi = 33554432 if is_gpu else 65536
+
+    # Build the landmark (n,k) set
+    landmark_points: list[tuple[int, int]] = []
+    for n in landmark_ns:
+        ks: set[int] = set()
+        # k = 2, k = 16
+        ks.add(2)
+        ks.add(16)
+        # n/8, n/4, n/2, n (clamped to [2, n])
+        for denom in (8, 4, 2, 1):
+            k = max(2, min(n, n // denom))
+            ks.add(k)
+        for k in sorted(ks):
+            landmark_points.append((n, k))
+
+    print(f"  Domain: lo={domain_lo}, hi={domain_hi}")
+    print(f"  Landmark n-anchors: {len(landmark_ns)}")
+    print(f"  Landmark (n,k) points: {len(landmark_points)} "
+          f"(~{len(landmark_points)//max(1,len(landmark_ns))} per n)")
+    print(f"  Budget: {budget_label}")
+    print()
+
+    if args.dry_run:
+        print(f"  config_header = {meta['config_header']}")
+        print("  --dry-run: stopping before any measurement.")
+        print(f"  Would run Step 0 (load existing) + Step 1 landmark "
+              f"probing ({len(landmark_points)} candidate probes) "
+              f"+ Step 2 adaptive refinement up to budget {budget_label}.")
+        return
+
+    # ── Step 0: Load existing table ────────────────────────────────────
+    existing_table = read_existing_table(meta["config_header"], meta)
+    live_table: dict[tuple[int, int], int] = {
+        (n, k): b for n, k, b in existing_table}
+    if live_table:
+        print(f"── Step 0: Loaded {len(live_table)} pre-existing calibrated "
+              f"points from {meta['config_header']} (will be preserved) ──")
+        print()
+
+    # ── Step 0b: Snapshot config header + measure canary baseline ──────
+    # Snapshot BEFORE anything is written, so a revert is a byte-exact
+    # restore, not a reconstruction. Canaries measured now, at the
+    # current (pre-run) dispatch, using the same converged oracle
+    # everything else here trusts -- see module docstring.
+    canaries = _generate_canaries(landmark_ns)
+    header_snapshot: Optional[str] = None
+    canary_before: dict[tuple[int, int], float] = {}
+    if not args.skip_canary_check:
+        with open(meta["config_header"], "r") as f:
+            header_snapshot = f.read()
+        print(f"── Step 0b: Measuring {len(canaries)} held-out canary "
+              f"cells (pre-run baseline) ──")
+        canary_before = _measure_canary_set(validate_bin, canaries, is_gpu)
+        print(f"  Baseline captured.\n")
+
+    # ── Step 1 (continued): Probe landmark points ──────────────────────
+    # Skip any landmark (n,k) already in the existing table
+    landmarks_to_probe = [(n, k) for n, k in landmark_points
+                          if (n, k) not in live_table]
+
+    if landmarks_to_probe:
+        print(f"── Step 1 (probe): Measuring {len(landmarks_to_probe)} "
+              f"landmark points ──")
+    else:
+        print(f"── Step 1 (probe): All {len(landmark_points)} landmark "
+              f"points already in table, nothing to measure ──")
+
+    probe_count = 0
+    run_start = time.monotonic()
+    probed_this_run: set[tuple[int, int]] = set()
+    total_points_added = 0
+
+    for n, k in landmarks_to_probe:
+        # Budget check before each probe
+        if max_probes is not None and probe_count >= max_probes:
+            print(f"\n  Budget exhausted ({probe_count} probes).")
+            break
+        if max_seconds is not None:
+            elapsed = time.monotonic() - run_start
+            if elapsed >= max_seconds:
+                print(f"\n  Budget exhausted ({elapsed:.1f}s elapsed).")
+                break
+
+        probe_start = time.monotonic()
+        probe = run_validate_probe(validate_bin, n, k, is_gpu)
+        probe_elapsed = time.monotonic() - probe_start
+        probe_count += 1
+        probed_this_run.add((n, k))
+        total_points_added += 1
+
+        live_table[(n, k)] = probe["best_B"]
+
+        elapsed_total = time.monotonic() - run_start
+        avg_probe_s = elapsed_total / probe_count
+
+        # Progress line
+        est_remaining = ""
+        if max_seconds is not None and avg_probe_s > 0:
+            remaining_budget_s = max_seconds - elapsed_total
+            est_probes_left = int(remaining_budget_s / avg_probe_s)
+            est_remaining = f" ~{est_probes_left} est. remaining"
+        elif max_probes is not None:
+            est_remaining = f" {max_probes - probe_count} remaining"
+
+        print(f"  [{probe_count}] n={n} k={k} "
+              f"auto_B={probe['auto_B']} best_B={probe['best_B']} "
+              f"gap={probe['gap_pct']:.2f}% "
+              f"({probe_elapsed:.1f}s this, "
+              f"{elapsed_total/60:.1f}m total, "
+              f"{avg_probe_s:.1f}s/probe avg"
+              f"{est_remaining})")
+
+    # Batch-inject after landmark pass
+    if landmarks_to_probe:
+        inject_table(meta["config_header"], meta,
+                     [(n, k, live_table[(n, k)]) for n, k in live_table])
+        print(f"  → Injected {len(live_table)} total points after "
+              f"landmark pass\n")
+
+    # ── Step 2: Priority-queue adaptive refinement ─────────────────────
+    print("── Step 2: Priority-queue adaptive refinement ──")
+    print()
+
+    # Determine n_lo/n_hi for log-uniform draws over the FULL domain
+    n_lo = float(domain_lo)
+    n_hi = float(domain_hi)
+
+    pool: list[tuple[int, int]] = []
+    pool_refilled_this_iteration = False
+    converged = False
+    budget_capped = False
+
+    while True:
+        # 1. Refill pool if empty
+        if not pool:
+            fresh = []
+            attempts = 0
+            max_attempts = POOL_REFILL_SIZE * 10  # safety valve
+            exclude = set(live_table.keys()) | probed_this_run
+            while len(fresh) < POOL_REFILL_SIZE and attempts < max_attempts:
+                n, k = _draw_log_uniform_nk(n_lo, n_hi, exclude)
+                if (n, k) not in exclude:
+                    fresh.append((n, k))
+                    exclude.add((n, k))
+                attempts += 1
+            pool = fresh
+            pool_refilled_this_iteration = True
+            if not pool:
+                # Couldn't find any more candidates - domain exhausted
+                print("  Pool exhausted (domain fully covered). Converged.")
+                converged = True
+                break
+
+        # 2. Score all pool candidates against current live_table
+        best_score = -1.0
+        best_candidate: Optional[tuple[int, int]] = None
+        best_idx: int = -1
+        for i, (n, k) in enumerate(pool):
+            s = _score_candidate(n, k, live_table)
+            if s > best_score:
+                best_score = s
+                best_candidate = (n, k)
+                best_idx = i
+
+        # 3. Convergence check
+        if pool_refilled_this_iteration:
+            if best_score < args.convergence_threshold:
+                print(f"  Top pool score {best_score:.4f} < "
+                      f"{args.convergence_threshold} "
+                      f"(convergence threshold) on fresh refill. Converged.")
+                converged = True
+                break
+            # Not converged yet - clear the flag for subsequent iterations
+            # (only the very first pop after a fresh refill is the
+            # convergence checkpoint)
+
+        # Pop the candidate
+        n, k = best_candidate  # type: ignore[misc]
+        del pool[best_idx]
+        pool_refilled_this_iteration = False
+
+        # 4. Measure
+        # Budget check BEFORE probe
+        if max_probes is not None and probe_count >= max_probes:
+            print(f"\n  Budget exhausted ({probe_count} probes reached "
+                  f"cap of {max_probes}).")
+            budget_capped = True
+            break
+        if max_seconds is not None:
+            elapsed = time.monotonic() - run_start
+            if elapsed >= max_seconds:
+                print(f"\n  Budget exhausted ({elapsed:.1f}s elapsed >= "
+                      f"{max_seconds}s).")
+                budget_capped = True
+                break
+
+        probe_start = time.monotonic()
+        probe = run_validate_probe(validate_bin, n, k, is_gpu)
+        probe_elapsed = time.monotonic() - probe_start
+        probe_count += 1
+        probed_this_run.add((n, k))
+        total_points_added += 1
+
+        live_table[(n, k)] = probe["best_B"]
+
+        # Immediate re-injection (crash-safety)
+        inject_table(meta["config_header"], meta,
+                     [(pn, pk, live_table[(pn, pk)])
+                      for pn, pk in live_table])
+
+        elapsed_total = time.monotonic() - run_start
+        avg_probe_s = elapsed_total / probe_count
+
+        # Progress line
+        est_remaining = ""
+        if max_seconds is not None and avg_probe_s > 0:
+            remaining_budget_s = max_seconds - elapsed_total
+            est_probes_left = int(remaining_budget_s / avg_probe_s)
+            est_remaining = f" ~{est_probes_left} est. remaining"
+        elif max_probes is not None:
+            est_remaining = f" {max_probes - probe_count} remaining"
+
+        print(f"  [{probe_count}] n={n} k={k} "
+              f"auto_B={probe['auto_B']} best_B={probe['best_B']} "
+              f"gap={probe['gap_pct']:.2f}% "
+              f"score={best_score:.4f} "
+              f"({probe_elapsed:.1f}s this, "
+              f"{elapsed_total/60:.1f}m total, "
+              f"{avg_probe_s:.1f}s/probe avg"
+              f"{est_remaining})")
+
+        # 5. Loop to 1.
+
+    # ── Step 3: Final report ──────────────────────────────────────────
+    print()
+    print("=" * 60)
+    print("FINAL REPORT")
+    print("=" * 60)
+    print(f"  Device:               {device}")
+    print(f"  Domain:               lo={domain_lo}, hi={domain_hi}")
+    print(f"  Budget:               {budget_label}")
+    print(f"  Total probes:         {probe_count}")
+    print(f"  Points added:         {total_points_added}")
+    print(f"  Live table size:      {len(live_table)}")
+
+    if converged:
+        print(f"  Status:               CONVERGED "
+              f"(threshold={args.convergence_threshold})")
+    elif budget_capped:
+        print(f"  Status:               BUDGET-CAPPED (not necessarily "
+              f"converged)")
+        # Compute current top-of-pool score for caller signal
+        if pool:
+            top_score = max(_score_candidate(n, k, live_table)
+                            for n, k in pool)
+            print(f"  Top remaining score:  {top_score:.4f}")
+            if top_score > args.convergence_threshold * 3:
+                print(f"    → Score well above threshold - more budget "
+                      f"would likely help.")
+            elif top_score > args.convergence_threshold:
+                print(f"    → Score moderately above threshold - "
+                      f"run was close to done.")
+            else:
+                print(f"    → Score near/below threshold - run was "
+                      f"nearly converged anyway.")
+        else:
+            print(f"  Top remaining score:  N/A (pool empty)")
+    else:
+        print(f"  Status:               STOPPED (unexpected exit)")
+
+    print()
+
+    # ── Step 4: Canary safety net ───────────────────────────────────────
+    if args.skip_canary_check:
+        print("── Step 4: Canary check SKIPPED (--skip-canary-check) ──")
+        print("  Not verified against a real regression. Do not treat "
+              "this run's table changes as trustworthy without a manual "
+              "check.")
+        print()
+        return
+
+    if total_points_added == 0:
+        print("── Step 4: Canary check SKIPPED (nothing was added) ──")
+        print()
+        return
+
+    print("── Step 4: Rebuilding validate_bin against the new table ──")
+    print(f"  Running: {args.rebuild_cmd}")
+    rebuild = subprocess.run(args.rebuild_cmd, shell=True,
+                             capture_output=True, text=True)
+    if rebuild.returncode != 0:
+        print(f"  REBUILD FAILED (exit {rebuild.returncode}). Cannot "
+              f"verify -- reverting to the pre-run snapshot out of an "
+              f"abundance of caution (an unverifiable change is treated "
+              f"the same as a failed one).")
+        print(rebuild.stderr[-2000:])
+        with open(meta["config_header"], "w") as f:
+            f.write(header_snapshot)
+        print(f"  Reverted {meta['config_header']} to its pre-run state.")
+        print()
+        return
+    print("  Rebuild OK.\n")
+
+    print(f"── Step 4 (continued): Re-measuring {len(canaries)} canary "
+          f"cells (post-run) ──")
+    canary_after = _measure_canary_set(validate_bin, canaries, is_gpu)
+    passed, report = _compare_canaries(canary_before, canary_after)
+    print(report)
+    print()
+
+    if passed:
+        print("  → CANARY CHECK PASSED. Keeping this run's changes.")
+    else:
+        print("  → CANARY CHECK FAILED. This run made things worse on "
+              "held-out cells it never directly probed -- the exact "
+              "failure mode this check exists to catch (VERDICTS.md V6: "
+              "correct individual measurements do not guarantee a safe "
+              "nearest-neighbor table when a sparse region is populated "
+              "from scratch). Reverting to the pre-run snapshot.")
+        with open(meta["config_header"], "w") as f:
+            f.write(header_snapshot)
+        print(f"  Reverted {meta['config_header']} to its pre-run state "
+              f"({len(live_table)} points discarded). Rebuild validate_bin "
+              f"again before trusting it reflects the reverted table.")
+    print()
+
+
+if __name__ == "__main__":
+    main()

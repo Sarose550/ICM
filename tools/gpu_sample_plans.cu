@@ -1,4 +1,4 @@
-/* gpu_sample_plans.cu — Sample GPU plans and measure per-Q-point runtime.
+/* gpu_sample_plans.cu; Sample GPU plans and measure per-Q-point runtime.
  *
  * For each (n, k, B) triple, creates a GPU plan, runs icm_gpu_equity,
  * and reports plan structure + measured runtime for cost model fitting.
@@ -20,7 +20,7 @@
 #include "icm_gpu.h"
 
 /* Access internal plan structure for level details */
-#include "gpu/gpu_internal.h"
+#include "gpu_internal.h"
 using namespace icm_gpu_detail;
 
 static void make_stacks(int n, std::vector<double> &S) {

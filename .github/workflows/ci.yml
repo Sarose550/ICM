@@ -6,19 +6,82 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
+  verify:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [m3_pro, zen4, generic]
+
+    # ── Architecture caveat ──────────────────────────────────────────
+    # GitHub's shared runners are x86-64.  `zen4`'s Makefile branch would
+    # emit `-march=znver4` (AVX-512), which the runner may not be able to
+    # execute (SIGILL at run time, not a compile error).  `m3_pro` is an
+    # ARM config being cross-built on x86.  CI therefore CANNOT verify
+    # per-architecture codegen and MUST NOT pretend to.
+    #
+    # What it CAN verify is that each device's *calibration data and
+    # dispatch decisions* produce correct results.  We override the arch
+    # flag to a portable baseline (`-march=x86-64-v2`) for the device
+    # builds, so the same binary-level logic runs regardless of the
+    # runner's actual microarchitecture.
+    #
+    # The `generic` device has no calibration data at all; its dedicated
+    # test exercises the uncalibrated-fallback path and finishes in seconds.
+    # ──────────────────────────────────────────────────────────────────
+
+    env:
+      SAFE_CFLAGS: -O3 -march=x86-64-v2 -Wall
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y libfftw3-dev
 
-      - name: Build bench_grid
-        run: make
+      # ── m3_pro / zen4: bench_grid verify + libraries ──────────────
 
-      - name: Run verification tests
-        run: ./bench_grid verify
+      - name: Build bench_grid (${{ matrix.device }})
+        if: matrix.device != 'generic'
+        run: make DEVICE=${{ matrix.device }} CFLAGS="$SAFE_CFLAGS"
 
-      - name: Build libicm.a
-        run: make libicm.a
+      - name: Verify correctness (${{ matrix.device }})
+        if: matrix.device != 'generic'
+        run: ICM_VERIFY_MAX_N=16384 ./bench_grid verify
+
+      - name: Build libicm.a (${{ matrix.device }})
+        if: matrix.device != 'generic'
+        run: make libicm.a DEVICE=${{ matrix.device }} CFLAGS="$SAFE_CFLAGS"
+
+      - name: Build libicm.so (${{ matrix.device }})
+        if: matrix.device != 'generic'
+        run: make libicm.so DEVICE=${{ matrix.device }} CFLAGS="$SAFE_CFLAGS"
+
+      # ── generic: uncalibrated-fallback test + libraries ───────────
+
+      - name: Build test_uncalibrated_fallback (generic)
+        if: matrix.device == 'generic'
+        run: |
+          gcc -O3 -Wall -Isrc/cpu -Idevices/generic \
+            -o test_uncalibrated_fallback tools/test_uncalibrated_fallback.c \
+            -lfftw3 -lm
+
+      - name: Run uncalibrated-fallback tests (generic)
+        if: matrix.device == 'generic'
+        run: ./test_uncalibrated_fallback
+
+      - name: Build libicm.a (generic)
+        if: matrix.device == 'generic'
+        run: make libicm.a DEVICE=generic CFLAGS="$SAFE_CFLAGS"
+
+      - name: Build libicm.so (generic)
+        if: matrix.device == 'generic'
+        run: make libicm.so DEVICE=generic CFLAGS="$SAFE_CFLAGS"
+
+      # ── bselect lookup regression test (all devices) ──────────
+
+      - name: Build test_bselect_lookup (${{ matrix.device }})
+        run: make test_bselect_lookup DEVICE=${{ matrix.device }} CFLAGS="$SAFE_CFLAGS"
+
+      - name: Run test_bselect_lookup (${{ matrix.device }})
+        run: ./test_bselect_lookup

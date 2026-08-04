@@ -1,0 +1,13 @@
+OpenMP disabled (serial mode)
+=== BINARY SEARCH: largest n where k=n < 1000ms (Q=256, single-threaded) ===
+
+  n=32768  k=n  → 1751 ms
+  n=20480  k=n  → 1063 ms
+  n=14336  k=n  → 694 ms
+  n=17408  k=n  → 898 ms
+  n=18944  k=n  → 1009 ms
+  n=18176  k=n  → 922 ms
+  n=18560  k=n  → 1003 ms
+  n=18368  k=n  → 929 ms
+
+Result: largest n with k=n < 1s is approximately n=18368

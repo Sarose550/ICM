@@ -1,5 +1,5 @@
 /*
- * icm.c — ICM equity computation library implementation
+ * icm.c: ICM equity computation library implementation
  * See icm.h for the public API.
  */
 
@@ -13,7 +13,14 @@
 #include <time.h>
 #include <fftw3.h>
 #include "icm.h"
-#include "fft_config.h"  /* device-specific calibrated FFT times */
+#include "fft_config.h"       /* device-specific calibrated FFT times */
+/* Forward declaration: fft_cost_model.h's safety-fallback path (a candidate
+ * FFT size with no trustworthy calibrated wrap option) needs the same
+ * wrap-free "smallest smooth >= L" helper the fully-uncalibrated path
+ * already uses. Defined later in this file; declared here so the shared
+ * header (textually included into this translation unit) can call it. */
+static int next_smooth_ge(int n);
+#include "fft_cost_model.h"   /* shared FFT cost-model decision logic */
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -45,7 +52,7 @@ static inline void vexp_clamp(double *y, const double *x, int n) {
 #endif
 
 /* ══════════════════════════════════════════════════════════════
-   MKL DUAL DISPATCH — runtime dlopen on Linux
+   MKL DUAL DISPATCH: runtime dlopen on Linux
    MKL's FFTW wrapper has identical output format to FFTW (no repacking).
    Plans created by MKL must be executed by MKL's fftw_execute.
    ══════════════════════════════════════════════════════════════ */
@@ -128,6 +135,13 @@ static void make_nodes(int Q, double Smax, QP *pts) {
    V1 closed form
    ══════════════════════════════════════════════════════════════ */
 
+/* Convolution length below which the uncalibrated path uses schoolbook
+ * rather than FFT. See the rationale at its use site in
+ * tree_ctx_create_ex2(). Degree < 64, matching the GPU tier boundary. */
+#ifndef UNCALIB_SCHOOLBOOK_MAX_CONV_LEN
+#define UNCALIB_SCHOOLBOOK_MAX_CONV_LEN 128
+#endif
+
 static void v1_exact(int n, const double *S, double *V1) {
     for (int i = 0; i < n; i++) {
         double v = 1.0;
@@ -140,7 +154,7 @@ static void v1_exact(int n, const double *S, double *V1) {
 /* V2 closed form: V2(i) = Σ_{j<k, j≠i, k≠i} S_i / (S_i + S_j + S_k)
  * Uses quadratic payout p[m] = C(n-1-m, 2).
  * Each term = Pr(i eliminated first in triple {i,j,k}) under MH model.
- * O(n^3) — only feasible for small n. */
+ * O(n^3): only feasible for small n. */
 static void v2_exact(int n, const double *S, double *V2) {
     for (int i = 0; i < n; i++) {
         double v = 0;
@@ -164,7 +178,7 @@ typedef void (*EquityEngine)(int n, const double *a,
                              double *inner, void *ctx);
 
 /* ══════════════════════════════════════════════════════════════
-   FFTW WISDOM — persist MEASURE results across runs
+   FFTW WISDOM: persist MEASURE results across runs
    ══════════════════════════════════════════════════════════════ */
 
 #define WISDOM_FILE "fftw_wisdom.dat"
@@ -177,16 +191,11 @@ static void wisdom_save(void) {
     fftw_export_wisdom_to_filename(WISDOM_FILE);
 }
 
-#if defined(ICM_BENCH_INCLUDE)
 static int next_pow2(int n);
-#endif
 
 /* ══════════════════════════════════════════════════════════════
-   FFTW PLAN CACHE — create once, reuse across all quad points
-   ══════════════════════════════════════════════════════════════ */
-
-/* ══════════════════════════════════════════════════════════════
-   FFT PLAN CACHE — FFTW + vDSP interleaved dual-dispatch.
+   FFT PLAN CACHE: FFTW + vDSP interleaved dual-dispatch.
+   Plans are created once and reused across all quad points.
 
    On Apple Silicon, vDSP's interleaved-complex DFT API is 5-23% faster
    than FFTW at supported sizes (f × 2^g where f ∈ {1,3,5,15}, g ≥ 4).
@@ -204,7 +213,7 @@ typedef struct {
     fftw_plan fwd_plan;   /* r2c forward (FFTW) */
     fftw_plan inv_plan;   /* c2r inverse (FFTW) */
     double *rbuf;         /* real buffer [fft_n] */
-    fftw_complex *cbuf;   /* complex buffer [fft_n/2+1] — used by BOTH backends */
+    fftw_complex *cbuf;   /* complex buffer [fft_n/2+1]: used by BOTH backends */
 #ifdef __APPLE__
     int use_vdsp;                          /* 1 if vDSP handles this size */
     vDSP_DFT_Interleaved_SetupD vdsp_fwd; /* interleaved r2c forward */
@@ -237,7 +246,7 @@ typedef struct {
 
 /* vDSP scaling strategy (eliminates 2 of 3 vDSP_vsmulD per round-trip):
  *
- *   Forward:  output = DFT × 2 (no scaling — leave the ×2 factor in cbuf)
+ *   Forward:  output = DFT × 2 (no scaling: leave the ×2 factor in cbuf)
  *   Forward2: same (cbuf2 also has ×2)
  *   Pointwise: A × B = (2×DFT_a) × (2×DFT_b) = 4 × DFT_a × DFT_b
  *   Inverse:  vDSP inverse of (4×product) = IDFT(4×product)/2 = 2 × N × conv
@@ -292,7 +301,7 @@ static inline void fft_exec_inv(FFTPlan *p) {
         int n = p->fft_n, hn = n / 2;
         /* Repack bin 0: cbuf[hn] → cbuf[0].imag for vDSP convention */
         p->cbuf[0][1] = p->cbuf[hn][0];
-        /* Execute inverse (cbuf carries ×2 or ×4 from forward+pointwise —
+        /* Execute inverse (cbuf carries ×2 or ×4 from forward+pointwise;
          * vDSP inverse divides by 2, giving the correct IDFT × {1 or 2}) */
         vDSP_DFT_Interleaved_ExecuteD(p->vdsp_inv,
             (const DSPDoubleComplex *)p->cbuf, (DSPDoubleComplex *)p->rbuf);
@@ -345,7 +354,7 @@ static FFTCache *fft_cache_create_sizes(const int *sizes, int n_sizes) {
         }
 #ifdef __APPLE__
         /* vDSP interleaved DFT: 5-51% faster than FFTW at supported sizes.
-         * Overhead per call: ~2ns (bin-0 unpack, 2 scalar copies) — negligible.
+         * Overhead per call: ~2ns (bin-0 unpack, 2 scalar copies): negligible.
          * The ×2 scaling from vDSP forward is absorbed into pointwise multiply
          * and corrected once in the inverse (single vDSP_vsmulD on real output).
          * Supported: f × 2^g where f ∈ {1,3,5,15}, g ≥ 4 (min DFT length 16). */
@@ -441,7 +450,7 @@ static FFTPlan *fft_cache_get(FFTCache *fc, int needed_n) {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   SCHOOLBOOK KERNELS — with inlined small-size fast paths
+   SCHOOLBOOK KERNELS: with inlined small-size fast paths
    ══════════════════════════════════════════════════════════════ */
 
 /* Inline multiply for size 2 (tree leaves: degree 1 × degree 1) */
@@ -498,53 +507,149 @@ static inline __attribute__((always_inline)) void correlate_school(const double 
 }
 
 /* ══════════════════════════════════════════════════════════════
-   FFT KERNELS — polynomial multiply and correlate via FFTW
+   FFT KERNELS: polynomial multiply and correlate via FFTW
    ══════════════════════════════════════════════════════════════ */
 
 /* FFT vs schoolbook is decided per-level in tree_ctx_create_ex2()
  * using calibrated FFT times from fft_config.h. */
 
-/* next_pow2: only called from next_fftw_size (guarded by ICM_BENCH_INCLUDE). */
-#if defined(ICM_BENCH_INCLUDE)
+/* next_pow2: the defensive fallback in next_smooth_ge() when the smooth-number
+ * table cannot be extended, so it must be available to the library proper, not
+ * only to bench.c. */
 static inline int next_pow2(int n) {
     int p = 1; while (p < n) p <<= 1; return p;
 }
-#endif
 
-/* FFTW is 30–50% faster at composite (7-smooth) sizes than arbitrary sizes.
+/* FFTW is 30-50% faster at composite (7-smooth) sizes than arbitrary sizes.
  * Rounding k to a smooth size rather than next_pow2 preserves this benefit. */
 
-/* Sorted array of all 7-smooth numbers up to 131072. ~500 entries = 2KB.
- * Binary search gives O(log 500) ≈ 9 comparisons without polluting L1
- * (unlike a 512KB direct-index table). */
-static int smooth_nums[800];  /* 749 smooth numbers up to 131072 */
+/* Sorted array of all 7-smooth numbers.  The table is built lazily on first
+ * use and extended on demand when a query needs a smooth number beyond the
+ * current maximum.  This lets the uncalibrated fallback path pick viable
+ * FFT sizes at any practical scale without a fixed ceiling.
+ *
+ * Default initial ceiling: 131072 (calibrate.c's default --max-size).
+ * Each extension doubles the ceiling, amortized O(1) per query. */
+static int *smooth_nums = NULL;   /* dynamically allocated, sorted ascending */
 static int n_smooth = 0;
+static int smooth_cap = 0;        /* allocated capacity */
+static int smooth_max = 0;        /* largest value in the table */
+
+/* Count 7-smooth numbers ≤ limit without storing them. */
+static int count_smooth_up_to(int limit) {
+    int cnt = 0;
+    for (int a = 1; a <= limit; a *= 2)
+        for (int b = a; b <= limit; b *= 3)
+            for (int c = b; c <= limit; c *= 5)
+                for (int d = c; d <= limit; d *= 7)
+                    cnt++;
+    return cnt;
+}
+
+static int int_cmp(const void *a, const void *b) {
+    int ia = *(const int *)a, ib = *(const int *)b;
+    return (ia > ib) - (ia < ib);
+}
+
+/* Extend smooth_nums to cover at least `needed` value. */
+static void ensure_smooth_up_to(int needed) {
+    if (smooth_max >= needed) return;
+    int new_max = smooth_max > 0 ? smooth_max * 2 : 131072;
+    while (new_max < needed) new_max *= 2;
+
+    int add_count = 0;
+    if (smooth_max == 0) {
+        add_count = count_smooth_up_to(new_max);
+    } else {
+        /* Count only values > smooth_max and ≤ new_max */
+        for (int a = 1; a <= new_max; a *= 2)
+            for (int b = a; b <= new_max; b *= 3)
+                for (int c = b; c <= new_max; c *= 5)
+                    for (int d = c; d <= new_max; d *= 7)
+                        if (d > smooth_max) add_count++;
+    }
+
+    int new_count = n_smooth + add_count;
+    if (new_count > smooth_cap) {
+        int new_cap = smooth_cap > 0 ? smooth_cap * 2 : add_count + 64;
+        if (new_cap < new_count) new_cap = new_count + 64;
+        int *tmp = (int *)realloc(smooth_nums, (size_t)new_cap * sizeof(int));
+        if (!tmp) { fprintf(stderr, "FATAL: realloc smooth_nums failed\n"); exit(1); }
+        smooth_nums = tmp;
+        smooth_cap = new_cap;
+    }
+
+    /* Generate new values (if starting fresh, generate all; otherwise, only > smooth_max) */
+    if (smooth_max == 0) {
+        n_smooth = 0;
+        for (int a = 1; a <= new_max; a *= 2)
+            for (int b = a; b <= new_max; b *= 3)
+                for (int c = b; c <= new_max; c *= 5)
+                    for (int d = c; d <= new_max; d *= 7)
+                        smooth_nums[n_smooth++] = d;
+        /* The nested a/b/c/d enumeration above is NOT ascending order (e.g.
+         * the a=1,b=1,c=1 sub-loop appends 1,7,49,343,... before the
+         * a=1,b=1,c=5 sub-loop appends 5, which is smaller than several
+         * already-appended values). Every binary search elsewhere in this
+         * file assumes smooth_nums[] is sorted ascending; leaving it
+         * unsorted here silently corrupted best_k_pad()'s search (it
+         * returned 1536 for k=89600, truncating the tree's
+         * per-level polynomial size and producing wrong equity output,
+         * sum(equity) off from sum(payout) by 27x). Sort once here. */
+        qsort(smooth_nums, (size_t)n_smooth, sizeof(int), int_cmp);
+    } else {
+        int old_count = n_smooth;
+        for (int a = 1; a <= new_max; a *= 2)
+            for (int b = a; b <= new_max; b *= 3)
+                for (int c = b; c <= new_max; c *= 5)
+                    for (int d = c; d <= new_max; d *= 7)
+                        if (d > smooth_max) smooth_nums[n_smooth++] = d;
+        /* Sort only the newly appended portion, then merge */
+        for (int i = old_count + 1; i < n_smooth; i++) {
+            int key = smooth_nums[i], j = i - 1;
+            while (j >= old_count && smooth_nums[j] > key) { smooth_nums[j+1] = smooth_nums[j]; j--; }
+            smooth_nums[j+1] = key;
+        }
+        /* Merge the two sorted runs */
+        int *merged = (int *)malloc((size_t)new_count * sizeof(int));
+        if (!merged) { fprintf(stderr, "FATAL: malloc merge buffer failed\n"); exit(1); }
+        int i = 0, j = old_count, k = 0;
+        while (i < old_count && j < new_count) {
+            if (smooth_nums[i] <= smooth_nums[j]) merged[k++] = smooth_nums[i++];
+            else merged[k++] = smooth_nums[j++];
+        }
+        while (i < old_count) merged[k++] = smooth_nums[i++];
+        while (j < new_count) merged[k++] = smooth_nums[j++];
+        memcpy(smooth_nums, merged, (size_t)new_count * sizeof(int));
+        free(merged);
+    }
+    smooth_max = new_max;
+}
 
 static void build_fftw_size_table(void) {
     if (n_smooth > 0) return;
-    for (int a = 1; a <= 131072; a *= 2)
-        for (int b = a; b <= 131072; b *= 3)
-            for (int c = b; c <= 131072; c *= 5)
-                for (int d = c; d <= 131072; d *= 7)
-                    smooth_nums[n_smooth++] = d;
-    /* Insertion sort (only ~500 elements, one-time) */
-    for (int i = 1; i < n_smooth; i++) {
-        int key = smooth_nums[i], j = i - 1;
-        while (j >= 0 && smooth_nums[j] > key) { smooth_nums[j+1] = smooth_nums[j]; j--; }
-        smooth_nums[j+1] = key;
-    }
+    ensure_smooth_up_to(131072);
 }
 
-/* next_fftw_size: binary search for smallest smooth number >= n.
- * Only called from bench.c (via ICM_BENCH_INCLUDE). */
-#if defined(ICM_BENCH_INCLUDE)
-static int next_fftw_size(int n) {
+/* Find the smallest 7-smooth number >= n.  Extends the smooth table
+ * on demand, so this works at any practical size.  Falls back to
+ * next_pow2 if extension/allocation fails (defensive). */
+static int next_smooth_ge(int n) {
+    if (n_smooth == 0) build_fftw_size_table();
+    ensure_smooth_up_to(n);
     int lo = 0, hi = n_smooth - 1;
     while (lo < hi) {
         int mid = (lo + hi) >> 1;
         if (smooth_nums[mid] < n) lo = mid + 1; else hi = mid;
     }
-    return (lo < n_smooth) ? smooth_nums[lo] : next_pow2(n);
+    return (lo < n_smooth && smooth_nums[lo] >= n) ? smooth_nums[lo] : next_pow2(n);
+}
+
+/* next_fftw_size: wrapper for bench.c (via ICM_BENCH_INCLUDE).
+ * Only called from bench.c. */
+#if defined(ICM_BENCH_INCLUDE)
+static int next_fftw_size(int n) {
+    return next_smooth_ge(n);
 }
 #endif
 
@@ -555,8 +660,10 @@ static int next_fftw_size(int n) {
  * resulting conv_len, and pick the k' with the cheapest total. */
 static int best_k_pad(int k) {
     if (k <= 2) return k;
-    /* Power-of-2: already optimal — no padding needed */
+    /* Power-of-2: already optimal: no padding needed */
     if ((k & (k - 1)) == 0) return k;
+
+    if (n_smooth == 0) build_fftw_size_table();
 
     int lo = 0, hi = n_smooth - 1;
     while (lo < hi) { int mid = (lo+hi)>>1; if (smooth_nums[mid] < k) lo = mid+1; else hi = mid; }
@@ -614,12 +721,10 @@ static inline __attribute__((always_inline)) void polymul_fft_cyclic(const doubl
     if (d + 1 < fft_n) memset(plan->rbuf + d + 1, 0, (fft_n - d - 1) * sizeof(double));
     fft_exec_fwd(plan);
 
-    /* FFT(b) */
     memcpy(fc->rbuf2, b, (d + 1) * sizeof(double));
     if (d + 1 < fft_n) memset(fc->rbuf2 + d + 1, 0, (fft_n - d - 1) * sizeof(double));
     fft_exec_fwd2(plan, fc);
 
-    /* Pointwise multiply */
     for (int i = 0; i < cn; i++) {
         double re = plan->cbuf[i][0] * fc->cbuf2[i][0]
                   - plan->cbuf[i][1] * fc->cbuf2[i][1];
@@ -672,21 +777,18 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     int cn = fft_n / 2 + 1;
     double inv = 1.0 / fft_n;
 
-    /* FFT(a) */
     int copy_a = (na < fft_n) ? na : fft_n;
     memcpy(plan->rbuf, a, copy_a * sizeof(double));
     if (copy_a < fft_n) memset(plan->rbuf + copy_a, 0, (fft_n - copy_a) * sizeof(double));
     fft_exec_fwd(plan);
     if (fft_a_out) memcpy(fft_a_out, plan->cbuf, cn * sizeof(fftw_complex));
 
-    /* FFT(b) */
     int copy_b = (nb < fft_n) ? nb : fft_n;
     memcpy(fc->rbuf2, b, copy_b * sizeof(double));
     if (copy_b < fft_n) memset(fc->rbuf2 + copy_b, 0, (fft_n - copy_b) * sizeof(double));
     fft_exec_fwd2(plan, fc);
     if (fft_b_out) memcpy(fft_b_out, fc->cbuf2, cn * sizeof(fftw_complex));
 
-    /* Pointwise multiply */
     for (int i = 0; i < cn; i++) {
         double re = plan->cbuf[i][0] * fc->cbuf2[i][0]
                   - plan->cbuf[i][1] * fc->cbuf2[i][1];
@@ -697,7 +799,6 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     }
     fft_exec_inv(plan);
 
-    /* Extract cyclic result */
     int fft_out = (fft_n < k) ? fft_n : k;
     for (int i = 0; i < fft_out; i++) c[i] = plan->rbuf[i] * inv;
     if (fft_out < k) memset(c + fft_out, 0, (k - fft_out) * sizeof(double));
@@ -716,12 +817,20 @@ static inline __attribute__((always_inline)) void polymul_fft_wrap(const double 
     }
 }
 
-/* Correlate via FFT (from scratch — FFTs both g and P):
- * out[m] = sum_j P[j] * g[m+j] */
+static inline void correlate_wrap_input_correction(double *out, int len_out,
+                                             const double *P, int len_P,
+                                             const double *g, int len_g,
+                                             int fft_n);
+
+/* Correlate via FFT (from scratch: FFTs both g and P):
+ * out[m] = sum_j P[j] * g[m+j]
+ * PRECONDITION (all correlate_* variants below): fft_n >= len_g -- g must
+ * fit the transform whole. best_fft_config()/best_fft_config_joint()
+ * enforce this via the wrap_m <= len_P-1 feasibility bound (V20). */
 static inline __attribute__((always_inline)) void correlate_fft(const double *g, int len_g,
                           const double *P, int len_P,
                           double *out, int len_out,
-                          FFTCache *fc, int fft_n) {
+                          FFTCache *fc, int fft_n, int wrap_m) {
     FFTPlan *plan = fft_cache_get(fc, fft_n);
     fft_n = plan->fft_n;
     int cn = fft_n / 2 + 1;
@@ -752,6 +861,28 @@ static inline __attribute__((always_inline)) void correlate_fft(const double *g,
         int idx = m + offset;
         out[m] = (idx < fft_n) ? plan->rbuf[idx] * inv : 0;
     }
+
+    /* Cyclic wrap correction: this function uses P-reversed convolution
+     * (out[m] == conv_true[m+offset]) rather than conjugate-FFT
+     * correlation (no offset), so the correction must index by output
+     * position m, not the raw cyclic buffer slot. */
+    if (wrap_m > 0) {
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += P[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) out[m_low] -= high;
+            out[m_high] = high;
+        }
+    }
 }
 
 /* Correlate g with TWO polynomials, sharing the forward FFT of g.
@@ -760,18 +891,18 @@ static inline __attribute__((always_inline)) void correlate_fft(const double *g,
 static inline __attribute__((always_inline)) void correlate_fft_pair(const double *g, int len_g,
                                 const double *PL, const double *PR, int len_P,
                                 double *outL, double *outR, int len_out,
-                                FFTCache *fc, int fft_n) {
+                                FFTCache *fc, int fft_n, int wrap_m) {
     FFTPlan *plan = fft_cache_get(fc, fft_n);
     fft_n = plan->fft_n;
     int cn = fft_n / 2 + 1;
     double inv = 1.0 / fft_n;
 
-    /* FFT(g) — done ONCE */
+    /* FFT(g): done ONCE */
     memcpy(plan->rbuf, g, len_g * sizeof(double));
     if (len_g < fft_n) memset(plan->rbuf + len_g, 0, (fft_n - len_g) * sizeof(double));
     fft_exec_fwd(plan);
 
-    /* Save FFT(g) into cbuf3 — cbuf2 is used for FFT(P) below */
+    /* Save FFT(g) into cbuf3: cbuf2 is used for FFT(P) below */
     fftw_complex *g_hat = fc->cbuf3;
     memcpy(g_hat, plan->cbuf, cn * sizeof(fftw_complex));
 
@@ -787,6 +918,23 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     int offset = len_P - 1;
     for (int m = 0; m < len_out; m++)
         outL[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
+    if (wrap_m > 0) {
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += PR[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) outL[m_low] -= high;
+            outL[m_high] = high;
+        }
+    }
 
     /* Second correlate: g × PL → outR (reuse g_hat) */
     for (int j = 0; j < len_P; j++) fc->rbuf2[j] = PL[len_P - 1 - j];
@@ -799,9 +947,26 @@ static inline __attribute__((always_inline)) void correlate_fft_pair(const doubl
     fft_exec_inv(plan);
     for (int m = 0; m < len_out; m++)
         outR[m] = (m + offset < fft_n) ? plan->rbuf[m + offset] * inv : 0;
+    if (wrap_m > 0) {
+        int conv_len = len_g + len_P - 1;
+        for (int i = 0; i <= wrap_m; i++) {
+            int r = fft_n + i;
+            if (r >= conv_len) break;
+            int m_high = r - offset;
+            if (m_high < 0 || m_high >= len_out) continue;
+            double high = 0;
+            int j_max = len_g - m_high;
+            if (j_max > len_P) j_max = len_P;
+            for (int j = 0; j < j_max; j++)
+                high += PL[j] * g[m_high + j];
+            int m_low = i - offset;
+            if (m_low >= 0 && m_low < len_out) outR[m_low] -= high;
+            outR[m_high] = high;
+        }
+    }
 }
 
-/* Correlate via FFT with CACHED FFT(P) — saves one forward FFT.
+/* Correlate via FFT with CACHED FFT(P): saves one forward FFT.
  * Cross-correlation: out[m] = sum_j P[j] * g[m+j]
  *                  = IFFT(FFT(g) * conj(FFT(P)))[m]
  * For real P, conj(FFT(P)) is trivially obtained from cached FFT(P).
@@ -820,12 +985,11 @@ static void correlate_fft_cached(const double *g, int len_g,
     int cn = fft_n / 2 + 1;
     double inv = 1.0 / fft_n;
 
-    /* FFT(g) */
     memcpy(plan->rbuf, g, len_g * sizeof(double));
     if (len_g < fft_n) memset(plan->rbuf + len_g, 0, (fft_n - len_g) * sizeof(double));
     fft_exec_fwd(plan);
 
-    /* Pointwise: FFT(g) * conj(FFT(P)) — cross-correlation in freq domain */
+    /* FFT(g) * conj(FFT(P)): cross-correlation in freq domain */
     for (int i = 0; i < cn; i++) {
         double pr = cached_fft_P[i][0], pi = cached_fft_P[i][1];
         double gr = plan->cbuf[i][0], gi = plan->cbuf[i][1];
@@ -882,7 +1046,7 @@ static inline __attribute__((always_inline)) void correlate_fft_cached_pair_wrap
     double inv = 1.0 / fft_n;
     int conv_len = len_g + len_P - 1;
 
-    /* FFT(g) — done ONCE, saved to cbuf3 */
+    /* FFT(g): done ONCE, saved to cbuf3 */
     int copy_g = (len_g < fft_n) ? len_g : fft_n;
     memcpy(plan->rbuf, g, copy_g * sizeof(double));
     if (copy_g < fft_n) memset(plan->rbuf + copy_g, 0, (fft_n - copy_g) * sizeof(double));
@@ -963,13 +1127,11 @@ static void correlate_fft_cached_wrap(const double *g, int len_g,
     double inv = 1.0 / fft_n;
     int conv_len = len_g + len_P - 1;
 
-    /* FFT(g) */
     int copy_g = (len_g < fft_n) ? len_g : fft_n;
     memcpy(plan->rbuf, g, copy_g * sizeof(double));
     if (copy_g < fft_n) memset(plan->rbuf + copy_g, 0, (fft_n - copy_g) * sizeof(double));
     fft_exec_fwd(plan);
 
-    /* Pointwise: FFT(g) * conj(FFT(P)) */
     for (int i = 0; i < cn; i++) {
         double pr = cached_fft_P[i][0], pi = cached_fft_P[i][1];
         double gr = plan->cbuf[i][0], gi = plan->cbuf[i][1];
@@ -978,11 +1140,10 @@ static void correlate_fft_cached_wrap(const double *g, int len_g,
     }
     fft_exec_inv(plan);
 
-    /* Extract cyclic cross-correlation result */
     for (int m = 0; m < len_out; m++)
         out[m] = (m < fft_n) ? plan->rbuf[m] * inv : 0;
 
-    /* Correction 1: OUTPUT aliasing — high positions (fft_n..fft_n+wrap_m) wrap to 0..wrap_m.
+    /* Correction 1: OUTPUT aliasing: high positions (fft_n..fft_n+wrap_m) wrap to 0..wrap_m.
      * Compute true cross-correlation at those high positions, subtract from wrapped low
      * positions, and place at the correct high positions. */
     for (int i = 0; i <= wrap_m; i++) {
@@ -1125,83 +1286,177 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
              * Compare TOTAL cost (build + correlate) for both paths, since
              * choosing schoolbook for build also means schoolbook for correlate.
              * Below-sat polys have actual degree cps/2 (upper half is zero). */
-            int d_eff = is_below ? cps / 2 : cps - 1;
-            long long school_cost_flops = (long long)(d_eff + 1) * (d_eff + 1);
             int build_conv_len = is_below ? (2 * (cps / 2)) : (2 * cps - 1);
-            int bfn, bwm;
-            best_fft_config(build_conv_len, &bfn, &bwm, 0);  /* polymul: no input-wrap */
-            int fft_idx;
-            { int lo=0,hi=N_CALIBRATED_SIZES-1;
-              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-              fft_idx = lo; }
-            double fft_build = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
-                               ? calib_times_ns[fft_idx] : 1e18;
-            double fft_overhead = FFT_OVERHEAD_NS;
-            double build_correction = (double)bwm * (bwm + 1) / 2.0 * WRAP_FMA_NS;
-
-            /* Build cost comparison: schoolbook vs FFT.
-             * Uses build-phase cost only (not correlate), as this was empirically
-             * validated to give correct B and FFT crossover decisions.
-             * The correlate cost is implicitly handled: when schoolbook wins the
-             * build comparison, correlate also uses schoolbook, and the cost model
-             * in select_best_B accounts for both via the tree cost sum. */
-            double school_build = school_cost_flops * FMA_NS;
             int p_eff = is_below ? cps/2 + 1 : cps;
             int out_needed = tc->g_needed[ell-1];
-            tc->use_fft[ell] = (fft_build + fft_overhead + build_correction < school_build);
 
-            if (tc->use_fft[ell]) {
+            /* ── Calibration-boundary guard ──────────────────────────
+             * When the device has no calibration data (CALIBRATED_MAX_CONV_LEN
+             * == -1) or this level's convolution length exceeds the calibrated
+             * ceiling, skip the schoolbook-vs-FFT cost comparison entirely.
+             * Both calib_times_ns[] and schoolbook_mul_ns[] may be nonsensical
+             * or absent past the ceiling: there is nothing to compare.
+             *
+             * Always choose FFT.  Pick the smallest 7-smooth FFT size at or
+             * above what's needed, using the same structural search the
+             * calibrated path uses but over the full smooth-number table
+             * (not constrained to sizes that happen to have calibration data).
+             * Plans will be created with FFTW_ESTIMATE (zero-cost heuristic
+             * planning) via the existing FFTW_MEASURE|FFTW_WISDOM_ONLY →
+             * null-check → FFTW_ESTIMATE fallback in fft_cache_create_sizes(). */
+            int past_ceiling = (CALIBRATED_MAX_CONV_LEN == -1 ||
+                                build_conv_len > CALIBRATED_MAX_CONV_LEN);
+
+            /* Past the ceiling, only the LARGE end is unambiguous.
+             *
+             * The bug this guard exists for is schoolbook being chosen at huge
+             * convolution lengths, where its O(L^2) cost is unbounded. At the
+             * small end the opposite is true: schoolbook is both faster than an
+             * FFT and numerically exact, so forcing FFT there is wrong on both
+             * counts. Only the middle ever needed calibration to decide.
+             *
+             * This matters because an uncalibrated device takes this branch at
+             * EVERY tree level, including the leaves. The pure tree engine has
+             * degree-1 leaves, so its lowest levels convolve length-1 and
+             * length-3 polynomials; running an FFT for those, 16 levels deep
+             * over 65536 nodes, cost ~10x accuracy (tree n=65536 adversarial
+             * went from 1.08e-12 to 1.15e-11, past the 5e-12 tolerance and
+             * red on CI). The hybrid engine was unaffected only because its
+             * degree-32 blocks never produce a convolution below 63.
+             *
+             * The threshold matches the schoolbook/FFT boundary this project
+             * already uses on the GPU side (schoolbook below degree 64). */
+            if (past_ceiling && build_conv_len < UNCALIB_SCHOOLBOOK_MAX_CONV_LEN) {
+                /* Schoolbook, exactly as the calibrated path does when
+                 * schoolbook wins: leave the FFT fields unset and skip. */
+                tc->use_fft[ell] = 0;
+            } else if (past_ceiling) {
+                /* Uncalibrated path: always FFT, no cost comparison. */
+                tc->use_fft[ell] = 1;
+
+                /* Build FFT size: smallest smooth >= the FULL convolution length,
+                 * so the cyclic convolution equals the linear one exactly and
+                 * no wrap correction is needed (wrap_m = 0).
+                 *
+                 * The calibrated path is allowed to pick a size as small as
+                 * L/2+1 and pay a wrap correction, but only because it can
+                 * price that correction against the smaller transform. With no
+                 * cost data there is nothing to weigh, and choosing maximum
+                 * wrap unconditionally is both slower and, as measured, wrong. */
+                int bfn = next_smooth_ge(build_conv_len);
+                int bwm = 0;
                 tc->build_fft_n[ell] = bfn;
                 tc->build_wrap_m[ell] = bwm;
                 needed[n_needed++] = bfn;
 
-                /* Correlate FFT size (p_eff, out_needed already computed above) */
+                /* Correlate FFT size */
                 int g_eff_needed = out_needed + p_eff - 1;
                 int g_eff_max = is_below ? (cps + cps/2) : pgsz;
                 int g_eff = (g_eff_needed < g_eff_max) ? g_eff_needed : g_eff_max;
                 int corr_conv = g_eff + p_eff - 1;
 
                 if (!is_root) {
-                    /* Compare joint (cached) vs independent (uncached).
-                     * Joint: one FFT size, cache FFT(P) from build, reuse in correlates.
-                     * Independent: build and correlate each pick optimal sizes, no caching. */
-                    int jfn, jbm, jcm;
-                    double jcost = best_fft_config_joint(build_conv_len, corr_conv, p_eff,
-                                                          &jfn, &jbm, &jcm);
+                    /* Uncalibrated: no cost model to compare joint vs independent.
+                     * Always pick a single shared FFT size (joint): simpler, fewer
+                     * plans, and without cost data there is no reason to split. */
+                    int max_conv = (build_conv_len > corr_conv) ? build_conv_len : corr_conv;
+                    int jfn = next_smooth_ge(max_conv);   /* covers both, wrap-free */
+                    int jbm = 0, jcm = 0;
+                    tc->build_fft_n[ell] = jfn;
+                    tc->build_wrap_m[ell] = jbm;
+                    tc->corr_fft_n[ell] = jfn;
+                    tc->corr_wrap_m[ell] = jcm;
+                    needed[n_needed - 1] = jfn;  /* overwrite bfn */
+                } else {
+                    int cfn = next_smooth_ge(corr_conv);  /* wrap-free */
+                    int cwm = 0;
+                    tc->corr_fft_n[ell] = cfn;
+                    tc->corr_wrap_m[ell] = cwm;
+                    needed[n_needed++] = cfn;
+                }
+            } else {
+                /* ── Calibrated path ────────────────────────────── */
 
-                    int cfn, cwm;
-                    best_fft_config(corr_conv, &cfn, &cwm, p_eff);  /* correlate: input-wrap cost */
-                    /* Independent: build(bfn) + correlate_fft_pair(cfn).
-                     * Pair shares g FFT: 1 fwd(g) + 2 fwd(P_rev) + 2 pw + 2 ifft
-                     * ≈ 1.25× full pipeline. */
-                    int cfn_idx = 0;
-                    { int lo2=0, hi2=N_CALIBRATED_SIZES-1;
-                      while(lo2<hi2){int m2=(lo2+hi2)>>1;if(calib_sizes[m2]<cfn)lo2=m2+1;else hi2=m2;}
-                      cfn_idx = lo2; }
-                    /* Independent correlate cost: output-wrap + input-wrap (for correlate) */
-                    double corr_correction = (double)cwm * (cwm + 1) * WRAP_FMA_NS;
-                    double icost = fft_build + build_correction
-                        + INDEP_PAIR_RATIO * calib_times_ns[cfn_idx]
-                        + corr_correction;
+                int bfn, bwm;
+                best_fft_config(build_conv_len, &bfn, &bwm, 0);  /* polymul: no input-wrap */
+                int fft_idx;
+                { int lo=0,hi=N_CALIBRATED_SIZES-1;
+                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
+                  fft_idx = lo; }
+                double fft_build = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
+                                   ? calib_times_ns[fft_idx] : 1e18;
+                /* Per-call FFT overhead is already baked into
+                 * calib_times_ns[] (it times the full pipeline). */
+                double fft_overhead = 0.0;
+                double build_correction = (double)bwm * (bwm + 1) / 2.0 * WRAP_FMA_NS;
 
-                    if (jcost < icost) {
-                        tc->build_fft_n[ell] = jfn;
-                        tc->build_wrap_m[ell] = jbm;
-                        tc->corr_fft_n[ell] = jfn;
-                        tc->corr_wrap_m[ell] = jcm;
-                        needed[n_needed - 1] = jfn;
+                /* Build cost comparison: schoolbook vs FFT.
+                 * Uses build-phase cost only (not correlate), as this was empirically
+                 * validated to give correct B and FFT crossover decisions. */
+                int idx;
+                { int lo=0,hi=N_CALIBRATED_SIZES-1;
+                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cps)lo=m+1;else hi=m;}
+                  idx=lo; }
+                double school_build = schoolbook_mul_ns[idx];
+                /* school_build < 0 is the "unmeasured size" sentinel */
+                tc->use_fft[ell] = (school_build < 0.0) ||
+                                    (fft_build + fft_overhead + build_correction < school_build);
+
+                if (tc->use_fft[ell]) {
+                    tc->build_fft_n[ell] = bfn;
+                    tc->build_wrap_m[ell] = bwm;
+                    needed[n_needed++] = bfn;
+
+                    /* Correlate FFT size */
+                    int g_eff_needed = out_needed + p_eff - 1;
+                    int g_eff_max = is_below ? (cps + cps/2) : pgsz;
+                    int g_eff = (g_eff_needed < g_eff_max) ? g_eff_needed : g_eff_max;
+                    int corr_conv = g_eff + p_eff - 1;
+
+                    if (!is_root) {
+                        /* Compare joint (cached) vs independent (uncached). */
+                        int jfn, jbm, jcm;
+                        double jcost = best_fft_config_joint(build_conv_len, corr_conv, p_eff,
+                                                              &jfn, &jbm, &jcm);
+
+                        int cfn, cwm;
+                        best_fft_config(corr_conv, &cfn, &cwm, p_eff);
+                        int cfn_idx = 0;
+                        { int lo2=0, hi2=N_CALIBRATED_SIZES-1;
+                          while(lo2<hi2){int m2=(lo2+hi2)>>1;if(calib_sizes[m2]<cfn)lo2=m2+1;else hi2=m2;}
+                          cfn_idx = lo2; }
+                        /* cfn may be best_fft_config()'s wrap-free fallback
+                         * (a smooth size outside calib_sizes[] entirely,
+                         * when no candidate nearby had a trustworthy wrap) --
+                         * mirror the exact-match guard already used for
+                         * fft_build above rather than silently reading a
+                         * neighboring size's timing. */
+                        double corr_fft_ns = (cfn_idx < N_CALIBRATED_SIZES && calib_sizes[cfn_idx] == cfn)
+                                             ? calib_times_ns[cfn_idx] : 1e18;
+                        double corr_correction = (double)cwm * (cwm + 1) * WRAP_FMA_NS;
+                        double icost = fft_build + build_correction
+                            + INDEP_PAIR_RATIO * corr_fft_ns
+                            + corr_correction;
+
+                        if (jcost < icost) {
+                            tc->build_fft_n[ell] = jfn;
+                            tc->build_wrap_m[ell] = jbm;
+                            tc->corr_fft_n[ell] = jfn;
+                            tc->corr_wrap_m[ell] = jcm;
+                            needed[n_needed - 1] = jfn;
+                        } else {
+                            tc->corr_fft_n[ell] = cfn;
+                            tc->corr_wrap_m[ell] = cwm;
+                            needed[n_needed++] = cfn;
+                        }
                     } else {
+                        /* Root: no caching, optimize correlate independently */
+                        int cfn, cwm;
+                        best_fft_config(corr_conv, &cfn, &cwm, p_eff);
                         tc->corr_fft_n[ell] = cfn;
                         tc->corr_wrap_m[ell] = cwm;
                         needed[n_needed++] = cfn;
                     }
-                } else {
-                    /* Root: no caching (build skipped), optimize correlate independently */
-                    int cfn, cwm;
-                    best_fft_config(corr_conv, &cfn, &cwm, p_eff);  /* correlate: input-wrap cost */
-                    tc->corr_fft_n[ell] = cfn;
-                    tc->corr_wrap_m[ell] = cwm;
-                    needed[n_needed++] = cfn;
                 }
             }
         }
@@ -1346,7 +1601,7 @@ static TreeCtx *tree_ctx_clone(const TreeCtx *src) {
 
 /* ── Shared tree build + propagate (used by both tree and hybrid engines) ── */
 
-/* Build tree levels 1..L-2 (skip root — never read). Operates on tc->ws. */
+/* Build tree levels 1..L-2 (skip root: never read). Operates on tc->ws. */
 static void tree_build_levels(TreeCtx *tc) {
     int L = tc->L;
     int *psz = tc->psz;
@@ -1404,7 +1659,7 @@ static void tree_build_levels(TreeCtx *tc) {
  *
  * hot_mask: per-level hot/cold bitmaps, or NULL for full equity (all nodes hot).
  * When non-NULL, hot_mask[ell][j] == 1 iff node j at level ell is hot
- * (needs real computation — at least one target player in its subtree).
+ * (needs real computation: at least one target player in its subtree).
  * Cold nodes are zero-filled; their correlate calls are skipped entirely.
  * The hot_mask is built bottom-up from per-block target presence WITHOUT
  * reordering sort_perm, preserving the exact global stack-descending order
@@ -1468,7 +1723,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                     } else if (use_fft) {
                         correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
                                            gL, gR, out_needed, tc->fft,
-                                           tc->corr_fft_n[ell]);
+                                           tc->corr_fft_n[ell], tc->corr_wrap_m[ell]);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
@@ -1478,7 +1733,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
         } else {
             /* Subset-pruned path: per-child hot/cold lookups via bitmask.
              * A child at position c is hot iff hot_mask[ell-1][c] != 0.
-             * This works for scattered targets — any block with ≥1 target
+             * This works for scattered targets: any block with ≥1 target
              * in its NATURAL sorted position is hot, regardless of where
              * it sits in the tree. No reordering needed. */
             const uint8_t *hm_child = hot_mask[ell-1];
@@ -1501,7 +1756,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                         memset(gL, 0, (size_t)cgsz * sizeof(double));
                     }
                 } else if (left_hot && right_hot) {
-                    /* Both children hot — use pair correlate. */
+                    /* Both children hot: use pair correlate. */
                     double *PL = child_base + (size_t)(2*j) * cps;
                     double *PR = child_base + (size_t)(2*j+1) * cps;
                     double *gR = g_child + (size_t)(2*j+1) * cgsz;
@@ -1515,7 +1770,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                     } else if (use_fft) {
                         correlate_fft_pair(gp, g_eff, PL, PR, p_eff,
                                            gL, gR, out_needed, tc->fft,
-                                           tc->corr_fft_n[ell]);
+                                           tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
@@ -1531,7 +1786,7 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                                                   tc->fft, fft_R, cached_fft_n, cwm);
                     } else if (use_fft) {
                         correlate_fft(gp, g_eff, PR, p_eff, gL, out_needed,
-                                      tc->fft, tc->corr_fft_n[ell]);
+                                      tc->fft, tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PR, p_eff, gL, out_needed);
                     }
@@ -1546,12 +1801,12 @@ static double *tree_propagate_g(TreeCtx *tc, int k, const double *payout,
                                                   tc->fft, fft_L, cached_fft_n, cwm);
                     } else if (use_fft) {
                         correlate_fft(gp, g_eff, PL, p_eff, gR, out_needed,
-                                      tc->fft, tc->corr_fft_n[ell]);
+                                      tc->fft, tc->corr_fft_n[ell], cwm);
                     } else {
                         correlate_school(gp, g_eff, PL, p_eff, gR, out_needed);
                     }
                 } else {
-                    /* Both children cold — zero-fill both. */
+                    /* Both children cold: zero-fill both. */
                     double *gR = g_child + (size_t)(2*j+1) * cgsz;
                     memset(gL, 0, (size_t)cgsz * sizeof(double));
                     memset(gR, 0, (size_t)cgsz * sizeof(double));
@@ -1677,28 +1932,11 @@ typedef struct {
 #define L2_CACHE_SIZE 1048576  /* 1MB for Zen 4; 32MB for M3 Pro */
 #endif
 
-/* Bandwidth constants for roofline cost model (measured by calibrate).
- * Fallback defaults for uncalibrated devices. */
-#ifndef L2_BW_GBS
-#define L2_BW_GBS 200.0
-#endif
-#ifndef L3_BW_GBS
-#define L3_BW_GBS 80.0
-#endif
-#ifndef DRAM_BW_GBS
-#define DRAM_BW_GBS 45.0
-#endif
 #ifndef L3_CACHE_SIZE
 #define L3_CACHE_SIZE 33554432  /* 32MB */
 #endif
 
-/* ══════════════════════════════════════════════════════════════
-   ADAPTIVE BQ — compile-time parameterized batched linear engine.
-   Two versions (BQ=4 and BQ=8) compiled via template inclusion.
-   Runtime dispatch based on L2 working set: n*k*BQ*8 ≤ L2_CACHE_SIZE.
-   ══════════════════════════════════════════════════════════════ */
-
-/* BQ for non-batched paths (engine_linear_ctx, etc.) — always 2 */
+/* BQ for non-batched paths (engine_linear_ctx, etc.): always 2 */
 #ifndef BQ
 #define BQ 2
 #endif
@@ -1828,7 +2066,7 @@ static void engine_linear_ctx(int n, const double *a,
                 R[0] = aj * R[0];
                 inner[j] = eq;
             } else {
-                /* Suffix update only — skip dot product */
+                /* Suffix update only: skip dot product */
                 for (int m = k - 1; m >= 1; m--)
                     R[m] = aj * R[m] + bj * R[m-1];
                 R[0] = aj * R[0];
@@ -1838,9 +2076,7 @@ static void engine_linear_ctx(int n, const double *a,
 }
 
 /* ══════════════════════════════════════════════════════════════
-   BATCHED LINEAR ENGINE — adaptive BQ via template instantiation.
-   Two versions compiled: BQ=8 (3x throughput) and BQ=4 (2x throughput).
-   Runtime dispatch: BQ=8 when g_store fits in L2, BQ=4 otherwise.
+   BATCHED LINEAR ENGINE: BQ-parameterized via template instantiation.
    Inner q-loops auto-vectorize to full-width FMAs with -O3.
    ══════════════════════════════════════════════════════════════ */
 
@@ -2082,7 +2318,7 @@ static void engine_hybrid_ctx(int n, const double *a,
 }
 
 /* ══════════════════════════════════════════════════════════════
-   ENGINE KIND — for context cloning in parallel dispatch
+   ENGINE KIND: for context cloning in parallel dispatch
    ══════════════════════════════════════════════════════════════ */
 
 typedef enum { EK_TREE, EK_NAIVE, EK_LINEAR, EK_HYBRID } EngineKind;
@@ -2129,7 +2365,7 @@ static EngineKind detect_engine_kind(EquityEngine engine) {
     return EK_TREE; /* fallback */
 }
 
-/* Main integration wrapper — auto-detects engine kind for cloning */
+/* Main integration wrapper: auto-detects engine kind for cloning */
 static double run_engine_ctx(int n, const double *S, int Q,
                              const double *payout, int k,
                              double *equity, EquityEngine engine,
@@ -2144,82 +2380,35 @@ static double run_engine_ctx(int n, const double *S, int Q,
  * Dispatches to the best engine with active-player masks for skipping work. */
 static int select_best_B(int n, int k);
 
-/* Batch width of the linear engine used by icm_equity (run_linear_batched_bq8). */
-#define LINEAR_BQ 8
-
-/* Shared roofline cost model (blended_bw, linear_roofline_cost).
- * Requires L2_CACHE_SIZE, L3_CACHE_SIZE, L2_BW_GBS, L3_BW_GBS, DRAM_BW_GBS
- * to be defined above (from fft_config.h). */
-#include "cost_model.h"
-
-/* Engine dispatch: compare estimated linear vs hybrid cost for given (n, k).
+/* Engine dispatch: linear vs hybrid, for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.
  * n_targets: number of target players for subset queries (0 or n = all players).
- * When n_targets < n, the backward/leaf-extract phases scale with n_targets/n. */
+ *
+ * Uses the empirically-measured crossover table (src/cpu/fft_cost_model.h's
+ * empirical_crossover_k(), calibrated by tools/calibrate_crossover.c)
+ * rather than a summed analytical cost comparison. Closed-form cost models
+ * miss microarchitectural effects even when every constant is individually
+ * correct (a known result in the autotuning literature: FFTW MEASURE/PATIENT
+ * vs its ESTIMATE heuristic, ATLAS's AEOS). See LAPACK ILAENV NX for the
+ * structural precedent.
+ *
+ * The table was calibrated on full-equity queries only. It is reused here
+ * for subset queries too (n_targets < n) as an interim measure: the linear
+ * engine's forward pass and g-propagation are always full-cost regardless
+ * of n_targets, so real linear subset cost tracks full-equity cost far more
+ * closely than a target_frac-scaled model would suggest -- a dedicated
+ * (n, target_frac) -> crossover_k calibration would sharpen this further
+ * but is out of scope here. */
 static int select_engine_ex(int n, int k, int n_targets) {
+    (void)n_targets;
     if (n < 16 || k < 4) return 0;
-
-    /* target_frac: fraction of players needing equity extraction.
-     * Forward pass is always full-n; backward scales with target_frac. */
-    double target_frac = (n_targets > 0 && n_targets < n)
-                         ? (double)n_targets / (double)n : 1.0;
-
-    /* Linear cost: forward pass (full) + backward pass (scaled by target_frac).
-     * The roofline gives the combined fwd+bwd cost; approximate as 50/50 split. */
-    double linear_full = linear_roofline_cost(n, k, LINEAR_BQ);
-    double linear_per_qp = linear_full * (0.5 + 0.5 * target_frac);
 
     int B = select_best_B(n, k);
     { const char *fb = getenv("ICM_FORCE_B");
       if (fb && fb[0]) { int v = atoi(fb); if (v > 0 && v <= n && v <= k) B = v; } }
-    int nblocks = (n + B - 1) / B;
-    /* block_build: per-player FMA work + per-player memory streaming. */
-    double block_build = (double)n * ((double)(B+1) / 2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
-    TreeCtx *tc = tree_ctx_create_ex2(nblocks, B, k, B);
-    double tree = 0;
-    for (int ell = 1; ell < tc->L - 1; ell++) {
-        int cps = tc->psz[ell-1], nr = tc->n_real[ell];
-        if (tc->use_fft[ell]) {
-            int bfn = tc->build_fft_n[ell];
-            int bwm = tc->build_wrap_m[ell];
-            int idx = 0;
-            { int lo=0,hi=N_CALIBRATED_SIZES-1;
-              while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-              idx=lo; }
-            double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                             + (double)bwm*(bwm+1)/2.0*FMA_NS;
-            double corr;
-            if (tc->fft_cache_ok[ell]) {
-                corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                     + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
-            } else {
-                int cfn = tc->corr_fft_n[ell];
-                int cwm = tc->corr_wrap_m[ell];
-                int cidx=0;
-                {int lo=0,hi=N_CALIBRATED_SIZES-1;
-                 while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
-                 cidx=lo;}
-                corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                     + (double)cwm*(cwm+1)*FMA_NS;
-            }
-            tree += nr * (build_fft + corr);
-        } else {
-            int d_eff = tc->below_sat[ell] ? cps/2 : cps-1;
-            double s = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
-            double c = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
-            tree += nr * (s + c);
-        }
-    }
-    tree_ctx_destroy(tc);
 
-    /* leaf_extract: ECM max(division throughput, FMA chain) + per-block overhead.
-     * For subset queries, only target players need extraction. */
-    double le_div = FP64_DIV_NS, le_fma = 2.0 * B * LEAF_FMA_NS;
-    double leaf_extract = (double)n * (le_div > le_fma ? le_div : le_fma)
-                        + (double)n / B * LEAF_BLOCK_NS;
-    double hybrid_total = block_build + tree + leaf_extract * target_frac;
-
-    return (hybrid_total < linear_per_qp) ? B : 0;
+    double k_cross = empirical_crossover_k(n);
+    return ((double)k < k_cross) ? 0 : B;
 }
 
 /* Convenience wrapper for full-equity queries (all players). */
@@ -2230,7 +2419,7 @@ static int select_engine(int n, int k) {
 /* ── Hot/cold bitmap construction ──────────────────────────
  * Builds per-level hot/cold bitmaps from the ALREADY-SORTED active mask
  * (sorted_active is indexed by sort_perm, i.e. in stack-descending order).
- * NO reordering of sort_perm — the global stack-descending order from
+ * NO reordering of sort_perm: the global stack-descending order from
  * hybrid_ctx_create() is preserved exactly, which is essential for
  * numerical stability of the hybrid engine's per-block divide step.
  *
@@ -2297,13 +2486,13 @@ static double compute_equity_subset(int n, const double *S, int Q,
 
         /* Build sorted-order active mask from the UNMODIFIED sort_perm
          * (plain global stack-descending, identical to icm_equity order).
-         * NO reordering — this is the fix for the Zen4/AVX-512 stability bug. */
+         * NO reordering: this is the fix for the Zen4/AVX-512 stability bug. */
         uint8_t *sorted_active = (uint8_t *)calloc(n, sizeof(uint8_t));
         for (int i = 0; i < n; i++) sorted_active[i] = active[hc->sort_perm[i]];
         hc->active = sorted_active;
 
         /* Build per-level hot/cold bitmaps for tree-level pruning.
-         * Hot blocks are identified in their NATURAL sorted positions —
+         * Hot blocks are identified in their NATURAL sorted positions:
          * any block containing ≥1 target is hot regardless of where it
          * sits in the tree. No contiguous clustering needed. */
         hybrid_ctx_build_hot_mask(hc, sorted_active);
@@ -2420,7 +2609,7 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
     free(t_exp);
 #endif
 
-#else  /* No OpenMP — serial fallback */
+#else  /* No OpenMP: serial fallback */
     double *a_buf = (double *)malloc((size_t)BQ * n * sizeof(double));
     double *inner_buf = (double *)malloc((size_t)BQ * n * sizeof(double));
 
@@ -2512,66 +2701,36 @@ static double run_engine_ctx_ex(int n, const double *S, int Q,
  * planning decisions (schoolbook vs FFT, joint vs independent, FFT sizes).
  * O(log n) per candidate, negligible vs engine work. */
 static int select_best_B(int n, int k) {
+    /* Empirically-measured 2D nearest-neighbor lookup
+     * (tools/calibrate_best_b.c). See src/cpu/fft_cost_model.h's
+     * empirical_best_B(): B is a discrete choice, not a continuous
+     * threshold, so nearest-neighbor, not interpolation.
+     *
+     * B need NOT be <= k: tree_ctx_create_ex2() already caps each level's
+     * working polynomial size at min(B * 2^level, k), so a block size
+     * larger than k is structurally fine, not a correctness hazard. A
+     * `B > k` filter here used to silently discard the table's answer
+     * whenever k was small (every candidate above 8 exceeds any k < 16),
+     * forcing B=8 regardless of what was actually fastest -- found via
+     * tools/sweep_best_b.sh, VERDICTS.md V16, 37-44% slower than the
+     * measured optimum at k=10 across every n tested. Removed.
+     *
+     * B > n is a different case: the calibration grid starts at n=512,
+     * so for small n outside that practical range the nearest-neighbor
+     * lookup can still return a B that doesn't fit (e.g. B=32 for n=20) --
+     * fall back to the largest valid candidate at or below n in that
+     * case, never invalid. */
     int candidates[] = {8, 16, 24, 32, 48, 64};
     int n_cand = 6;
-    double best_cost = 1e18;
-    int best_B = 16;
+    int emp_B = empirical_best_B(n, k);
+    int largest_valid = -1;
     for (int ci = 0; ci < n_cand; ci++) {
         int B = candidates[ci];
-        if (B > k || B > n) continue;
-        int n_leaves = (n + B - 1) / B;
-        TreeCtx *tc = tree_ctx_create_ex2(n_leaves, B, k, B);
-        int L = tc->L;
-        /* block_build: per-player FMA work + per-player memory streaming.
-         * leaf_extract: ECM max(division throughput, FMA chain) + per-block overhead. */
-        double block_build = (double)n * ((double)(B+1) / 2.0 * BLOCK_FMA_NS + BLOCK_MEM_NS);
-        double leaf_div = FP64_DIV_NS;
-        double leaf_fma = 2.0 * B * LEAF_FMA_NS;
-        double leaf = (double)n * (leaf_div > leaf_fma ? leaf_div : leaf_fma)
-                    + (double)n / B * LEAF_BLOCK_NS;
-        double tree = 0;
-        for (int ell = 1; ell < L - 1; ell++) {
-            int cps = tc->psz[ell-1];
-            int nr = tc->n_real[ell];
-            if (tc->use_fft[ell]) {
-                int bfn = tc->build_fft_n[ell];
-                int bwm = tc->build_wrap_m[ell];
-                int idx = 0;
-                { int lo=0,hi=N_CALIBRATED_SIZES-1;
-                  while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<bfn)lo=m+1;else hi=m;}
-                  idx=lo; }
-                double build_fft = calib_times_ns[idx] + FFT_OVERHEAD_NS
-                                 + (double)bwm*(bwm+1)/2.0*FMA_NS;
-                double corr;
-                if (tc->fft_cache_ok[ell]) {
-                    corr = calib_times_ns[idx] * PAIRED_CACHED_CORR_RATIO
-                         + (double)tc->corr_wrap_m[ell]*(tc->corr_wrap_m[ell]+1)*FMA_NS;
-                } else {
-                    int cfn = tc->corr_fft_n[ell];
-                    int cwm = tc->corr_wrap_m[ell];
-                    int cidx=0;
-                    {int lo=0,hi=N_CALIBRATED_SIZES-1;
-                     while(lo<hi){int m=(lo+hi)>>1;if(calib_sizes[m]<cfn)lo=m+1;else hi=m;}
-                     cidx=lo;}
-                    corr = INDEP_PAIR_RATIO * calib_times_ns[cidx]
-                         + (double)cwm*(cwm+1)*FMA_NS;
-                }
-                tree += nr * (build_fft + corr);
-            } else {
-                int is_below = tc->below_sat[ell];
-                int d_eff = is_below ? cps/2 : cps-1;
-                double school_mul, school_corr;
-                    school_mul = (double)(d_eff+1)*(d_eff+1)*FMA_NS;
-                /* Correlate uses scalar (inner loop is memory-bound at FMA_NS) */
-                school_corr = (double)cps * tc->g_needed[ell-1] * FMA_NS * 2;
-                tree += nr * (school_mul + school_corr);
-            }
-        }
-        tree_ctx_destroy(tc);
-        double total = block_build + leaf + tree;
-        if (total < best_cost) { best_cost = total; best_B = B; }
+        if (B > n) continue;
+        if (B == emp_B) return B;
+        if (B > largest_valid) largest_valid = B;
     }
-    return best_B;
+    return (largest_valid > 0) ? largest_valid : 8;
 }
 
 /* ==============================================================

@@ -1,5 +1,5 @@
 /*
- * icm.h — ICM (Independent Chip Model) equity computation library
+ * icm.h: ICM (Independent Chip Model) equity computation library
  *
  * Computes tournament placement equities using generating-function quadrature.
  * Three engines with automatic dispatch: linear (small k), hybrid (large k),
@@ -83,9 +83,6 @@ int icm_select_engine(int n, int k);
 int icm_select_best_B(int n, int k);
 
 /* ── Diagnostic / profiling ──────────────────────────────────── */
-
-/* Measure per-call FFT overhead (prints to stdout). */
-void icm_measure_fft_overhead(void);
 
 /* Closed-form references for verification */
 void icm_v1_exact(int n, const double *S, double *V1);

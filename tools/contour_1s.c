@@ -1,5 +1,5 @@
 /*
- * contour_1s.c — Performance heatmap, contour, and frontier for (n, k) space.
+ * contour_1s.c; Performance heatmap, contour, and frontier for (n, k) space.
  *
  * Modes:
  *   ./contour_1s              # 2D heatmap: sweep grid, output time/engine CSV
@@ -14,7 +14,7 @@
  * Outputs CSV to stdout. Progress to stderr.
  *
  * Build: make contour_1s (serial) or make contour_1s_par (parallel)
- * Links against libicm.a — does not #include icm.c.
+ * Links against libicm.a; does not #include icm.c.
  */
 
 #include "icm.h"
@@ -41,7 +41,7 @@ static double wall_time_sec(void) {
 
 /* Run icm_equity in a forked child with a hard wall-clock timeout.
  * Returns elapsed seconds, or -1.0 if killed by timeout.
- * The fork isolates FFTW state — no corruption on kill. */
+ * The fork isolates FFTW state; no corruption on kill. */
 static double fork_timed_equity(int n, const double *S, int Q, double *payout,
                                 int k, double *equity, double timeout_sec) {
     int pipefd[2];
@@ -75,7 +75,7 @@ static double fork_timed_equity(int n, const double *S, int Q, double *payout,
             break;
         }
         if (wall_time_sec() - t0 > timeout_sec) {
-            /* Timeout — kill child */
+            /* Timeout; kill child */
             kill(pid, SIGKILL);
             waitpid(pid, NULL, 0);
             elapsed = -1.0;
@@ -164,7 +164,7 @@ static double measure_time(int n, const double *S, int k, double *payout,
                            double *equity, int reps) {
     int Q = 256;
 
-    /* Warm-up — use fork timeout if enabled */
+    /* Warm-up; use fork timeout if enabled */
     double warmup;
     if (g_use_fork_timeout) {
         warmup = fork_timed_equity(n, S, Q, payout, k, equity, g_call_timeout);
@@ -258,7 +258,7 @@ static void run_heatmap(int measure_mem) {
             done++;
 
             if (skipping) {
-                fprintf(stderr, "  [%d/%d] n=%d k=%d — skipped (exceeded cutoff)\n",
+                fprintf(stderr, "  [%d/%d] n=%d k=%d; skipped (exceeded cutoff)\n",
                         done, total, n, k);
                 continue;
             }

@@ -10,11 +10,23 @@ extern "C" {
 typedef struct IcmGpuPlan IcmGpuPlan;
 
 typedef struct {
-    int device_id;              /* CUDA device index (default: 0) */
+    int device_id;              /* INFORMATIONAL ONLY, set by the library.
+                                  * icm_gpu_plan_create overwrites whatever
+                                  * the caller puts here with the device
+                                  * chosen by icm_gpu_init, and nothing reads
+                                  * it afterwards.  To select a device, call
+                                  * icm_gpu_init(device_id) once, before any
+                                  * other call. */
     int use_cufftdx;            /* Enable Tier-2 fused kernels when available */
     int enable_graphs;          /* Enable CUDA Graph execution */
     int enable_q_pipeline;      /* Enable q+1 build overlap with q propagate */
-    int memory_strategy;        /* 0=auto, 1=full, 2=pool, 3=selective recompute */
+    int memory_strategy;        /* 0=auto (default; pooled via cudaMallocAsync),
+                                  * 1=full (opts OUT of the memory pool, raw
+                                  * cudaMalloc instead), 2=pool (explicit,
+                                  * same pooled behavior as 0), 3=selective
+                                  * recompute (also pooled; additionally
+                                  * skips caching FFT results at some
+                                  * levels, recomputing them instead) */
     int force_uncached_fused_levels; /* -1 auto, else exact M for fused levels */
     int force_uncached_cufft_levels; /* -1 auto, else exact T for cuFFT levels */
     int fast_mode;              /* Fast mode may reduce Q in tools */
@@ -46,7 +58,6 @@ typedef struct {
     int n_tier1;
     int n_tier2;
     int n_tier3;
-    int n_vkfft;                /* Tier-3 levels using VkFFT instead of cuFFT */
     int q_batch;                /* Q-points processed per tree traversal */
     size_t planned_peak_vram_bytes;
 } IcmGpuPlanSummary;
@@ -55,6 +66,12 @@ typedef struct {
 int icm_gpu_init(int device_id);
 void icm_gpu_shutdown(void);
 const char *icm_gpu_last_error(void);
+
+/* Release all memory held by the CUDA stream-ordered memory pool back to
+ * the driver.  Safe to call at any time; subsequent allocations will
+ * re-populate the pool as needed.  Returns 0 on success, non-zero if no
+ * pool exists or the trim operation fails. */
+int icm_gpu_release_pooled_memory(void);
 
 /* Plan lifecycle */
 IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptions *opts);
@@ -69,7 +86,7 @@ int icm_gpu_plan_summary(const IcmGpuPlan *plan, IcmGpuPlanSummary *summary);
  *
  * Timing is available through the optional IcmGpuRunStats *stats out-
  * parameter: if non-NULL, stats->total_ns carries the wall-clock time in
- * nanoseconds.  (Pass NULL to suppress timing — you still get 0/-1 return
+ * nanoseconds.  (Pass NULL to suppress timing; you still get 0/-1 return
  * status.)
  */
 int icm_gpu_equity_with_plan(IcmGpuPlan *plan, int Q,
@@ -92,7 +109,6 @@ int icm_gpu_equity_subset(int n, const double *S, int Q,
                           IcmGpuRunStats *stats);
 
 /* Calibration + diagnostics helpers */
-int icm_gpu_write_config_header(const char *output_path);
 int icm_gpu_measure_hbm_bandwidth_gbps(double *gbps_out);
 int icm_gpu_measure_fused_pair_ns(int fft_n, int batch, int quick,
                                   double *build_ns_out, double *corr_ns_out);

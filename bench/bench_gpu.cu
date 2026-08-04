@@ -100,25 +100,24 @@ static int run_verify(int extended) {
             std::vector<double> S;
             make_stacks(n, dists[di], S);
 
-            int ks_basic[] = {std::min(100, n), n};
-            int ks_ext[] = {
-                std::min(16, n),
-                std::min(100, n),
-                std::min(512, n),
-                std::max(1, n / 2),
-                n
-            };
+            std::vector<int> ks;
             if (extended) {
                 const char *lite_env = getenv("ICM_GPU_VERIFY_EXT_LITE");
                 if (lite_env && lite_env[0] && atoi(lite_env) != 0) {
-                    ks_ext[0] = std::min(100, n);
-                    ks_ext[1] = std::max(1, n / 2);
-                    ks_ext[2] = n;
+                    ks = {std::min(100, n), std::max(1, n / 2), n};
+                } else {
+                    ks = {std::min(16, n), std::min(100, n), std::min(512, n),
+                          std::max(1, n / 2), n};
                 }
+            } else {
+                ks = {std::min(100, n), n};
             }
-            const int *ks = extended ? ks_ext : ks_basic;
-            int n_k = extended ? ((getenv("ICM_GPU_VERIFY_EXT_LITE") && atoi(getenv("ICM_GPU_VERIFY_EXT_LITE")) != 0) ? 3 : 5) : 2;
-            for (int ki = 0; ki < n_k; ++ki) {
+            /* k ~ 1024-2048 at n >= 65536 is the band where the fused
+             * power-of-2 feasibility bug lives (VERDICTS.md V20a/V20b), and
+             * the rest of the k grid steps straight over it.  Keep the band
+             * under the CPU-referenced comparison permanently. */
+            if (n >= 65536) { ks.push_back(1024); ks.push_back(2048); }
+            for (size_t ki = 0; ki < ks.size(); ++ki) {
                 int k = ks[ki];
                 std::vector<double> payout;
                 make_payout(n, k, payout);
@@ -129,7 +128,6 @@ static int run_verify(int extended) {
                 double t_cpu_ns = now_ns() - t_cpu0;
 
                 IcmGpuOptions opts{};
-                opts.device_id = 0;
                 opts.use_cufftdx = 1;
                 opts.enable_graphs = 0;
                 opts.enable_q_pipeline = 1;
@@ -212,7 +210,6 @@ static int run_single_bench(int argc, char **argv) {
     std::vector<double> equity(n, 0.0);
 
     IcmGpuOptions opts{};
-    opts.device_id = 0;
     opts.use_cufftdx = 1;
     opts.enable_graphs = 0;
     opts.enable_q_pipeline = 1;
@@ -261,7 +258,6 @@ static int run_quick_grid() {
             make_payout(n, k, payout);
             std::vector<double> eq(n, 0.0);
             IcmGpuOptions opts{};
-            opts.device_id = 0;
             opts.use_cufftdx = 1;
             opts.enable_graphs = 0;
             opts.enable_q_pipeline = 1;

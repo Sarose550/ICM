@@ -1,0 +1,12 @@
+OpenMP enabled: 1 threads
+=== LINEAR vs HYBRID CROSSOVER SWEEP (ms, Q=256) ===
+
+n\k     k=40     k=80     k=120    k=160    k=200    k=240    k=260    k=270    k=280    k=290    k=300    k=310    k=320    k=340    k=400    k=500    k=750    k=1000   k=1500   k=2000 
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+512     L10      H10      H9       H8       H8       H8       H8       H8       H8       H9       H9       H9       H9       H12      H10      H11      H11      H11      H11      H11    
+1024    L6       L12      H15      H15      H17      H19      H18      H18      H18      H19      H20      H20      H21      H24      H24      H20      H23      H27      H27      H27    
+2048    L13      L23      H31      H30      H36      H38      H37      H37      H37      H40      H40      H40      H40      H44      H46      H43      H53      H50      H59      H55    
+4096    L25      L46      H63      H62      H71      H82      H76      H77      H76      H81      H81      H82      H81      H92      H94      H90      H104     H106     H131     H142   
+8192    L50      L92      H126     H127     H149     H158     H156     H156     H156     H167     H167     H167     H167     H189     H200     H185     H222     H220     H277     H290   
+
+L=linear wins, H=hybrid wins. Crossover: where L→H transition occurs.

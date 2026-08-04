@@ -1,4 +1,4 @@
-/* profile_harness.c — Long-running harness for sampling profiler.
+/* profile_harness.c; Long-running harness for sampling profiler.
  * Runs icm_equity in a tight loop for target wall-clock seconds.
  *
  * Usage: ./tools/profile_harness <n> <k> <B> <Q> <target_seconds>
@@ -6,7 +6,7 @@
  *   Prints PID then runs. Attach: /usr/bin/sample <pid> <duration> -f /tmp/profile.txt
  *
  * Build:
- *   gcc -O3 -march=native -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
+ *   gcc -O3 -march=native -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
  *       -o tools/profile_harness tools/profile_harness.c \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  */

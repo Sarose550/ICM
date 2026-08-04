@@ -1,4 +1,4 @@
-/* sample_plans.c — Sample 200 plans and measure avg-over-256 Q-point runtime.
+/* sample_plans.c; Sample 200 plans and measure avg-over-256 Q-point runtime.
  *
  * For each (n, k, B) triple, creates a plan (tree geometry), runs icm_equity
  * with Q=256, and reports the total time plus the plan details needed for
@@ -9,10 +9,10 @@
  *
  * Build (DEVICE = target device dir under devices/, e.g. zen4 or m3_pro):
  *   # macOS
- *   gcc -O3 -march=native -Isrc -Idevices/<DEVICE> -I/opt/homebrew/include \
+ *   gcc -O3 -march=native -Isrc/cpu -Idevices/<DEVICE> -I/opt/homebrew/include \
  *       -o sample_plans tools/sample_plans.c -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  *   # Linux
- *   gcc -O3 -march=native -Isrc -Idevices/<DEVICE> \
+ *   gcc -O3 -march=native -Isrc/cpu -Idevices/<DEVICE> \
  *       -o sample_plans tools/sample_plans.c -lfftw3 -lm -ldl -lmvec
  */
 #include "icm.c"
@@ -34,7 +34,7 @@ static void emit_plan(int n, int k, int B) {
     if (!tc) { fprintf(stderr, "tree_ctx failed n=%d B=%d\n", n, B); goto cleanup; }
 
     /* Run the hybrid engine directly at the requested B (3 reps, median).
-     * NOT via icm_equity()/select_engine() — dispatch is cost-model-driven
+     * NOT via icm_equity()/select_engine(); dispatch is cost-model-driven
      * and may pick linear instead, which would silently corrupt the sample
      * (this is a calibration tool: it must measure hybrid at *this* B). */
     int Q = 256;
@@ -100,7 +100,7 @@ int main(void) {
 
     /* Header */
     printf("n,k,B,L,total_ms,per_qp_ns");
-    /* Variable number of level columns — reader must parse by L */
+    /* Variable number of level columns; reader must parse by L */
     printf(",levels...\n");
 
     int count = 0;

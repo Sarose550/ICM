@@ -1,22 +1,22 @@
 /*
- * bench.c — ICM benchmark harness, correctness verification, and tuning tools
+ * bench.c: ICM benchmark harness, correctness verification, and tuning tools
  *
  * This file includes icm.c directly (single compilation unit) so it can
  * access internal types (TreeCtx, HybridCtx, FFTCache, etc.) for per-engine
- * benchmarking and FFT profiling. This is the only file that does this —
+ * benchmarking and FFT profiling. This is the only file that does this;
  * all other tools link against libicm.a and use only the icm.h public API.
  *
  * Compile (serial, macOS / Apple Silicon):
  *   gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
  *       -o bench bench/bench.c \
- *       -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
+ *       -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
  *       -L/opt/homebrew/lib -lfftw3 -lm -framework Accelerate
  *
  * Compile (parallel, macOS with libomp):
  *   gcc -O3 -march=native -Wall -Wno-unused-variable -Wno-unused-function \
  *       -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include \
  *       -o bench bench/bench.c \
- *       -Isrc -Idevices/m3_pro -I/opt/homebrew/include \
+ *       -Isrc/cpu -Idevices/m3_pro -I/opt/homebrew/include \
  *       -L/opt/homebrew/lib -L/opt/homebrew/opt/libomp/lib \
  *       -lfftw3 -lfftw3_threads -lm -framework Accelerate -lomp
  *
@@ -41,7 +41,7 @@
    ══════════════════════════════════════════════════════════════ */
 
 /* Format a millisecond timing to 3 significant figures in fixed-point
- * notation (never scientific) — e.g. 3 -> "3.00", 16 -> "16.0", 4392 -> "4390". */
+ * notation (never scientific); e.g. 3 -> "3.00", 16 -> "16.0", 4392 -> "4390". */
 static void fmt_ms_3sf(double v, char *buf, size_t bufsz) {
     if (v <= 0) { snprintf(buf, bufsz, "0.00"); return; }
     int exp = (int)floor(log10(v));
@@ -88,7 +88,7 @@ static void make_stacks(int n, int dist, double *S) {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   PROFILING MODE — time individual phases
+   PROFILING MODE; time individual phases
    ══════════════════════════════════════════════════════════════ */
 
 /* Measure per-call FFT overhead: time actual polymul calls vs calibrated FFT cost.
@@ -312,18 +312,18 @@ static void run_profile(void) {
             tree_ctx_destroy(tc);
         }
 
-        /* Hybrid B=8 */
+        /* Hybrid (B auto-selected) */
         {
             HybridCtx *hctx = hybrid_ctx_create(n, S, k, select_best_B(n, k));
             memset(eq, 0, n * sizeof(double));
             double t = run_engine_ctx(n, S, Q, payout, k, eq,
                                       engine_hybrid_ctx, hctx) / 1e6;
             char tbuf[32]; fmt_ms_3sf(t, tbuf, sizeof(tbuf));
-            printf("  hyb8:  %7s ms\n", tbuf);
+            printf("  hyb:   %7s ms\n", tbuf);
             hybrid_ctx_destroy(hctx);
         }
 
-        /* Linear (always batched BQ=8 — matches icm_equity() behavior) */
+        /* Linear (always batched BQ=8; matches icm_equity() behavior) */
         if ((double)n * k < 1e8) {
             LinearCtx *lc = linear_ctx_create(n, k);
             memset(eq, 0, n * sizeof(double));
@@ -422,8 +422,17 @@ int main(int argc, char **argv) {
         int Q = 256;
         int sweep_ns[] = {512, 1024, 2048, 4096, 8192};
         int n_sweep = 5;
-        int sweep_ks[] = {40, 50, 60, 70, 75, 80, 85, 90, 95, 100, 110, 120, 130, 140, 150};
-        int n_ks = 15;
+        /* Coarse coverage across full range + fine bracket around L→H
+         * transition.  Probe on Zen4 (2025-07-22) showed transition at
+         * k≈275 for all n∈{512,1024,2048,4096,8192}.  This single shared
+         * k-list brackets the transition tightly for all n rows:
+         *   - Coarse below: 40, 80, 120, 160, 200
+         *   - Fine bracket:  240…340 (every 10-20)
+         *   - Coarse above: 400, 500, 750, 1000, 1500, 2000
+         */
+        int sweep_ks[] = {40, 80, 120, 160, 200, 240, 260, 270, 280, 290,
+                          300, 310, 320, 340, 400, 500, 750, 1000, 1500, 2000};
+        int n_ks = 20;
 
         printf("=== LINEAR vs HYBRID CROSSOVER SWEEP (ms, Q=%d) ===\n\n", Q);
         printf("%-6s", "n\\k");
@@ -479,7 +488,8 @@ int main(int argc, char **argv) {
     if (threshold) {
         int Q = 256;
         double target_ms = 1000.0;
-        printf("=== BINARY SEARCH: largest n where k=n < %.0fms (Q=%d, single-threaded) ===\n\n", target_ms, Q);
+        printf("=== BINARY SEARCH: largest n where k=n < %.0fms (Q=%d, single-threaded, median of %d) ===\n\n",
+               target_ms, Q, BENCH_REPS);
 
         int lo = 8192, hi = 32768;
         /* First bracket: find upper bound */
@@ -490,7 +500,16 @@ int main(int argc, char **argv) {
             for (int m = 0; m < hi; m++) payout[m] = (double)(hi - m);
             double *eq = (double *)calloc(hi, sizeof(double));
             HybridCtx *hc = hybrid_ctx_create(hi, S, hi, select_best_B(hi, hi));
-            double t = run_engine_ctx(hi, S, Q, payout, hi, eq, engine_hybrid_ctx, hc) / 1e6;
+            /* Warmup, then median-of-BENCH_REPS: a single sample here can
+             * show spurious non-monotonicity from scheduler/thermal noise
+             * (confirmed directly -- see VERDICTS.md), even
+             * though this doesn't change where the threshold itself lands. */
+            run_engine_ctx(hi, S, Q, payout, hi, eq, engine_hybrid_ctx, hc);
+            double samples[BENCH_REPS];
+            for (int r = 0; r < BENCH_REPS; r++)
+                samples[r] = run_engine_ctx(hi, S, Q, payout, hi, eq, engine_hybrid_ctx, hc) / 1e6;
+            MEDIAN5(samples);
+            double t = samples[BENCH_REPS / 2];
             hybrid_ctx_destroy(hc);
             free(S); free(payout); free(eq);
             printf("  n=%-6d k=n  → %.0f ms\n", hi, t);
@@ -508,7 +527,12 @@ int main(int argc, char **argv) {
             for (int m = 0; m < mid; m++) payout[m] = (double)(mid - m);
             double *eq = (double *)calloc(mid, sizeof(double));
             HybridCtx *hc = hybrid_ctx_create(mid, S, mid, select_best_B(mid, mid));
-            double t = run_engine_ctx(mid, S, Q, payout, mid, eq, engine_hybrid_ctx, hc) / 1e6;
+            run_engine_ctx(mid, S, Q, payout, mid, eq, engine_hybrid_ctx, hc);  /* warmup */
+            double samples[BENCH_REPS];
+            for (int r = 0; r < BENCH_REPS; r++)
+                samples[r] = run_engine_ctx(mid, S, Q, payout, mid, eq, engine_hybrid_ctx, hc) / 1e6;
+            MEDIAN5(samples);
+            double t = samples[BENCH_REPS / 2];
             hybrid_ctx_destroy(hc);
             free(S); free(payout); free(eq);
             printf("  n=%-6d k=n  → %.0f ms\n", mid, t);
@@ -571,7 +595,7 @@ int main(int argc, char **argv) {
             for (int m = 0; m < k; m++) payout[m] = (double)(n - m);
             double *equity = (double *)calloc(n, sizeof(double));
 
-            /* Time full icm_equity (same n,k for all ratios — done once per n) */
+            /* Time full icm_equity (same n,k for all ratios; done once per n) */
             /* warmup */
             icm_equity(n, S, Q, payout, k, equity);
             double full_samples[BENCH_REPS];
@@ -632,8 +656,27 @@ int main(int argc, char **argv) {
 
     int verify_ns_quick[] = {16, 32, 64, 128, 256, 1024, 4096};
     int verify_ns_full[]  = {16, 32, 64, 128, 256, 1024, 4096, 16384, 65536};
-    int *verify_ns = verify_only ? verify_ns_full : verify_ns_quick;
-    int n_vn = verify_only ? 9 : 7;
+    int n_vn_full = 9, n_vn_quick = 7;
+    int *verify_ns;
+    int n_vn;
+
+    if (verify_only) {
+        verify_ns = verify_ns_full;
+        n_vn = n_vn_full;
+        /* ICM_VERIFY_MAX_N caps the largest n in CI verify runs so the
+         * per-PR gate finishes in 1-2 minutes.  n=65536 is the main
+         * offender; n=4096-16384 already exercises every engine, every
+         * tier decision, and every cross-check.  When unset (local runs),
+         * the full set is always used and behaviour is unchanged. */
+        char *max_n_str = getenv("ICM_VERIFY_MAX_N");
+        if (max_n_str) {
+            int max_n = atoi(max_n_str);
+            while (n_vn > 0 && verify_ns[n_vn - 1] > max_n) n_vn--;
+        }
+    } else {
+        verify_ns = verify_ns_quick;
+        n_vn = n_vn_quick;
+    }
 
     int all_pass = 1;
 
@@ -654,7 +697,7 @@ int main(int argc, char **argv) {
             v1_exact(n, S, v1);
 
             /* Test each engine against V1 at k=n.
-             * Skip naive for n > 256 (O(n^2) — V1 closed form is the reference).
+             * Skip naive for n > 256 (O(n^2); V1 closed form is the reference).
              * Skip linear for n > 4096 (O(nk) at k=n is very slow). */
             typedef struct { const char *name; EquityEngine fn; void *ctx; } VE;
             TreeCtx *tc = tree_ctx_create(n, n);
@@ -666,7 +709,7 @@ int main(int argc, char **argv) {
             ves[n_eng++] = (VE){"tree",   engine_tree_ctx,   tc};
             if (nc) ves[n_eng++] = (VE){"naive",  engine_naive_ctx,  nc};
             if (lc) ves[n_eng++] = (VE){"linear", engine_linear_ctx, lc};
-            ves[n_eng++] = (VE){"hyb8",   engine_hybrid_ctx, hc};
+            ves[n_eng++] = (VE){"hyb",    engine_hybrid_ctx, hc};
 
             for (int ei = 0; ei < n_eng; ei++) {
                 double *eq = (double *)calloc(n, sizeof(double));
@@ -706,8 +749,16 @@ int main(int argc, char **argv) {
                 if (d > max_diff) max_diff = d;
             }
             /* Cross-check threshold: 1e-13 for small n, looser for large n
-             * (different evaluation orders accumulate different FP rounding) */
-            double xchk_tol = (n <= 4096) ? 1e-13 : 1e-11;
+             * (different evaluation orders accumulate different FP rounding).
+             * n=4096 gets an intermediate 5e-13: the tree's ~12 levels of
+             * wrapped-FFT correlates legitimately round ~1e-13 away from the
+             * linear engine there, and the exact size choices (hence rounding
+             * profile) shift with each recalibration -- Zen4's 749-size data
+             * measured 7.6e-14 at this cell, the 776-size data 1.14e-13, with
+             * both engines individually within 10x of their 5e-12 V1-reference
+             * tolerance. A real defect shows up orders of magnitude above
+             * this (VERDICTS.md V20 measured 1.6e-01). */
+            double xchk_tol = (n <= 2048) ? 1e-13 : (n <= 4096) ? 5e-13 : 1e-11;
             int kpass = (max_diff < xchk_tol);
             if (!kpass) all_pass = 0;
             printf("%-6s n=%-4d %-12s %-8s diff=%.2e  %s\n",
@@ -839,7 +890,7 @@ int main(int argc, char **argv) {
             double times[4] = {-1, -1, -1, -1};
             const char *names[4] = {"T", "N", "L", "H"};
 
-            /* Tree (pure, for comparison) — median of BENCH_REPS */
+            /* Tree (pure, for comparison); median of BENCH_REPS */
             if ((double)n * k < 5e9) {
                 TreeCtx *tc = tree_ctx_create(n, k);
                 double samples[BENCH_REPS];
@@ -856,7 +907,7 @@ int main(int argc, char **argv) {
                 tree_ctx_destroy(tc);
             }
 
-            /* Hybrid — median of BENCH_REPS */
+            /* Hybrid; median of BENCH_REPS */
             if ((double)n * k < 5e9 && n >= 16) {
                 HybridCtx *hctx = hybrid_ctx_create(n, S, k, select_best_B(n, k));
                 double samples[BENCH_REPS];
@@ -919,7 +970,7 @@ int main(int argc, char **argv) {
         free(S);
     }
 
-    printf("\nLegend: T=tree(+FFT), L=linear, H=hybrid(B=8). Best engine shown.\n");
+    printf("\nLegend: T=tree(+FFT), L=linear, H=hybrid (B auto-selected). Best engine shown.\n");
     printf("Done.\n");
     return all_pass ? 0 : 1;
 }

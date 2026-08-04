@@ -91,6 +91,16 @@ const char *icm_gpu_last_error(void) {
     return g_last_error.c_str();
 }
 
+int icm_gpu_release_pooled_memory(void) {
+    if (g_cuda_device < 0) return -1;
+    if (!CUDA_OK(cudaSetDevice(g_cuda_device))) return -1;
+    cudaMemPool_t pool = nullptr;
+    if (!CUDA_OK(cudaDeviceGetDefaultMemPool(&pool, g_cuda_device))) return -1;
+    /* Trim to 0: release all pooled memory back to the driver immediately. */
+    if (!CUDA_OK(cudaMemPoolTrimTo(pool, 0))) return -1;
+    return 0;
+}
+
 IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptions *opts) {
     if (g_cuda_device < 0) {
         set_last_errorf("icm_gpu_init must be called before icm_gpu_plan_create");
@@ -134,7 +144,7 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         }
 
         /* Per-Q-point VRAM: poly+g arrays, block prods, a_sorted,
-         * PLUS spec buffers, FFT cache, and scratch — all scale with qb. */
+         * PLUS spec buffers, FFT cache, and scratch, all scale with qb. */
         size_t per_q_bytes = 0;
         size_t max_cb_cn = 0, max_pb_cn = 0, max_cb_fft = 0, cache_per_q = 0;
         for (int ell = 0; ell < plan->L; ++ell)
@@ -159,13 +169,21 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         /* qb>1 extras: a_qbatch[qi], inner_qbatch, block_prods_qbatch.
          * These are allocated per q-point when qb > 1.  Added unconditionally
          * to per_q_bytes (slightly conservative when final qb==1, which is
-         * acceptable — the overestimate only matters at the qb=1→2 boundary). */
+         * acceptable; the overestimate only matters at the qb=1→2 boundary). */
         per_q_bytes += (size_t)plan->n * sizeof(double);          /* a_qbatch slot */
         per_q_bytes += (size_t)plan->n * sizeof(double);          /* inner_qbatch share */
         per_q_bytes += (size_t)plan->N_tree * (plan->B + 1) * sizeof(double); /* block_prods_qbatch */
         /* Reserve ~5% for cuFFT workspace, driver overhead, and safety margin.
          * The per_q_bytes estimate is accurate (includes spec/scratch/cache),
-         * so we can use most of the remaining VRAM. */
+         * so we can use most of the remaining VRAM.
+         *
+         * With the memory pool enabled (default), GPU_VRAM_BYTES reflects
+         * total device memory, not current real availability; the pool may
+         * retain freed allocations from prior plans.  This is acceptable
+         * because cudaMallocAsync draws from the pool first, so the budget
+         * calculation remains a reasonable upper bound.  Callers that need a
+         * hard guarantee can call icm_gpu_release_pooled_memory() before
+         * plan creation to return all pooled memory to the driver. */
         size_t budget = (size_t)((double)GPU_VRAM_BYTES * 0.90);
 
         int best_qb = 1;
@@ -176,9 +194,27 @@ IcmGpuPlan *icm_gpu_plan_create(int n, const double *S, int k, const IcmGpuOptio
         }
         int qb = qb_override ? qb_override : best_qb;
         if (plan->opts.enable_graphs) qb = 1;
+
+        /* Proactive cuFFT workspace check: query real workspace size at
+         * candidate qb before committing any VRAM.  Halve qb until the
+         * total (arena estimate + cuFFT workspace) fits within budget.
+         * qb=1 is accepted unconditionally; the reactive retry in
+         * allocate_plan_device_memory() remains as a fallback. */
+        size_t cufft_ws = 0;
+        if (!qb_override && !plan->opts.enable_graphs) {
+            while (true) {
+                cufft_ws = estimate_cufft_workspace_bytes(plan, qb);
+                bool fits = (cufft_ws != SIZE_MAX) &&
+                            (per_q_bytes * (size_t)qb + cufft_ws <= budget);
+                if (fits || qb == 1) break;
+                qb = std::max(1, qb / 2);
+            }
+            if (cufft_ws == SIZE_MAX) cufft_ws = 0;
+        }
+
         if (getenv("ICM_GPU_DEBUG_PLAN"))
-            fprintf(stderr, "  q_batch=%d (budget=%.0f MB, per_q=%.0f MB, graphs=%d)\n",
-                    qb, budget/1e6, per_q_bytes/1e6, plan->opts.enable_graphs);
+            fprintf(stderr, "  q_batch=%d (budget=%.0f MB, per_q=%.0f MB, cufft_ws=%.1f MB, graphs=%d)\n",
+                    qb, budget/1e6, per_q_bytes/1e6, cufft_ws/1e6, plan->opts.enable_graphs);
         plan->q_batch = qb;
     }
 
@@ -215,9 +251,6 @@ int icm_gpu_plan_summary(const IcmGpuPlan *plan_opaque, IcmGpuPlanSummary *summa
         else if (plan->levels[ell].tier == GPU_TIER_FUSED) summary->n_tier2++;
         else {
             summary->n_tier3++;
-#if ICM_HAVE_VKFFT
-            if (plan->build_fft[ell].use_vkfft) summary->n_vkfft++;
-#endif
         }
     }
     summary->q_batch = plan->q_batch;
@@ -317,7 +350,7 @@ int icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                 int threads_block = ((plan->B + 32) / 32) * 32;
                 if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
                 size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-                k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
+                k_block_build<<<leaf_build_blocks(plan), threads_block, shmem_block, plan->stream_aux>>>(
                     plan->d_a_sorted[curr], plan->n, plan->B,
                     plan->nblocks, plan->N_tree, plan->fft_stride[0],
                     leaf_bufs[buf_idx], bp_bufs[buf_idx]);
@@ -351,7 +384,7 @@ int icm_gpu_equity_with_plan(IcmGpuPlan *plan_opaque, int Q,
                     int threads_block = ((plan->B + 32) / 32) * 32;
                     if (threads_block > GPU_THREADS_PER_BLOCK) threads_block = GPU_THREADS_PER_BLOCK;
                     size_t shmem_block = (size_t)(2 * (plan->B + 1)) * sizeof(double);
-                    k_block_build<<<plan->N_tree, threads_block, shmem_block, plan->stream_aux>>>(
+                    k_block_build<<<leaf_build_blocks(plan), threads_block, shmem_block, plan->stream_aux>>>(
                         plan->d_a_sorted[next], plan->n, plan->B,
                         plan->nblocks, plan->N_tree, plan->fft_stride[0],
                         leaf_bufs[next_buf], bp_bufs[next_buf]);
@@ -682,11 +715,11 @@ int icm_gpu_measure_fused_pair_ns(int fft_n, int batch, int quick,
     if (!CUDA_OK(cudaEventCreate(&e0))) goto fail;
     if (!CUDA_OK(cudaEventCreate(&e1))) goto fail;
     for (int i = 0; i < warmup; ++i)
-        if (!launch_cufftdx_build_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps)) goto fail;
+        if (!launch_cufftdx_build_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps, 1, 0, 0)) goto fail;
     cudaStreamSynchronize(stream);
     for (int i = 0; i < reps; ++i) {
         cudaEventRecord(e0, stream);
-        if (!launch_cufftdx_build_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps)) goto fail;
+        if (!launch_cufftdx_build_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps, 1, 0, 0)) goto fail;
         cudaEventRecord(e1, stream); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
         bsamp.push_back((double)ms * 1e6);
@@ -694,13 +727,13 @@ int icm_gpu_measure_fused_pair_ns(int fft_n, int batch, int quick,
     for (int i = 0; i < warmup; ++i)
         if (!launch_cufftdx_corr_dispatch(fft_n, d_g_parent, fft_n, len_g, d_child_poly, cps, len_P,
                                           d_g_child, fft_n, len_out, nparents, 1.0/(double)fft_n, stream,
-                                          fft_n, cps, fft_n)) goto fail;
+                                          fft_n, cps, fft_n, 1, 0, 0)) goto fail;
     cudaStreamSynchronize(stream);
     for (int i = 0; i < reps; ++i) {
         cudaEventRecord(e0, stream);
         if (!launch_cufftdx_corr_dispatch(fft_n, d_g_parent, fft_n, len_g, d_child_poly, cps, len_P,
                                           d_g_child, fft_n, len_out, nparents, 1.0/(double)fft_n, stream,
-                                          fft_n, cps, fft_n)) goto fail;
+                                          fft_n, cps, fft_n, 1, 0, 0)) goto fail;
         cudaEventRecord(e1, stream); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
         csamp.push_back((double)ms * 1e6);
@@ -760,11 +793,11 @@ int icm_gpu_measure_fused_r2c_pair_ns(int fft_n, int batch, int quick,
     if (!CUDA_OK(cudaEventCreate(&e0))) goto r2c_fail;
     if (!CUDA_OK(cudaEventCreate(&e1))) goto r2c_fail;
     for (int i = 0; i < warmup; ++i)
-        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps)) goto r2c_fail;
+        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps, 1, 0, 0)) goto r2c_fail;
     cudaStreamSynchronize(stream);
     for (int i = 0; i < reps; ++i) {
         cudaEventRecord(e0, stream);
-        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps)) goto r2c_fail;
+        if (!launch_cufftdx_build_r2c_dispatch(fft_n, d_child, cps, d_parent, pps, nparents, 1.0/(double)fft_n, stream, cps, pps, 1, 0, 0)) goto r2c_fail;
         cudaEventRecord(e1, stream); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
         bsamp.push_back((double)ms * 1e6);
@@ -772,13 +805,13 @@ int icm_gpu_measure_fused_r2c_pair_ns(int fft_n, int batch, int quick,
     for (int i = 0; i < warmup; ++i)
         if (!launch_cufftdx_corr_r2c_dispatch(fft_n, d_g_parent, fft_n, len_g, d_child_poly, cps, len_P,
                                                d_g_child, fft_n, len_out, nparents, 1.0/(double)fft_n, stream,
-                                               fft_n, cps, fft_n)) goto r2c_fail;
+                                               fft_n, cps, fft_n, 1, 0, 0)) goto r2c_fail;
     cudaStreamSynchronize(stream);
     for (int i = 0; i < reps; ++i) {
         cudaEventRecord(e0, stream);
         if (!launch_cufftdx_corr_r2c_dispatch(fft_n, d_g_parent, fft_n, len_g, d_child_poly, cps, len_P,
                                                d_g_child, fft_n, len_out, nparents, 1.0/(double)fft_n, stream,
-                                               fft_n, cps, fft_n)) goto r2c_fail;
+                                               fft_n, cps, fft_n, 1, 0, 0)) goto r2c_fail;
         cudaEventRecord(e1, stream); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
         csamp.push_back((double)ms * 1e6);
@@ -823,42 +856,6 @@ int icm_gpu_measure_hbm_bandwidth_gbps(double *gbps_out) {
     double sec = ms / 1000.0;
     double total_bytes = (double)bytes * 16.0;
     *gbps_out = (total_bytes / sec) / 1e9;
-    return 1;
-}
-
-int icm_gpu_write_config_header(const char *output_path) {
-    if (!output_path) return 0;
-    FILE *f = fopen(output_path, "w");
-    if (!f) { set_last_errorf("Cannot open %s for write", output_path); return 0; }
-    double gbps = 0.0;
-    icm_gpu_measure_hbm_bandwidth_gbps(&gbps);
-    fprintf(f, "/* Auto-generated bootstrap GPU config. Replace with calibrate_gpu.cu output. */\n");
-    fprintf(f, "#ifndef ICM_GPU_FFT_CONFIG_H\n#define ICM_GPU_FFT_CONFIG_H\n\n");
-    fprintf(f, "#define GPU_N_CALIBRATED_SIZES %d\n", GPU_N_CALIBRATED_SIZES);
-    fprintf(f, "static const int gpu_calib_sizes[GPU_N_CALIBRATED_SIZES] = {");
-    for (int i = 0; i < GPU_N_CALIBRATED_SIZES; ++i) fprintf(f, "%s%d", (i ? "," : ""), gpu_calib_sizes[i]);
-    fprintf(f, "};\n");
-    fprintf(f, "static const double gpu_calib_cufft_ns[GPU_N_CALIBRATED_SIZES] = {");
-    for (int i = 0; i < GPU_N_CALIBRATED_SIZES; ++i) fprintf(f, "%s%.1f", (i ? "," : ""), gpu_calib_cufft_ns[i]);
-    fprintf(f, "};\n");
-    fprintf(f, "static const double gpu_calib_cufftdx_build_ns[GPU_N_CALIBRATED_SIZES] = {");
-    for (int i = 0; i < GPU_N_CALIBRATED_SIZES; ++i) fprintf(f, "%s%.1f", (i ? "," : ""), gpu_calib_cufftdx_build_ns[i]);
-    fprintf(f, "};\n");
-    fprintf(f, "static const double gpu_calib_cufftdx_corr_ns[GPU_N_CALIBRATED_SIZES] = {");
-    for (int i = 0; i < GPU_N_CALIBRATED_SIZES; ++i) fprintf(f, "%s%.1f", (i ? "," : ""), gpu_calib_cufftdx_corr_ns[i]);
-    fprintf(f, "};\n\n");
-    fprintf(f, "#define GPU_SCHOOL_FMA_NS %.6f\n", GPU_SCHOOL_FMA_NS);
-    fprintf(f, "#define GPU_FFT_OVERHEAD_NS %.6f\n", GPU_FFT_OVERHEAD_NS);
-    fprintf(f, "#define GPU_HBM_BANDWIDTH %.3f\n", (gbps > 0.0 ? gbps : GPU_HBM_BANDWIDTH));
-    fprintf(f, "#define GPU_FUSED_MAX_CONV_LEN %d\n", GPU_FUSED_MAX_CONV_LEN);
-    fprintf(f, "#define GPU_PAIRED_CACHED_CORR_RATIO %.6f\n", GPU_PAIRED_CACHED_CORR_RATIO);
-    fprintf(f, "#define GPU_INDEP_PAIR_RATIO %.6f\n", GPU_INDEP_PAIR_RATIO);
-    fprintf(f, "#define GPU_BLOCK_BUILD_NS_PER_FMA %.6f\n", GPU_BLOCK_BUILD_NS_PER_FMA);
-    fprintf(f, "#define GPU_LEAF_EXTRACT_NS_PER_FMA %.6f\n", GPU_LEAF_EXTRACT_NS_PER_FMA);
-    fprintf(f, "#define GPU_VRAM_BYTES %lluULL\n", (unsigned long long)GPU_VRAM_BYTES);
-    fprintf(f, "#define GPU_SM_COUNT %d\n", GPU_SM_COUNT);
-    fprintf(f, "\n#endif\n");
-    fclose(f);
     return 1;
 }
 
