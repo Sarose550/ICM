@@ -3,7 +3,7 @@
 
 # ICM: Independent Chip Model Equity Computation
 
-High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to 17,984 players / payouts in 1 second single-threaded, or ~72,200 across 16 threads (AMD Zen 4; see [RESULTS.md](RESULTS.md) for per-device figures). A CUDA backend extends this to up to 1.49 million players in under a second on an NVIDIA B200 (full field, `k=n`). Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
+High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to 26,816 players / payouts in 1 second single-threaded, or 65,536 across 16 threads, on the AMD Zen 4 reference box (18,368 / 88,064 on Apple M3 Pro; see [RESULTS.md](RESULTS.md) for per-device figures). All are direct binary-search measurements, not interpolations. A CUDA backend extends this to up to 1.49 million players in under a second on an NVIDIA B200 (full field, `k=n`). Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
 
 > 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf) - full derivation, proofs, and performance evaluation.
 >
@@ -108,14 +108,14 @@ distributions) and `results/accuracy_convergence.csv` for the raw sweep.
 
 | n | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n | | k=10 | k=50 | k=100 | k=n/4 | k=n/2 | k=n |
 |---|------|------|-------|-------|-------|-----|-|------|------|-------|-------|-------|-----|
-| | **M3 Pro** |||||| | **Zen 4 7950X** (AOCL-FFTW) |||||
-| 1024  | 1.70 | 7.17 | 13.1 | 18.0 | 21.2 | 28.0 | | 1.44 | 4.04 | 7.90 | 15.7 | 16.7 | 17.6 |
-| 2048  | 4.12 | 14.4 | 26.3 | 44.9 | 52.1 | 56.4 | | 3.21 | 6.87 | 13.7 | 36.2 | 38.6 | 40.9 |
-| 4096  | 8.24 | 28.7 | 52.5 | 109  | 124  | 137  | | 6.58 | 14.1 | 29.3 | 83.4 | 92.5 | 93.6 |
-| 8192  | 16.4 | 57.2 | 105  | 284  | 302  | 321  | | 13.1 | 28.2 | 53.4 | 188  | 203  | 213  |
-| 16384 | 32.7 | 114  | 210  | 636  | 712  | 753  | | 26.4 | 66.3 | 106  | 433  | 479  | 508  |
-| 32768 | 64.8 | 232  | 417  | 1490 | 1660 | 1790 | | 52.3 | 127  | 228  | 980  | 1080 | 1230 |
-| 65536 | 133  | 460  | 834  | 3500 | 3910 | 4150 | | 115  | 225  | 414  | 2580 | 2970 | 3330 |
+| | **M3 Pro** |||||| | **Zen 4 7950X** (AOCL-FFTW) ||||||
+| 1024  | 1.71 | 7.05 | 13.0 | 17.8 | 20.9 | 29.5 | | 1.33 | 3.53 | 7.54 | 15.8 | 17.3 | 19.7 |
+| 2048  | 4.80 | 14.5 | 26.1 | 45.3 | 51.4 | 55.8 | | 3.11 | 6.99 | 13.9 | 36.3 | 39.3 | 45.0 |
+| 4096  | 8.14 | 28.1 | 51.9 | 108  | 122  | 135  | | 6.21 | 15.0 | 28.5 | 82.6 | 95.0 | 103  |
+| 8192  | 16.2 | 56.2 | 105  | 280  | 298  | 320  | | 12.6 | 31.5 | 57.9 | 194  | 206  | 232  |
+| 16384 | 32.3 | 116  | 208  | 625  | 701  | 751  | | 25.5 | 74.0 | 127  | 442  | 484  | 525  |
+| 32768 | 64.9 | 227  | 415  | 1470 | 1650 | 1760 | | 52.9 | 118  | 252  | 991  | 1060 | 1240 |
+| 65536 | 130  | 451  | 830  | 3460 | 3820 | 4060 | | 107  | 252  | 727  | 2570 | 2850 | 3160 |
 
 **GPU, NVIDIA B200 (ms, Q=256):**
 
@@ -123,11 +123,18 @@ distributions) and `results/accuracy_convergence.csv` for the raw sweep.
 |---|------|--------|-------|-----|
 | 4,096 | 0.37 | 0.76 | 0.87 | 0.89 |
 | 16,384 | 1.18 | 2.81 | 3.93 | 4.17 |
-| 65,536 | 4.29 | 9.46 | 19.43 | 20.26 |
-| 262,144 | 16.58 | 36.38 | 95.95 | 100.09 |
-| 1,048,576 | 65.68 | 178.26 | 504.29 | 509.51 |
-| 4,194,304 | 272.47 | 671.06 | 2,352.43 | 2,320.45 |
+| 65,536 | 4.29 | 10.62 | 19.43 | 20.26 |
+| 262,144 | 16.58 | 41.01 | 95.95 | 100.09 |
+| 1,048,576 | 65.68 | 178.26 | 501.84 | 507.90 |
+| 4,194,304 | 272.47 | 753.65 | 2,352.43 | 2,320.45 |
 | 33,554,432 | 2,506.71 | 5,059.26 | 22,321.49 | 22,865.76 |
+
+The Zen 4 reference box runs its DIMMs at 3600 MT/s (an AMD AM5
+two-DIMMs-per-channel electrical limit, not a misconfiguration; measured
+streaming DRAM bandwidth is 32.7 GB/s, consistent with that ceiling). Memory
+bandwidth matters here only where the FFT-heavy hybrid engine dominates: the
+compute-bound linear engine is essentially insensitive to it. See
+[RESULTS.md](RESULTS.md) and the paper for the full grids.
 
 See the paper for the full grids, contour plots, and dispatch analysis.
 
@@ -176,13 +183,32 @@ installed at `/usr/local/aocl-fftw`.
 ### GPU (NVIDIA)
 
 ```bash
-make bench_gpu_fused CUDA_ARCH=sm_100    # B200/B100
+make bench_gpu_fused CUDA_ARCH=sm_100    # B200/B100 (uses devices/b200/ calibration)
 make bench_gpu_fused CUDA_ARCH=sm_90     # H100/H200
 ```
 
 Requires CUDA toolkit and cuFFTDx. See the [Performance](#performance) section
 above for B200 timings, and `devices/b200/gpu_fft_config.h` for calibration
 data.
+
+To calibrate your own card, generate a device config and build against it
+(`GPU_DEVICE=` mirrors the CPU's `DEVICE=`; the shipped `b200` data is the
+default):
+
+```bash
+make calibrate_gpu CUDA_ARCH=<your_arch>
+mkdir -p devices/<name>
+./calibrate_gpu devices/<name>/gpu_fft_config.h
+make clean && make bench_gpu_fused CUDA_ARCH=<your_arch> GPU_DEVICE=<name>
+./bench_gpu_fused verify
+```
+
+`CUDA_ARCH` also selects the cuFFTDx kernel instantiations; FFT sizes an
+architecture cannot compile (shared-memory limits) are excluded automatically
+via `cufftdx::is_supported`, and the planner falls back to batched cuFFT for
+them. Optional: layer in a per-card block-size (B) calibration with
+`tools/calibrate_gpu_best_b.cu` + `tools/splice_calib_points.py`; until then
+the planner uses a fixed B=64 fallback on uncalibrated cards.
 
 ## Platform Support
 

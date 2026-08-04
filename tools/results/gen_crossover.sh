@@ -4,7 +4,9 @@
 # Usage:  ./tools/results/gen_crossover.sh <device>
 # Example: ./tools/results/gen_crossover.sh m3_pro
 #
-# Output: results/crossover_<device>_YYYYMMDD.txt
+# Output: results/crossover_<device>_YYYYMMDD_serial.txt
+#         results/crossover_<device>_YYYYMMDD_parallel.txt
+# Both modes are produced on purpose; see the comment above the run step.
 
 set -euo pipefail
 
@@ -31,14 +33,51 @@ fi
 mkdir -p results
 
 DATE_SUFFIX="$(date +%Y%m%d)"
-OUTFILE="results/crossover_${DEVICE}_${DATE_SUFFIX}.txt"
+SERIAL_OUT="results/crossover_${DEVICE}_${DATE_SUFFIX}_serial.txt"
+PARALLEL_OUT="results/crossover_${DEVICE}_${DATE_SUFFIX}_parallel.txt"
 
-echo "Running bench_grid crossover for $DEVICE ..."
-"$BINARY" crossover > "$OUTFILE" 2>&1
-
-if [ -s "$OUTFILE" ]; then
-    echo "Saved $OUTFILE ($(wc -l < "$OUTFILE") lines)"
+# Emit BOTH thread modes. They answer two different questions and the project
+# wants both:
+#
+#  * serial   -- the dispatch tables this sweep checks (crossover_n[]/
+#                crossover_k[], from tools/calibrate_crossover.c) are measured
+#                single-threaded, so the serial sweep validates them in their
+#                own calibration regime.
+#  * parallel -- VERDICTS.md V15 records that those serial-calibrated tables are
+#                deliberately reused for parallel execution, a known possible
+#                suboptimality, and explicitly asks for measured *parallel*
+#                dispatch accuracy as the artifact that tests whether the
+#                heuristic holds.
+#
+# History: this file was serial through 2026-07-31, then silently became
+# parallel-only once refresh_all.sh began exporting OMP_NUM_THREADS for the
+# whole pipeline and leaving the parallel bench_grid on disk for later steps.
+# Neither mode alone is right, so pin both explicitly rather than inheriting
+# whatever build and thread count happen to be in scope.
+if command -v nproc &>/dev/null; then
+    NCPU="$(nproc)"
 else
-    echo "ERROR: empty output — crossover failed?" >&2
-    exit 1
+    NCPU="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 fi
+PAR_THREADS="${OMP_NUM_THREADS:-$NCPU}"
+[ "$PAR_THREADS" = "1" ] && PAR_THREADS="$NCPU"
+
+echo "Running bench_grid crossover for $DEVICE (single-threaded) ..."
+OMP_NUM_THREADS=1 "$BINARY" crossover > "$SERIAL_OUT" 2>&1
+
+echo "Running bench_grid crossover for $DEVICE (parallel, $PAR_THREADS threads) ..."
+OMP_NUM_THREADS="$PAR_THREADS" "$BINARY" crossover > "$PARALLEL_OUT" 2>&1
+
+# Each output's first line records the mode bench_grid actually ran in
+# ("OpenMP disabled (serial mode)" / "OpenMP enabled: N threads"), so a
+# serial-only build is self-documenting rather than silently mislabeled.
+rc=0
+for f in "$SERIAL_OUT" "$PARALLEL_OUT"; do
+    if [ -s "$f" ]; then
+        echo "Saved $f ($(wc -l < "$f") lines) -- $(head -1 "$f")"
+    else
+        echo "ERROR: empty output — crossover failed? ($f)" >&2
+        rc=1
+    fi
+done
+exit $rc

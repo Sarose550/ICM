@@ -10,34 +10,74 @@ namespace icm_gpu_detail {
 /* ── cuFFTDx C2C templates and helpers ─────────────────────────── */
 
 #if ICM_HAVE_CUFFTDX
+
+/* Target SM for cuFFTDx kernel instantiation.  The Makefile passes
+ * -DICM_CUFFTDX_ARCH derived from CUDA_ARCH (sm_100 -> 1000, sm_90 -> 900);
+ * the default matches CUDA_ARCH's own sm_100 default. */
+#ifndef ICM_CUFFTDX_ARCH
+#define ICM_CUFFTDX_ARCH 1000
+#endif
+
+/* The *_base_t descriptions carry everything except the SM operator:
+ * cufftdx::is_supported requires the SM-less form.  The launchable *_t
+ * aliases add SM<ICM_CUFFTDX_ARCH> on top. */
 template<int FFT_N, int FPB = 1>
-using cufftdx_fft_fwd_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
+using cufftdx_fft_fwd_base_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
                                    cufftdx::Type<cufftdx::fft_type::c2c>() +
                                    cufftdx::Direction<cufftdx::fft_direction::forward>() +
-                                   cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>() +
-                                   cufftdx::SM<1000>());
+                                   cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>());
 
 template<int FFT_N, int FPB = 1>
-using cufftdx_fft_inv_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
+using cufftdx_fft_fwd_t = decltype(cufftdx_fft_fwd_base_t<FFT_N, FPB>() +
+                                   cufftdx::SM<ICM_CUFFTDX_ARCH>());
+
+template<int FFT_N, int FPB = 1>
+using cufftdx_fft_inv_base_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
                                    cufftdx::Type<cufftdx::fft_type::c2c>() +
                                    cufftdx::Direction<cufftdx::fft_direction::inverse>() +
-                                   cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>() +
-                                   cufftdx::SM<1000>());
+                                   cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>());
+
+template<int FFT_N, int FPB = 1>
+using cufftdx_fft_inv_t = decltype(cufftdx_fft_inv_base_t<FFT_N, FPB>() +
+                                   cufftdx::SM<ICM_CUFFTDX_ARCH>());
+
+/* True when the size compiles for the target arch at the given
+ * FFTs-per-block (shared-memory limits differ per arch).  The FPB=1 form
+ * decides whether the size exists at all; the FPB=2 form only whether the
+ * two-per-block fast path is attempted.  Gating happens at the
+ * launch_cufftdx_*_t entry templates, so unsupported sizes are never
+ * instantiated and the planner's is_cufftdx_supported_fft_n() stays the
+ * single runtime source of truth. */
+template<int FFT_N, int FPB = 1>
+inline constexpr bool cufftdx_c2c_ok =
+    cufftdx::is_supported<cufftdx_fft_fwd_base_t<FFT_N, FPB>, ICM_CUFFTDX_ARCH>::value &&
+    cufftdx::is_supported<cufftdx_fft_inv_base_t<FFT_N, FPB>, ICM_CUFFTDX_ARCH>::value;
 
 #if ICM_HAVE_CUFFTDX_R2C
 template<int FFT_N, int FPB = 1>
-using cufftdx_r2c_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
+using cufftdx_r2c_base_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
                                 cufftdx::Type<cufftdx::fft_type::r2c>() +
                                 cufftdx::Direction<cufftdx::fft_direction::forward>() +
-                                cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>() +
-                                cufftdx::SM<1000>());
+                                cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>());
 
 template<int FFT_N, int FPB = 1>
-using cufftdx_c2r_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
+using cufftdx_r2c_t = decltype(cufftdx_r2c_base_t<FFT_N, FPB>() +
+                                cufftdx::SM<ICM_CUFFTDX_ARCH>());
+
+template<int FFT_N, int FPB = 1>
+using cufftdx_c2r_base_t = decltype(cufftdx::Block() + cufftdx::Size<FFT_N>() +
                                 cufftdx::Type<cufftdx::fft_type::c2r>() +
                                 cufftdx::Direction<cufftdx::fft_direction::inverse>() +
-                                cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>() +
-                                cufftdx::SM<1000>());
+                                cufftdx::Precision<double>() + cufftdx::FFTsPerBlock<FPB>());
+
+template<int FFT_N, int FPB = 1>
+using cufftdx_c2r_t = decltype(cufftdx_c2r_base_t<FFT_N, FPB>() +
+                                cufftdx::SM<ICM_CUFFTDX_ARCH>());
+
+template<int FFT_N, int FPB = 1>
+inline constexpr bool cufftdx_r2c_ok =
+    cufftdx::is_supported<cufftdx_r2c_base_t<FFT_N, FPB>, ICM_CUFFTDX_ARCH>::value &&
+    cufftdx::is_supported<cufftdx_c2r_base_t<FFT_N, FPB>, ICM_CUFFTDX_ARCH>::value;
 #endif /* ICM_HAVE_CUFFTDX_R2C */
 
 template<class FFT>
@@ -249,26 +289,28 @@ static bool launch_cufftdx_build_qp(const double *child, int cps,
                                     int child_stride, int parent_stride,
                                     int qplanes, size_t q_parent_plane, size_t q_child_plane) {
     constexpr int FPB2 = 2;
-    using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
-    using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
-    size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
-    /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
-     * every block full: a half-retired block would leave its surviving FFT
-     * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
-     * per-plane count is even by construction (n_work is rounded up), so the
-     * second test is a guard, not a restriction.  At qplanes == 1 this is
-     * exactly the historical `nparents >= 4`. */
-    bool fpb2_ok = ((long long)nparents * qplanes >= 4)
-                   && (qplanes == 1 || nparents % FPB2 == 0);
-    if (fpb2_ok && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent<FFT_N, FPB2, QPLANE>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                          (int)shmem2))) {
-            dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
-            k_cufftdx_build_parent<FFT_N, FPB2, QPLANE><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
-                child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride,
-                q_parent_plane, q_child_plane);
-            if (CUDA_OK(cudaGetLastError())) return true;
+    if constexpr (cufftdx_c2c_ok<FFT_N, FPB2>) {
+        using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
+        using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
+        size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
+        /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
+         * every block full: a half-retired block would leave its surviving FFT
+         * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
+         * per-plane count is even by construction (n_work is rounded up), so the
+         * second test is a guard, not a restriction.  At qplanes == 1 this is
+         * exactly the historical `nparents >= 4`. */
+        bool fpb2_ok = ((long long)nparents * qplanes >= 4)
+                       && (qplanes == 1 || nparents % FPB2 == 0);
+        if (fpb2_ok && shmem2 <= 200 * 1024) {
+            if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent<FFT_N, FPB2, QPLANE>,
+                                              cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                              (int)shmem2))) {
+                dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
+                k_cufftdx_build_parent<FFT_N, FPB2, QPLANE><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
+                    child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride,
+                    q_parent_plane, q_child_plane);
+                if (CUDA_OK(cudaGetLastError())) return true;
+            }
         }
     }
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
@@ -290,14 +332,22 @@ static bool launch_cufftdx_build_t(const double *child, int cps,
                                    double inv_fft_n, cudaStream_t stream,
                                    int child_stride, int parent_stride,
                                    int qplanes, size_t q_parent_plane, size_t q_child_plane) {
-    if (qplanes > 1) {
-        return launch_cufftdx_build_qp<FFT_N, true>(
+    /* Size not compilable on ICM_CUFFTDX_ARCH: report unsupported so the
+     * caller falls back to the cuFFT path.  The else-branch keeps the
+     * kernels uninstantiated for unsupported sizes (a bare early return
+     * would not -- the rest of a template body still instantiates). */
+    if constexpr (!cufftdx_c2c_ok<FFT_N>) {
+        return false;
+    } else {
+        if (qplanes > 1) {
+            return launch_cufftdx_build_qp<FFT_N, true>(
+                child, cps, parent, pps, nparents, inv_fft_n, stream,
+                child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        }
+        return launch_cufftdx_build_qp<FFT_N, false>(
             child, cps, parent, pps, nparents, inv_fft_n, stream,
-            child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+            child_stride, parent_stride, 1, 0, 0);
     }
-    return launch_cufftdx_build_qp<FFT_N, false>(
-        child, cps, parent, pps, nparents, inv_fft_n, stream,
-        child_stride, parent_stride, 1, 0, 0);
 }
 
 template<int FFT_N, bool QPLANE>
@@ -309,28 +359,30 @@ static bool launch_cufftdx_corr_qp(const double *g_parent, int parent_gsz, int l
                                    int g_child_stride,
                                    int qplanes, size_t q_parent_plane, size_t q_child_plane) {
     constexpr int FPB2 = 2;
-    using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
-    using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
-    size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
-    /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
-     * every block full: a half-retired block would leave its surviving FFT
-     * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
-     * per-plane count is even by construction (n_work is rounded up), so the
-     * second test is a guard, not a restriction.  At qplanes == 1 this is
-     * exactly the historical `nparents >= 4`. */
-    bool fpb2_ok = ((long long)nparents * qplanes >= 4)
-                   && (qplanes == 1 || nparents % FPB2 == 0);
-    if (fpb2_ok && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent<FFT_N, FPB2, QPLANE>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                          (int)shmem2))) {
-            dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
-            k_cufftdx_corr_pair_parent<FFT_N, FPB2, QPLANE><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
-                g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-                g_child, child_gsz, len_out, nparents, inv_fft_n,
-                g_parent_stride, poly_child_stride, g_child_stride,
-                q_parent_plane, q_child_plane);
-            if (CUDA_OK(cudaGetLastError())) return true;
+    if constexpr (cufftdx_c2c_ok<FFT_N, FPB2>) {
+        using FFTFwd2 = cufftdx_fft_fwd_t<FFT_N, FPB2>;
+        using FFTInv2 = cufftdx_fft_inv_t<FFT_N, FPB2>;
+        size_t shmem2 = std::max((size_t)FFTFwd2::shared_memory_size, (size_t)FFTInv2::shared_memory_size);
+        /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
+         * every block full: a half-retired block would leave its surviving FFT
+         * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
+         * per-plane count is even by construction (n_work is rounded up), so the
+         * second test is a guard, not a restriction.  At qplanes == 1 this is
+         * exactly the historical `nparents >= 4`. */
+        bool fpb2_ok = ((long long)nparents * qplanes >= 4)
+                       && (qplanes == 1 || nparents % FPB2 == 0);
+        if (fpb2_ok && shmem2 <= 200 * 1024) {
+            if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent<FFT_N, FPB2, QPLANE>,
+                                              cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                              (int)shmem2))) {
+                dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
+                k_cufftdx_corr_pair_parent<FFT_N, FPB2, QPLANE><<<grid, FFTFwd2::block_dim, shmem2, stream>>>(
+                    g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                    g_child, child_gsz, len_out, nparents, inv_fft_n,
+                    g_parent_stride, poly_child_stride, g_child_stride,
+                    q_parent_plane, q_child_plane);
+                if (CUDA_OK(cudaGetLastError())) return true;
+            }
         }
     }
     using FFTFwd = cufftdx_fft_fwd_t<FFT_N>;
@@ -357,18 +409,23 @@ static bool launch_cufftdx_corr_t(const double *g_parent, int parent_gsz, int le
                                   int g_parent_stride, int poly_child_stride,
                                   int g_child_stride,
                                   int qplanes, size_t q_parent_plane, size_t q_child_plane) {
-    if (qplanes > 1) {
-        return launch_cufftdx_corr_qp<FFT_N, true>(
+    /* See launch_cufftdx_build_t for why this must be if constexpr/else. */
+    if constexpr (!cufftdx_c2c_ok<FFT_N>) {
+        return false;
+    } else {
+        if (qplanes > 1) {
+            return launch_cufftdx_corr_qp<FFT_N, true>(
+                g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                g_parent_stride, poly_child_stride, g_child_stride,
+                qplanes, q_parent_plane, q_child_plane);
+        }
+        return launch_cufftdx_corr_qp<FFT_N, false>(
             g_parent, parent_gsz, len_g, child_poly, cps, len_P,
             g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
             g_parent_stride, poly_child_stride, g_child_stride,
-            qplanes, q_parent_plane, q_child_plane);
+            1, 0, 0);
     }
-    return launch_cufftdx_corr_qp<FFT_N, false>(
-        g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-        g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-        g_parent_stride, poly_child_stride, g_child_stride,
-        1, 0, 0);
 }
 #endif /* ICM_HAVE_CUFFTDX */
 
@@ -482,26 +539,28 @@ static bool launch_cufftdx_build_r2c_qp(const double *child, int cps,
                                         int child_stride, int parent_stride,
                                         int qplanes, size_t q_parent_plane, size_t q_child_plane) {
     constexpr int FPB2 = 2;
-    using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
-    using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
-    size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
-    /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
-     * every block full: a half-retired block would leave its surviving FFT
-     * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
-     * per-plane count is even by construction (n_work is rounded up), so the
-     * second test is a guard, not a restriction.  At qplanes == 1 this is
-     * exactly the historical `nparents >= 4`. */
-    bool fpb2_ok = ((long long)nparents * qplanes >= 4)
-                   && (qplanes == 1 || nparents % FPB2 == 0);
-    if (fpb2_ok && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N, FPB2, QPLANE>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                          (int)shmem2))) {
-            dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
-            k_cufftdx_build_parent_r2c<FFT_N, FPB2, QPLANE><<<grid, R2C2::block_dim, shmem2, stream>>>(
-                child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride,
-                q_parent_plane, q_child_plane);
-            if (CUDA_OK(cudaGetLastError())) return true;
+    if constexpr (cufftdx_r2c_ok<FFT_N, FPB2>) {
+        using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
+        using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
+        size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
+        /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
+         * every block full: a half-retired block would leave its surviving FFT
+         * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
+         * per-plane count is even by construction (n_work is rounded up), so the
+         * second test is a guard, not a restriction.  At qplanes == 1 this is
+         * exactly the historical `nparents >= 4`. */
+        bool fpb2_ok = ((long long)nparents * qplanes >= 4)
+                       && (qplanes == 1 || nparents % FPB2 == 0);
+        if (fpb2_ok && shmem2 <= 200 * 1024) {
+            if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_build_parent_r2c<FFT_N, FPB2, QPLANE>,
+                                              cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                              (int)shmem2))) {
+                dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
+                k_cufftdx_build_parent_r2c<FFT_N, FPB2, QPLANE><<<grid, R2C2::block_dim, shmem2, stream>>>(
+                    child, cps, parent, pps, nparents, inv_fft_n, child_stride, parent_stride,
+                    q_parent_plane, q_child_plane);
+                if (CUDA_OK(cudaGetLastError())) return true;
+            }
         }
     }
     using R2C = cufftdx_r2c_t<FFT_N>;
@@ -523,14 +582,19 @@ static bool launch_cufftdx_build_r2c_t(const double *child, int cps,
                                         double inv_fft_n, cudaStream_t stream,
                                         int child_stride, int parent_stride,
                                         int qplanes, size_t q_parent_plane, size_t q_child_plane) {
-    if (qplanes > 1) {
-        return launch_cufftdx_build_r2c_qp<FFT_N, true>(
+    /* See launch_cufftdx_build_t for why this must be if constexpr/else. */
+    if constexpr (!cufftdx_r2c_ok<FFT_N>) {
+        return false;
+    } else {
+        if (qplanes > 1) {
+            return launch_cufftdx_build_r2c_qp<FFT_N, true>(
+                child, cps, parent, pps, nparents, inv_fft_n, stream,
+                child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+        }
+        return launch_cufftdx_build_r2c_qp<FFT_N, false>(
             child, cps, parent, pps, nparents, inv_fft_n, stream,
-            child_stride, parent_stride, qplanes, q_parent_plane, q_child_plane);
+            child_stride, parent_stride, 1, 0, 0);
     }
-    return launch_cufftdx_build_r2c_qp<FFT_N, false>(
-        child, cps, parent, pps, nparents, inv_fft_n, stream,
-        child_stride, parent_stride, 1, 0, 0);
 }
 
 template<int FFT_N, bool QPLANE>
@@ -542,29 +606,31 @@ static bool launch_cufftdx_corr_r2c_qp(const double *g_parent, int parent_gsz, i
                                        int g_child_stride,
                                        int qplanes, size_t q_parent_plane, size_t q_child_plane) {
     constexpr int FPB2 = 2;
-    using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
-    using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
-    size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
-    /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
-     * every block full: a half-retired block would leave its surviving FFT
-     * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
-     * per-plane count is even by construction (n_work is rounded up), so the
-     * second test is a guard, not a restriction.  At qplanes == 1 this is
-     * exactly the historical `nparents >= 4`. */
-    bool fpb2_ok = ((long long)nparents * qplanes >= 4)
-                   && (qplanes == 1 || nparents % FPB2 == 0);
-    if (fpb2_ok && shmem2 <= 200 * 1024) {
-        if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2, QPLANE>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                          (int)shmem2))) {
-            dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
-            k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2, QPLANE><<<grid, R2C2::block_dim, shmem2, stream>>>(
-                g_parent, parent_gsz, len_g,
-                child_poly, cps, len_P,
-                g_child, child_gsz, len_out, nparents, inv_fft_n,
-                g_parent_stride, poly_child_stride, g_child_stride,
-                q_parent_plane, q_child_plane);
-            if (CUDA_OK(cudaGetLastError())) return true;
+    if constexpr (cufftdx_r2c_ok<FFT_N, FPB2>) {
+        using R2C2 = cufftdx_r2c_t<FFT_N, FPB2>;
+        using C2R2 = cufftdx_c2r_t<FFT_N, FPB2>;
+        size_t shmem2 = std::max((size_t)R2C2::shared_memory_size, (size_t)C2R2::shared_memory_size);
+        /* FFTs-per-block=2 needs enough total FFTs to fill the grid, and needs
+         * every block full: a half-retired block would leave its surviving FFT
+         * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
+         * per-plane count is even by construction (n_work is rounded up), so the
+         * second test is a guard, not a restriction.  At qplanes == 1 this is
+         * exactly the historical `nparents >= 4`. */
+        bool fpb2_ok = ((long long)nparents * qplanes >= 4)
+                       && (qplanes == 1 || nparents % FPB2 == 0);
+        if (fpb2_ok && shmem2 <= 200 * 1024) {
+            if (CUDA_OK(cudaFuncSetAttribute(k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2, QPLANE>,
+                                              cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                              (int)shmem2))) {
+                dim3 grid((unsigned)((nparents + FPB2 - 1) / FPB2), (unsigned)qplanes);
+                k_cufftdx_corr_pair_parent_r2c<FFT_N, FPB2, QPLANE><<<grid, R2C2::block_dim, shmem2, stream>>>(
+                    g_parent, parent_gsz, len_g,
+                    child_poly, cps, len_P,
+                    g_child, child_gsz, len_out, nparents, inv_fft_n,
+                    g_parent_stride, poly_child_stride, g_child_stride,
+                    q_parent_plane, q_child_plane);
+                if (CUDA_OK(cudaGetLastError())) return true;
+            }
         }
     }
     using R2C = cufftdx_r2c_t<FFT_N>;
@@ -591,18 +657,23 @@ static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, in
                                        int g_parent_stride, int poly_child_stride,
                                        int g_child_stride,
                                        int qplanes, size_t q_parent_plane, size_t q_child_plane) {
-    if (qplanes > 1) {
-        return launch_cufftdx_corr_r2c_qp<FFT_N, true>(
+    /* See launch_cufftdx_build_t for why this must be if constexpr/else. */
+    if constexpr (!cufftdx_r2c_ok<FFT_N>) {
+        return false;
+    } else {
+        if (qplanes > 1) {
+            return launch_cufftdx_corr_r2c_qp<FFT_N, true>(
+                g_parent, parent_gsz, len_g, child_poly, cps, len_P,
+                g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
+                g_parent_stride, poly_child_stride, g_child_stride,
+                qplanes, q_parent_plane, q_child_plane);
+        }
+        return launch_cufftdx_corr_r2c_qp<FFT_N, false>(
             g_parent, parent_gsz, len_g, child_poly, cps, len_P,
             g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
             g_parent_stride, poly_child_stride, g_child_stride,
-            qplanes, q_parent_plane, q_child_plane);
+            1, 0, 0);
     }
-    return launch_cufftdx_corr_r2c_qp<FFT_N, false>(
-        g_parent, parent_gsz, len_g, child_poly, cps, len_P,
-        g_child, child_gsz, len_out, nparents, inv_fft_n, stream,
-        g_parent_stride, poly_child_stride, g_child_stride,
-        1, 0, 0);
 }
 
 #endif /* ICM_HAVE_CUFFTDX_R2C */
@@ -610,6 +681,27 @@ static bool launch_cufftdx_corr_r2c_t(const double *g_parent, int parent_gsz, in
 /* ── Dispatch functions (visible to other TUs via header) ──────── */
 
 bool is_cufftdx_supported_fft_n(int fft_n) {
+#if ICM_HAVE_CUFFTDX
+    /* Arch-accurate: a size counts as supported only if its kernels compile
+     * for ICM_CUFFTDX_ARCH (cufftdx::is_supported), so planner expectations
+     * match what the dispatchers below can actually launch. */
+    switch (fft_n) {
+        case 64: return cufftdx_c2c_ok<64>;
+        case 128: return cufftdx_c2c_ok<128>;
+        case 256: return cufftdx_c2c_ok<256>;
+        case 512: return cufftdx_c2c_ok<512>;
+        case 1024: return cufftdx_c2c_ok<1024>;
+        case 2048: return cufftdx_c2c_ok<2048>;
+        case 4096: return cufftdx_c2c_ok<4096>;
+#if GPU_FUSED_MAX_CONV_LEN >= 8192
+        case 8192: return cufftdx_c2c_ok<8192>;
+#endif
+        default:
+            return false;
+    }
+#else
+    /* Non-cuFFTDx build: keep the historical size list; every caller gates
+     * on opts.use_cufftdx or falls back when the dispatchers return false. */
     switch (fft_n) {
         case 64:
         case 128:
@@ -625,6 +717,7 @@ bool is_cufftdx_supported_fft_n(int fft_n) {
         default:
             return false;
     }
+#endif /* ICM_HAVE_CUFFTDX */
 }
 
 bool launch_cufftdx_build_dispatch(int fft_n,

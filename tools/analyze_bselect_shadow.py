@@ -421,6 +421,7 @@ def main():
     # Zen4: contour files (all versions)
     zen4_cells = []
     for fname in ['contour_zen4_serial_q256.csv', 'contour_zen4_parallel_q256.csv',
+                  'contour_zen4_serial_q256_1dpc.csv', 'contour_zen4_parallel_q256_1dpc.csv',
                   'contour_zen4_serial_q256_20260727.csv', 'contour_zen4_parallel_q256_20260727.csv']:
         fpath = os.path.join(results_dir, fname)
         if os.path.exists(fpath):
@@ -489,6 +490,7 @@ def main():
 
     # Zen4 contour files
     for fname in ['contour_zen4_serial_q256.csv', 'contour_zen4_parallel_q256.csv',
+                  'contour_zen4_serial_q256_1dpc.csv', 'contour_zen4_parallel_q256_1dpc.csv',
                   'contour_zen4_serial_q256_20260727.csv', 'contour_zen4_parallel_q256_20260727.csv']:
         fpath = os.path.join(results_dir, fname)
         if not os.path.exists(fpath):

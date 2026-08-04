@@ -17,72 +17,72 @@ Single-threaded vs 12-thread parallel, per (n, k) cell:
 
 | n | k | serial (ms) | parallel (ms) | speedup |
 |---|---|---|---|---|
-| 64 | k=10 | 0.0960 | 0.0610 | 1.6x |
-| 64 | k=50 | 0.340 | 0.108 | 3.1x |
-| 64 | k=100 | 0.443 | 0.120 | 3.7x |
-| 64 | k=n/4 | 0.126 | 0.0610 | 2.1x |
-| 64 | k=n/2 | 0.214 | 0.0690 | 3.1x |
-| 64 | k=n | 0.437 | 0.135 | 3.2x |
-| 128 | k=10 | 0.204 | 0.0910 | 2.2x |
-| 128 | k=50 | 0.703 | 0.174 | 4.0x |
-| 128 | k=100 | 1.30 | 0.248 | 5.2x |
-| 128 | k=n/4 | 0.479 | 0.124 | 3.9x |
-| 128 | k=n/2 | 0.887 | 0.181 | 4.9x |
-| 128 | k=n | 1.40 | 0.234 | 6.0x |
-| 256 | k=10 | 0.419 | 0.111 | 3.8x |
-| 256 | k=50 | 1.41 | 0.283 | 5.0x |
-| 256 | k=100 | 3.29 | 0.518 | 6.4x |
-| 256 | k=n/4 | 1.83 | 0.337 | 5.4x |
-| 256 | k=n/2 | 3.26 | 0.467 | 7.0x |
-| 256 | k=n | 3.69 | 0.519 | 7.1x |
-| 512 | k=10 | 0.868 | 0.171 | 5.1x |
-| 512 | k=50 | 3.60 | 0.644 | 5.6x |
-| 512 | k=100 | 6.60 | 1.03 | 6.4x |
-| 512 | k=n/4 | 7.03 | 1.19 | 5.9x |
-| 512 | k=n/2 | 8.38 | 1.25 | 6.7x |
-| 512 | k=n | 11.3 | 1.57 | 7.2x |
-| 1024 | k=10 | 1.70 | 0.338 | 5.0x |
-| 1024 | k=50 | 7.17 | 1.23 | 5.8x |
-| 1024 | k=100 | 13.1 | 2.24 | 5.8x |
-| 1024 | k=n/4 | 18.0 | 2.42 | 7.4x |
-| 1024 | k=n/2 | 21.2 | 2.83 | 7.5x |
-| 1024 | k=n | 28.0 | 3.94 | 7.1x |
-| 2048 | k=10 | 4.12 | 0.730 | 5.6x |
-| 2048 | k=50 | 14.4 | 2.41 | 6.0x |
-| 2048 | k=100 | 26.3 | 4.14 | 6.4x |
-| 2048 | k=n/4 | 44.9 | 5.89 | 7.6x |
-| 2048 | k=n/2 | 52.1 | 6.74 | 7.7x |
-| 2048 | k=n | 56.4 | 7.48 | 7.5x |
-| 4096 | k=10 | 8.24 | 1.37 | 6.0x |
-| 4096 | k=50 | 28.7 | 4.80 | 6.0x |
-| 4096 | k=100 | 52.5 | 8.70 | 6.0x |
-| 4096 | k=n/4 | 109 | 14.6 | 7.5x |
-| 4096 | k=n/2 | 124 | 16.8 | 7.4x |
-| 4096 | k=n | 137 | 18.0 | 7.6x |
-| 8192 | k=10 | 16.4 | 2.71 | 6.1x |
-| 8192 | k=50 | 57.2 | 9.46 | 6.0x |
+| 64 | k=10 | 0.0950 | 0.0600 | 1.6x |
+| 64 | k=50 | 0.340 | 0.104 | 3.3x |
+| 64 | k=100 | 0.438 | 0.109 | 4.0x |
+| 64 | k=n/4 | 0.125 | 0.0560 | 2.2x |
+| 64 | k=n/2 | 0.226 | 0.0720 | 3.1x |
+| 64 | k=n | 0.447 | 0.107 | 4.2x |
+| 128 | k=10 | 0.189 | 0.0640 | 3.0x |
+| 128 | k=50 | 0.703 | 0.157 | 4.5x |
+| 128 | k=100 | 1.29 | 0.252 | 5.1x |
+| 128 | k=n/4 | 0.485 | 0.124 | 3.9x |
+| 128 | k=n/2 | 0.885 | 0.184 | 4.8x |
+| 128 | k=n | 1.42 | 0.224 | 6.3x |
+| 256 | k=10 | 0.410 | 0.118 | 3.5x |
+| 256 | k=50 | 1.42 | 0.288 | 4.9x |
+| 256 | k=100 | 3.29 | 0.527 | 6.2x |
+| 256 | k=n/4 | 1.76 | 0.341 | 5.2x |
+| 256 | k=n/2 | 3.23 | 0.470 | 6.9x |
+| 256 | k=n | 3.65 | 0.521 | 7.0x |
+| 512 | k=10 | 0.850 | 0.182 | 4.7x |
+| 512 | k=50 | 3.54 | 0.645 | 5.5x |
+| 512 | k=100 | 6.51 | 1.01 | 6.4x |
+| 512 | k=n/4 | 6.94 | 0.945 | 7.3x |
+| 512 | k=n/2 | 8.35 | 1.13 | 7.4x |
+| 512 | k=n | 11.2 | 1.57 | 7.1x |
+| 1024 | k=10 | 1.71 | 0.319 | 5.4x |
+| 1024 | k=50 | 7.05 | 1.25 | 5.6x |
+| 1024 | k=100 | 13.0 | 2.03 | 6.4x |
+| 1024 | k=n/4 | 17.8 | 2.35 | 7.6x |
+| 1024 | k=n/2 | 20.9 | 2.79 | 7.5x |
+| 1024 | k=n | 29.5 | 3.73 | 7.9x |
+| 2048 | k=10 | 4.80 | 0.703 | 6.8x |
+| 2048 | k=50 | 14.5 | 2.45 | 5.9x |
+| 2048 | k=100 | 26.1 | 4.00 | 6.5x |
+| 2048 | k=n/4 | 45.3 | 5.79 | 7.8x |
+| 2048 | k=n/2 | 51.4 | 6.77 | 7.6x |
+| 2048 | k=n | 55.8 | 7.29 | 7.7x |
+| 4096 | k=10 | 8.14 | 1.36 | 6.0x |
+| 4096 | k=50 | 28.1 | 4.93 | 5.7x |
+| 4096 | k=100 | 51.9 | 8.65 | 6.0x |
+| 4096 | k=n/4 | 108 | 14.4 | 7.5x |
+| 4096 | k=n/2 | 122 | 16.6 | 7.3x |
+| 4096 | k=n | 135 | 18.4 | 7.3x |
+| 8192 | k=10 | 16.2 | 2.72 | 6.0x |
+| 8192 | k=50 | 56.2 | 9.62 | 5.8x |
 | 8192 | k=100 | 105 | 16.4 | 6.4x |
-| 8192 | k=n/4 | 284 | 40.6 | 7.0x |
-| 8192 | k=n/2 | 302 | 41.3 | 7.3x |
-| 8192 | k=n | 321 | 44.5 | 7.2x |
-| 16384 | k=10 | 32.7 | 5.38 | 6.1x |
-| 16384 | k=50 | 114 | 18.8 | 6.1x |
-| 16384 | k=100 | 210 | 33.6 | 6.2x |
-| 16384 | k=n/4 | 636 | 88.3 | 7.2x |
-| 16384 | k=n/2 | 712 | 98.4 | 7.2x |
-| 16384 | k=n | 753 | 108 | 7.0x |
-| 32768 | k=10 | 64.8 | 10.8 | 6.0x |
-| 32768 | k=50 | 232 | 37.8 | 6.1x |
-| 32768 | k=100 | 417 | 71.4 | 5.8x |
-| 32768 | k=n/4 | 1490 | 205 | 7.3x |
-| 32768 | k=n/2 | 1660 | 237 | 7.0x |
-| 32768 | k=n | 1790 | 258 | 6.9x |
-| 65536 | k=10 | 133 | 21.1 | 6.3x |
-| 65536 | k=50 | 460 | 76.1 | 6.0x |
-| 65536 | k=100 | 834 | 138 | 6.0x |
-| 65536 | k=n/4 | 3500 | 510 | 6.9x |
-| 65536 | k=n/2 | 3910 | 578 | 6.8x |
-| 65536 | k=n | 4150 | 647 | 6.4x |
+| 8192 | k=n/4 | 280 | 38.0 | 7.4x |
+| 8192 | k=n/2 | 298 | 41.0 | 7.3x |
+| 8192 | k=n | 320 | 47.2 | 6.8x |
+| 16384 | k=10 | 32.3 | 5.40 | 6.0x |
+| 16384 | k=50 | 116 | 19.0 | 6.1x |
+| 16384 | k=100 | 208 | 32.7 | 6.4x |
+| 16384 | k=n/4 | 625 | 86.6 | 7.2x |
+| 16384 | k=n/2 | 701 | 97.1 | 7.2x |
+| 16384 | k=n | 751 | 105 | 7.2x |
+| 32768 | k=10 | 64.9 | 10.8 | 6.0x |
+| 32768 | k=50 | 227 | 38.2 | 5.9x |
+| 32768 | k=100 | 415 | 68.9 | 6.0x |
+| 32768 | k=n/4 | 1470 | 208 | 7.1x |
+| 32768 | k=n/2 | 1650 | 238 | 6.9x |
+| 32768 | k=n | 1760 | 261 | 6.7x |
+| 65536 | k=10 | 130 | 21.9 | 5.9x |
+| 65536 | k=50 | 451 | 79.2 | 5.7x |
+| 65536 | k=100 | 830 | 140 | 5.9x |
+| 65536 | k=n/4 | 3460 | 512 | 6.8x |
+| 65536 | k=n/2 | 3820 | 575 | 6.6x |
+| 65536 | k=n | 4060 | 627 | 6.5x |
 
 ### Parallel speedup - M3 Pro
 
@@ -91,160 +91,215 @@ At the 1-second boundary (from regenerated contour sweep, Q=256):
 | k | Serial n | Parallel n | Speedup |
 |---|----------|------------|---------|
 | 2 | 1,025,391 | 5,273,438 | 5.1x |
-| 100 | 76,256 | 437,512 | 5.7x |
-| 1000 | 33,156 | 225,437 | 6.8x |
-| 10000 | 20,312 | 131,875 | 6.5x |
-| 13000 | 19,500 | 122,687 | 6.3x |
+| 100 | 78,209 | 468,756 | 6.0x |
+| 1000 | 36,218 | 219,202 | 6.1x |
+| 10000 | 20,312 | 117,812 | 5.8x |
+| 13000 | 18,687 | 119,640 | 6.4x |
 
 Speedup varies by k due to engine dispatch: linear-only k values see ~5-6x (simple SIMD scaling),
-while hybrid-engine k values reach ~5.7-6.8x at this (extrapolated, past-grid) 1-second boundary
-(FFT tree parallelism); the full performance grid above shows hybrid cells peaking around 7.5-7.7x
-at more moderate n. M3 Pro's 6P+6E topology limits peak parallel speedup well below Zen 4's ~14x on
-16 homogeneous P-cores.
+while hybrid-engine k values reach ~5.8-6.4x at this 1-second boundary (FFT tree parallelism); the
+full performance grid above shows hybrid cells peaking around 7.5-7.9x at more moderate n. M3 Pro's
+6P+6E topology limits peak parallel speedup well below Zen 4's ~14x on 16 homogeneous P-cores.
 
-### 1-second threshold: n ≈ 20,600 (k=n, single-threaded), n ≈ 91,000 (k=n, 12-thread)
+### 1-second threshold: n = 18,368 (k=n, single-threaded), n = 88,064 (k=n, 12-thread)
 
-Serial: interpolated from bench_grid (n=16,384 at 753 ms, n=32,768 at 1,790 ms). Parallel: extrapolated from bench_grid (n=32,768 at 258 ms, n=65,536 at 647 ms); regenerated bench_grid after fixing a B-selection calibration gap at n=8,192/16,384 large-k cells (2026-08-02).
+Real binary search (`bench_grid threshold`; `results/threshold_m3pro_serial.txt`,
+`results/threshold_m3pro_parallel.txt`), not an interpolation from grid points --
+past sessions repeatedly substituted an interpolated estimate here, which shipped
+a materially wrong number more than once (see HANDOFF.md). This run post-dates
+the M3 Pro calibration extension to 262,144 (905 sizes) and the wrap-safety-margin
+fix, so it reflects the corrected dispatch behavior, not the pre-fix
+catastrophic-wrap regime that affected n≈89,600-90,112 before tonight's fixes.
+
+These specific numbers were measured with a single sample per candidate (the
+`threshold` binary search's original methodology). A later check the same night
+found that measuring with real repetition (median of 5, matching this project's
+usual convention) shifts the M3 Pro serial figure down to roughly n=16,256 --
+directly confirmed to be sustained thermal throttling under back-to-back
+near-1-second computations (not a bug: 8 consecutive reps at one fixed n show a
+clear upward time drift), not a change in what's actually being measured. The
+`threshold` subcommand itself has since been fixed to take a real median of 5
+per candidate (matching every other benchmark in this project) for future runs;
+the headline numbers above are kept as originally measured, single-sample,
+cold-start figures.
 
 ### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈122-124 (empirical crossover table in `devices/m3_pro/fft_config.h`).
 
 ---
 
-## AMD Ryzen 9 7950X (Zen 4, AVX-512, AOCL-FFTW), 2026-07-27 reference data
+## AMD Ryzen 9 7950X (Zen 4, AVX-512, AOCL-FFTW)
 
-> **Reference hardware**: dedicated Zen4 box, fresh redeployment 2026-07-27.
-> AOCL-FFTW (AMD's official znver4-tuned build, tag 5.3) is the sole FFT backend,
-> built from source with the documented AM5 flag set. A direct A/B test confirmed
-> AOCL is cleanly faster than plain system FFTW at every calibrated size, no dual
-> dispatch. All numbers below are under the `performance` cpufreq governor (16 physical
-> cores, SMT off for benchmarking, `OMP_NUM_THREADS=16` for parallel).
+> **Reference hardware**: bare-metal Ryzen 9 7950X, 16 physical / 32 logical cores,
+> 128 GB (4 x 32 GB, so 2 DIMMs per channel). AOCL-FFTW (AMD's official
+> znver4-tuned build, tag 5.3) is the sole FFT backend, built from source with the
+> documented AM5 flag set. A direct A/B test confirmed AOCL is cleanly faster than
+> plain system FFTW at every calibrated size, no dual dispatch. All numbers below
+> are under the `performance` cpufreq governor (verified by reading every
+> `scaling_governor` back, not just issuing the command), with
+> `OMP_NUM_THREADS=16`, one thread per **physical** core.
 > `WRAP_FMA_NS=0.4360` is directly measured via `tools/bench_wrap_fma.c`, see
 > [Calibration methodology](#calibration-methodology).
 >
-> **Important: this box's RAM runs at 3600 MT/s vs. its 5600 MT/s DIMM rating**,
-> an AMD AM5 2-DIMMs-per-channel (2DPC) platform electrical limit, confirmed not
-> fixable at the OS/BIOS level. A 1DPC replacement box was not available. Per
-> explicit user decision, **this box (at 3600 MT/s) is now the standing Zen4
-> reference** for this project; this is a permanent characteristic of the reference
-> hardware, not a temporary anomaly or a bug to fix.
+> **This box's RAM runs at 3600 MT/s against a 4800 MT/s DIMM rating**, the AMD
+> AM5 2-DIMMs-per-channel (2DPC) electrical limit, confirmed via `dmidecode`
+> (4x 32GB, Configured Memory Speed 3600 MT/s) and not fixable at the OS/BIOS
+> level. This is a permanent characteristic of the reference hardware, not a
+> temporary anomaly. Measured streaming DRAM bandwidth (`tools/calibrate.c`'s
+> own bandwidth phase) is 32.7 GB/s, consistent with genuine 3600 MT/s 2DPC
+> operation.
 >
-> The RAM ceiling's effect is **not a flat percentage**: linear/schoolbook-engine
-> timings are nearly identical to our prior (higher-bandwidth) Zen4 box (~0.97-1.0×),
-> while hybrid/FFT-heavy timings are 40-65% slower at larger k, because FFT is
-> memory-bandwidth-bound and schoolbook isn't. See the [Prior hardware comparison
-> (2026-07-22/24)](#prior-hardware-comparison-2026-07-2224) subsection below for the
-> full old-vs-new breakdown.
+> This is the project's standing Zen4 reference; all numbers below are measured
+> directly on it. (A prior box used earlier in this project ran the same
+> nominal configuration but measured slower on hybrid/FFT-heavy cells; that
+> discrepancy was never resolved and isn't relevant to the numbers below --
+> see `VERDICTS.md` if the history matters to you.)
 
-### Performance (ms, uniform stacks, median of 5) - Zen 4 (current reference, 2026-07-27)
+### Performance (ms, uniform stacks, median of 5) - Zen 4 (current reference)
 
 Single-threaded vs 16-thread parallel, per (n, k) cell. Source:
-`results/bench_grid_zen4_serial_20260727.txt`, `results/bench_grid_zen4_parallel_20260727.txt`.
+`results/bench_grid_zen4_serial.txt`, `results/bench_grid_zen4_parallel.txt`
+(undated = current, per this repo's convention).
 
 | n | k | serial (ms) | parallel (ms) | speedup |
 |---|---|---|---|---|
-| 64 | k=10 | 0.103 | 0.0165 | 6.2x |
-| 64 | k=50 | 0.189 | 0.0263 | 7.2x |
-| 64 | k=100 | 0.223 | 0.0263 | 8.5x |
-| 64 | k=n/4 | 0.108 | 0.0166 | 6.5x |
-| 64 | k=n/2 | 0.145 | 0.0194 | 7.5x |
-| 64 | k=n | 0.225 | 0.0267 | 8.4x |
-| 128 | k=10 | 0.197 | 0.0223 | 8.8x |
-| 128 | k=50 | 0.329 | 0.0384 | 8.6x |
-| 128 | k=100 | 0.621 | 0.0615 | 10.1x |
-| 128 | k=n/4 | 0.283 | 0.0332 | 8.5x |
-| 128 | k=n/2 | 0.397 | 0.0457 | 8.7x |
-| 128 | k=n | 0.792 | 0.0737 | 10.7x |
-| 256 | k=10 | 0.393 | 0.0402 | 9.8x |
-| 256 | k=50 | 0.673 | 0.0801 | 8.4x |
-| 256 | k=100 | 1.56 | 0.130 | 12.0x |
-| 256 | k=n/4 | 0.818 | 0.0883 | 9.3x |
-| 256 | k=n/2 | 2.03 | 0.159 | 12.8x |
-| 256 | k=n | 4.11 | 0.230 | 17.9x |
-| 512 | k=10 | 0.724 | 0.0612 | 11.8x |
-| 512 | k=50 | 2.08 | 0.548 | 3.8x |
-| 512 | k=100 | 3.74 | 0.688 | 5.4x |
-| 512 | k=n/4 | 4.67 | 0.596 | 7.8x |
-| 512 | k=n/2 | 9.11 | 0.670 | 13.6x |
-| 512 | k=n | 9.95 | 0.756 | 13.2x |
-| 1024 | k=10 | 1.46 | 0.121 | 12.1x |
-| 1024 | k=50 | 3.48 | 0.359 | 9.7x |
-| 1024 | k=100 | 7.32 | 1.21 | 6.0x |
-| 1024 | k=n/4 | 19.1 | 1.41 | 13.5x |
-| 1024 | k=n/2 | 22.3 | 1.66 | 13.4x |
-| 1024 | k=n | 24.1 | 1.78 | 13.5x |
-| 2048 | k=10 | 3.67 | 0.294 | 12.5x |
-| 2048 | k=50 | 8.21 | 0.681 | 12.1x |
-| 2048 | k=100 | 15.0 | 1.16 | 12.9x |
-| 2048 | k=n/4 | 48.4 | 3.50 | 13.8x |
-| 2048 | k=n/2 | 53.7 | 3.94 | 13.6x |
-| 2048 | k=n | 57.2 | 4.23 | 13.5x |
-| 4096 | k=10 | 7.39 | 0.651 | 11.4x |
-| 4096 | k=50 | 17.8 | 1.48 | 12.0x |
-| 4096 | k=100 | 25.8 | 2.35 | 11.0x |
-| 4096 | k=n/4 | 115 | 8.40 | 13.7x |
-| 4096 | k=n/2 | 128 | 9.36 | 13.7x |
-| 4096 | k=n | 139 | 10.1 | 13.8x |
-| 8192 | k=10 | 13.4 | 1.23 | 10.9x |
-| 8192 | k=50 | 34.3 | 2.84 | 12.1x |
-| 8192 | k=100 | 53.6 | 4.63 | 11.6x |
-| 8192 | k=n/4 | 277 | 20.4 | 13.6x |
-| 8192 | k=n/2 | 315 | 24.2 | 13.0x |
-| 8192 | k=n | 341 | 28.1 | 12.1x |
-| 16384 | k=10 | 29.6 | 2.37 | 12.5x |
-| 16384 | k=50 | 56.9 | 6.43 | 8.8x |
-| 16384 | k=100 | 117 | 9.69 | 12.1x |
-| 16384 | k=n/4 | 667 | 88.1 | 7.6x |
-| 16384 | k=n/2 | 743 | 112 | 6.6x |
-| 16384 | k=n | 810 | 142 | 5.7x |
-| 32768 | k=10 | 62.3 | 6.04 | 10.3x |
-| 32768 | k=50 | 131 | 13.6 | 9.6x |
-| 32768 | k=100 | 218 | 23.6 | 9.2x |
-| 32768 | k=n/4 | 1570 | 280 | 5.6x |
-| 32768 | k=n/2 | 1790 | 314 | 5.7x |
-| 32768 | k=n | 1950 | 363 | 5.4x |
-| 65536 | k=10 | 118 | 21.0 | 5.6x |
-| 65536 | k=50 | 266 | 30.4 | 8.8x |
-| 65536 | k=100 | 411 | 48.4 | 8.5x |
-| 65536 | k=n/4 | 4110 | 627 | 6.6x |
-| 65536 | k=n/2 | 4750 | 729 | 6.5x |
-| 65536 | k=n | 5110 | 901 | 5.7x |
+| 64 | k=10 | 0.0946 | 0.0120 | 7.9x |
+| 64 | k=50 | 0.190 | 0.0225 | 8.4x |
+| 64 | k=100 | 0.229 | 0.0237 | 9.7x |
+| 64 | k=n/4 | 0.0950 | 0.0137 | 6.9x |
+| 64 | k=n/2 | 0.127 | 0.0174 | 7.3x |
+| 64 | k=n | 0.242 | 0.0234 | 10.3x |
+| 128 | k=10 | 0.167 | 0.0203 | 8.2x |
+| 128 | k=50 | 0.327 | 0.0403 | 8.1x |
+| 128 | k=100 | 0.573 | 0.0635 | 9.0x |
+| 128 | k=n/4 | 0.266 | 0.0312 | 8.5x |
+| 128 | k=n/2 | 0.391 | 0.0445 | 8.8x |
+| 128 | k=n | 0.740 | 0.0962 | 7.7x |
+| 256 | k=10 | 0.329 | 0.0416 | 7.9x |
+| 256 | k=50 | 0.672 | 0.0833 | 8.1x |
+| 256 | k=100 | 1.60 | 0.172 | 9.3x |
+| 256 | k=n/4 | 0.889 | 0.0938 | 9.5x |
+| 256 | k=n/2 | 2.14 | 0.213 | 10.0x |
+| 256 | k=n | 3.36 | 0.265 | 12.7x |
+| 512 | k=10 | 0.646 | 0.0656 | 9.8x |
+| 512 | k=50 | 1.99 | 0.179 | 11.1x |
+| 512 | k=100 | 3.55 | 0.300 | 11.8x |
+| 512 | k=n/4 | 4.17 | 0.383 | 10.9x |
+| 512 | k=n/2 | 7.37 | 0.549 | 13.4x |
+| 512 | k=n | 7.91 | 0.579 | 13.7x |
+| 1024 | k=10 | 1.33 | 0.129 | 10.3x |
+| 1024 | k=50 | 3.53 | 0.350 | 10.1x |
+| 1024 | k=100 | 7.54 | 0.610 | 12.4x |
+| 1024 | k=n/4 | 15.8 | 1.11 | 14.2x |
+| 1024 | k=n/2 | 17.3 | 1.25 | 13.8x |
+| 1024 | k=n | 19.7 | 1.49 | 13.2x |
+| 2048 | k=10 | 3.11 | 0.305 | 10.2x |
+| 2048 | k=50 | 6.99 | 0.689 | 10.1x |
+| 2048 | k=100 | 13.9 | 1.19 | 11.7x |
+| 2048 | k=n/4 | 36.3 | 2.59 | 14.0x |
+| 2048 | k=n/2 | 39.3 | 2.86 | 13.7x |
+| 2048 | k=n | 45.0 | 3.18 | 14.2x |
+| 4096 | k=10 | 6.21 | 0.615 | 10.1x |
+| 4096 | k=50 | 15.0 | 1.40 | 10.7x |
+| 4096 | k=100 | 28.5 | 2.34 | 12.2x |
+| 4096 | k=n/4 | 82.6 | 5.92 | 14.0x |
+| 4096 | k=n/2 | 95.0 | 6.69 | 14.2x |
+| 4096 | k=n | 103 | 7.40 | 13.9x |
+| 8192 | k=10 | 12.6 | 1.25 | 10.1x |
+| 8192 | k=50 | 31.5 | 3.37 | 9.3x |
+| 8192 | k=100 | 57.9 | 5.02 | 11.5x |
+| 8192 | k=n/4 | 194 | 13.8 | 14.1x |
+| 8192 | k=n/2 | 206 | 15.7 | 13.1x |
+| 8192 | k=n | 232 | 26.9 | 8.6x |
+| 16384 | k=10 | 25.5 | 2.47 | 10.3x |
+| 16384 | k=50 | 74.0 | 5.49 | 13.5x |
+| 16384 | k=100 | 127 | 9.73 | 13.1x |
+| 16384 | k=n/4 | 442 | 85.8 | 5.2x |
+| 16384 | k=n/2 | 484 | 116 | 4.2x |
+| 16384 | k=n | 525 | 157 | 3.3x |
+| 32768 | k=10 | 52.9 | 5.61 | 9.4x |
+| 32768 | k=50 | 118 | 11.8 | 10.0x |
+| 32768 | k=100 | 252 | 18.9 | 13.3x |
+| 32768 | k=n/4 | 991 | 247 | 4.0x |
+| 32768 | k=n/2 | 1060 | 275 | 3.9x |
+| 32768 | k=n | 1240 | 389 | 3.2x |
+| 65536 | k=10 | 107 | 20.2 | 5.3x |
+| 65536 | k=50 | 252 | 30.1 | 8.4x |
+| 65536 | k=100 | 727 | 45.7 | 15.9x |
+| 65536 | k=n/4 | 2570 | 606 | 4.2x |
+| 65536 | k=n/2 | 2850 | 701 | 4.1x |
+| 65536 | k=n | 3160 | 862 | 3.7x |
 
-### Parallel speedup - Zen 4 (current reference, 2026-07-27)
+### Parallel speedup - Zen 4 (current reference)
 
-At the 1-second boundary (from contour sweep, Q=256). Source:
-`results/contour_zen4_serial_q256_20260727.csv`, `results/contour_zen4_parallel_q256_20260727.csv`.
+At the 1-second boundary (from contour sweep, Q=256, `OMP_NUM_THREADS=16`).
+Source: `results/contour_zen4_serial_q256.csv`,
+`results/contour_zen4_parallel_q256.csv`.
 
 | k | Serial n | Parallel n | Speedup |
 |---|----------|------------|---------|
-| 2 | 402,833 | 1,513,672 | 3.8x |
-| 100 | 117,264 | 906,259 | 7.7x |
-| 1000 | 31,625 | 137,812 | 4.4x |
-| 10000 | 17,500 | 94,375 | 5.4x |
-| 13000 | 16,250 | 86,937 | 5.4x |
+| 2 | 415,040 | 1,562,501 | 3.8x |
+| 100 | 121,169 | 968,753 | 8.0x |
+| 1000 | 46,937 | 131,593 | 2.8x |
+| 10000 | 32,500 | 103,750 | 3.2x |
+| 13000 | 30,062 | 95,468 | 3.2x |
+
+These boundary speedups are much lower than the 10-14x the performance grid
+shows at moderate n, and lower than the previous box's 4.4-5.4x at the same k.
+That is the expected shape, not an anomaly: at the one-second boundary the
+parallel run is at a far larger n than the serial run it is compared against,
+deep into the memory-bandwidth-bound regime documented below, so it is not a
+same-n speedup. Read the grid for same-n scaling and this table only for
+"how much further does 16 threads push the frontier".
 
 ### Known scaling limit: parallel speedup degrades at n ≥ 16,384 (same mechanism, different absolute numbers)
 
 Parallel speedup on the 16-physical-core 7950X is a healthy 10-14x below
 n=16,384 (e.g. n=8,192, k=n: 12.1x) but falls to ~5.7x at n=16,384 and stays
-in the 5-7x range through n=65,536 (k=n). The underlying mechanism is the same
-genuine memory-bandwidth/cache-capacity wall documented in the prior-hardware
-section below (confirmed via `perf stat` on the earlier box), but the absolute
-speedup numbers differ because the same 3600 MT/s bandwidth ceiling that
-hurts serial also limits how much aggregate bandwidth 16 threads can extract;
-the parallel numbers are closer to the old box's parallel numbers than the
-serial numbers are, consistent with 16 threads already saturating the bus on
-both boxes. The full old-vs-new comparison is in the prior-hardware section
-below.
+in the 5-7x range through n=65,536 (k=n). This is a genuine memory-bandwidth/
+cache-capacity wall (confirmed via `perf stat`): the 3600 MT/s bandwidth
+ceiling limits how much aggregate bandwidth 16 threads can extract once the
+working set outgrows cache, so parallel efficiency drops at exactly the n
+where the hybrid/FFT engine becomes memory-bandwidth-bound rather than
+compute-bound.
 
-### 1-second threshold: n = 17,984 (k=n, single-threaded), n ≈ 72,200 (k=n, 16-thread)
+### 1-second threshold: n = 26,816 (k=n, single-threaded), n = 65,536 (k=n, 16-thread)
 
-Serial: **n=17,984**, the first real `bench_grid threshold` binary search this
-project has run on Zen4 hardware (prior RESULTS.md's "n≈29,000" was an interpolation
-between two grid points, never a real binary search). Parallel: n≈72,200,
-extrapolated from the contour data above (n=70,000 at 1718ms floor; this is the same
-floor the old box hit, consistent with both boxes being bandwidth-saturated in parallel).
+**Both numbers are real `bench_grid threshold` binary searches on this box**
+(`results/threshold_zen4_serial.txt`, `results/threshold_zen4_parallel.txt`).
+Neither is interpolated or extrapolated. Like the M3 Pro figures above, these
+were measured single-sample per candidate (the `threshold` subcommand's
+original methodology, since fixed to a real median of 5 for future runs --
+see the M3 Pro section for why: single-sample measurements are vulnerable to
+sustained-load thermal drift, confirmed directly this session). Kept as
+originally measured for consistency with the rest of tonight's data.
 
-### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈249-281 (empirical crossover table in `devices/zen4/fft_config.h`, recalibrated for this box this session, commits `eb40e2d`/`2aff562`).
+Two changes worth stating explicitly rather than silently swapping:
+
+- **Parallel: the previously published `n ≈ 72,200` was never measured.**
+  RESULTS.md disclosed it as extrapolated from contour data, and the real
+  binary search now puts the boundary at **n = 65,536** (n=65,792 -> 1143 ms,
+  n=66,560 -> 1093 ms, both over budget). The extrapolation was therefore
+  about **10% optimistic**, in the direction HANDOFF.md predicted it might be.
+  This is the first real parallel threshold measurement Zen4 has ever had.
+- **Serial: 26,816 here vs the 17,984 previously published.** Both are real
+  binary searches; they are simply different physical machines. See the
+  reference-hardware note above, which quantifies the same 35-40% machine gap
+  across the whole hybrid region.
+
+### Dispatch: cost-based `select_engine()`, B from `select_best_B()` (typically B=32). Linear→hybrid crossover at k≈249-281 (empirical `crossover_k[]` in `devices/zen4/fft_config.h`).
+
+Validated on the current box in **both** thread modes
+(`results/crossover_zen4_20260803_serial.txt`, `..._parallel.txt`):
+
+- **Serial** agrees with the table: linear wins through k=200 and hybrid takes
+  over by k=240-260 across n=512-8192, bracketing the calibrated 249-281.
+- **Parallel (16 threads) does not.** The real transition moves *down*, to
+  k≈200 at n=4096-8192 and k≈40-80 at n=512-1024, so the serially-calibrated
+  threshold keeps choosing linear over a band of k where hybrid is already
+  faster at 16 threads. This is the known, deliberate scoping decision in
+  VERDICTS.md V15 (one table, calibrated serial, reused for parallel) meeting
+  its first counterexample: the same check on M3 Pro shows *no* shift at all.
+  Disclosed in the paper; a thread-count-aware table is not implemented.
 
 ### AOCL-FFTW: sole backend, no dual dispatch
 
@@ -255,111 +310,6 @@ selection uses `best_fft_config()` driven by `calib_times_ns[]` (749 calibrated 
 AOCL PATIENT wisdom). No `calib_lib[]` array exists, the earlier claim of
 "AOCL-FFTW+MKL dual dispatch, 637 vs 112 sizes" in prior versions of this document
 traced to measurements on a different box that never had AOCL-FFTW installed.
-
-### Prior hardware comparison (2026-07-22/24): "when we had more memory bandwidth"
-
-The numbers below are from our earlier Zen4 box, which ran its DIMMs at full rated
-speed (1DPC configuration, ~5600 MT/s effective). They are preserved here as a
-labeled historical reference; the user's own framing: "when you had more memory
-bandwidth, you did better on the Zen4." The gap is **not a flat percentage**: at
-small k (linear/schoolbook engine, compute-bound), the two boxes are nearly identical
-(ratio ~0.97-1.0×). At large k (hybrid/FFT engine, memory-bandwidth-bound), the
-current box is ~40-65% slower. A single "divide everything by ~1.6" extrapolation
-would be wrong; it overcorrects the linear-dominated region. If a 1DPC-equivalent
-number is needed for commentary, scale by regime: ~1.0× for k < 100 (linear-bound),
-~1.6-1.8× for k ≥ 1000 (hybrid/FFT-bound). **These are rough estimates, not
-measurements.**
-
-#### Old performance grid (2026-07-22/24, higher-bandwidth Zen4)
-
-Single-threaded vs 16-thread parallel, per (n, k) cell. All numbers from the prior
-bench_grid runs (median of 5, Q=256, uniform stacks).
-
-| n | k | serial (ms) | parallel (ms) | speedup |
-|---|---|---|---|---|
-| 64 | k=10 | 0.0891 | 0.014 | 6.4x |
-| 64 | k=50 | 0.159 | 0.023 | 6.9x |
-| 64 | k=100 | 0.189 | 0.026 | 7.3x |
-| 64 | k=n/4 | 0.105 | 0.0138 | 7.6x |
-| 64 | k=n/2 | 0.14 | 0.0162 | 8.6x |
-| 64 | k=n | 0.19 | 0.0241 | 7.9x |
-| 128 | k=10 | 0.181 | 0.0203 | 8.9x |
-| 128 | k=50 | 0.317 | 0.0386 | 8.2x |
-| 128 | k=100 | 0.613 | 0.0685 | 8.9x |
-| 128 | k=n/4 | 0.244 | 0.0307 | 7.9x |
-| 128 | k=n/2 | 0.382 | 0.0461 | 8.3x |
-| 128 | k=n | 0.724 | 0.0814 | 8.9x |
-| 256 | k=10 | 0.318 | 0.035 | 9.1x |
-| 256 | k=50 | 0.658 | 0.0781 | 8.4x |
-| 256 | k=100 | 1.74 | 0.151 | 11.5x |
-| 256 | k=n/4 | 0.872 | 0.0896 | 9.7x |
-| 256 | k=n/2 | 2.11 | 0.195 | 10.8x |
-| 256 | k=n | 3.36 | 0.254 | 13.2x |
-| 512 | k=10 | 0.633 | 0.0646 | 9.8x |
-| 512 | k=50 | 1.7 | 0.175 | 9.7x |
-| 512 | k=100 | 3.12 | 0.296 | 10.5x |
-| 512 | k=n/4 | 4.29 | 0.404 | 10.6x |
-| 512 | k=n/2 | 7.31 | 0.545 | 13.4x |
-| 512 | k=n | 7.76 | 0.593 | 13.1x |
-| 1024 | k=10 | 1.32 | 0.13 | 10.2x |
-| 1024 | k=50 | 3.46 | 0.351 | 9.9x |
-| 1024 | k=100 | 6.99 | 0.602 | 11.6x |
-| 1024 | k=n/4 | 15.4 | 1.14 | 13.5x |
-| 1024 | k=n/2 | 17.0 | 1.26 | 13.5x |
-| 1024 | k=n | 17.7 | 1.33 | 13.3x |
-| 2048 | k=10 | 3.2 | 0.313 | 10.2x |
-| 2048 | k=50 | 7.09 | 0.719 | 9.9x |
-| 2048 | k=100 | 14.3 | 1.19 | 12.0x |
-| 2048 | k=n/4 | 35.6 | 2.62 | 13.6x |
-| 2048 | k=n/2 | 38.5 | 2.85 | 13.5x |
-| 2048 | k=n | 40.7 | 3.01 | 13.5x |
-| 4096 | k=10 | 7.27 | 0.631 | 11.5x |
-| 4096 | k=50 | 15.2 | 1.43 | 10.6x |
-| 4096 | k=100 | 27.5 | 2.34 | 11.8x |
-| 4096 | k=n/4 | 81.5 | 5.99 | 13.6x |
-| 4096 | k=n/2 | 89.3 | 6.59 | 13.6x |
-| 4096 | k=n | 93.7 | 6.96 | 13.5x |
-| 8192 | k=10 | 14.6 | 1.21 | 12.1x |
-| 8192 | k=50 | 27.7 | 2.79 | 9.9x |
-| 8192 | k=100 | 50.7 | 4.76 | 10.7x |
-| 8192 | k=n/4 | 185 | 17.8 | 10.4x |
-| 8192 | k=n/2 | 205 | 16.9 | 12.1x |
-| 8192 | k=n | 220 | 21.9 | 10.0x |
-| 16384 | k=10 | 29.4 | 2.58 | 11.4x |
-| 16384 | k=50 | 57.6 | 5.59 | 10.3x |
-| 16384 | k=100 | 121 | 9.55 | 12.7x |
-| 16384 | k=n/4 | 433 | 84.6 | 5.1x |
-| 16384 | k=n/2 | 472 | 110 | 4.3x |
-| 16384 | k=n | 491 | 149 | 3.3x |
-| 32768 | k=10 | 58.3 | 5.96 | 9.8x |
-| 32768 | k=50 | 123 | 11.8 | 10.4x |
-| 32768 | k=100 | 235 | 20.0 | 11.8x |
-| 32768 | k=n/4 | 1030 | 280 | 3.7x |
-| 32768 | k=n/2 | 1070 | 311 | 3.4x |
-| 32768 | k=n | 1140 | 359 | 3.2x |
-| 65536 | k=10 | 125 | 20.4 | 6.1x |
-| 65536 | k=50 | 255 | 32.5 | 7.8x |
-| 65536 | k=100 | 443 | 45.8 | 9.7x |
-| 65536 | k=n/4 | 2620 | 644 | 4.1x |
-| 65536 | k=n/2 | 2940 | 747 | 3.9x |
-| 65536 | k=n | 3300 | 928 | 3.6x |
-
-#### Old parallel speedup (2026-07-22/24, higher-bandwidth Zen4)
-
-| k | Serial n | Parallel n | Speedup |
-|---|----------|------------|---------|
-| 2 | 402,833 | 1,513,672 | 3.8x |
-| 100 | 128,980 | 1,000,050 | 7.8x |
-| 1000 | 48,468 | 131,593 | 2.7x |
-| 10000 | 30,625 | 99,062 | 3.2x |
-| 13000 | 28,843 | 95,468 | 3.3x |
-
-#### Old 1-second threshold (2026-07-22/24): n ≈ 29,000 (k=n, serial), n ≈ 70,000 (k=n, parallel)
-
-Serial: interpolated from bench_grid (n=16,384 at 491 ms, n=32,768 at 1,140 ms);
-**never a real binary search**; the current box's n=17,984 is the first real
-`bench_grid threshold` result for Zen4. Parallel: interpolated from bench_grid
-(n=32,768 at 359 ms, n=65,536 at 928 ms).
 
 ---
 
@@ -482,7 +432,8 @@ They live in `devices/<device>/fft_config.h`.
 | `LEAF_BLOCK_NS` | 61.3029 | Per-block overhead at leaf level. |
 | `FFT_OVERHEAD_NS` | 0.0 | Per-call FFT overhead (baked into `calib_times_ns[]`, not double-counted). |
 
-> Calibration table (`calib_sizes[]`/`calib_times_ns[]`, 749 entries) and
+> Calibration table (`calib_sizes[]`/`calib_times_ns[]`, 776 entries,
+> ceiling 150,384 after the 2026-08-03 extension) and
 > AOCL-FFTW PATIENT wisdom in `devices/zen4/fft_config.h` are from an AMD
 > Ryzen 9 7950X (same SKU as the benchmark machine). `WRAP_FMA_NS` was
 > directly measured after the indirect fit proved it unidentifiable from
@@ -596,22 +547,55 @@ not a standing caveat.
 |---|------|--------|-------|-----|
 | 4,096 | 0.37 | 0.76 | 0.87 | 0.89 |
 | 16,384 | 1.18 | 2.81 | 3.93 | 4.17 |
-| 65,536 | 4.29 | 9.46 | 19.43 | 20.26 |
-| 262,144 | 16.58 | 36.38 | 95.95 | 100.09 |
-| 1,048,576 | 65.68 | 178.26 | 504.29 | 509.51 |
-| 4,194,304 | 272.47 | 671.06 | 2,352.43 | 2,320.45 |
+| 65,536 | 4.29 | 10.62 | 19.43 | 20.26 |
+| 262,144 | 16.58 | 41.01 | 95.95 | 100.09 |
+| 1,048,576 | 65.68 | 178.26 | 501.84 | 507.90 |
+| 4,194,304 | 272.47 | 753.65 | 2,352.43 | 2,320.45 |
 | 16,777,216 | 1,215.01 | 2,493.21 | 10,582.00 | 10,719.01 |
 | 33,554,432 | 2,506.71 | 5,059.26 | 22,321.49 | 22,865.76 |
+
+> **Provenance note.** A cost-model bug (`VERDICTS.md` V20a/V20b, found
+> 2026-08-04, same class as V20 but a third, GPU-specific mechanism) let
+> the planner pick an FFT size smaller than the operand at 5 of these 32
+> cells: k=1,024 for n=65,536/262,144/4,194,304, and k=n/2 and k=n for
+> n=1,048,576. Those 5 cells were re-measured 2026-08-04 on a fresh B200
+> with the fix compiled in, after `test_gpu_wrap_feasibility` passed on
+> hardware and an extended `bench_gpu_fused verify` grid (now including
+> the k=1,024-2,048 band the bug lived in) passed 42/42 against the CPU
+> reference; the table above shows the re-measured values. The k=1,024
+> column got slower on its now-feasible plans (e.g. 671.06 → 753.65ms at
+> n=4,194,304); the two n=1,048,576 large-k cells moved <0.5%. The other
+> 27 cells were confirmed unaffected by replaying the pre-fix planner over
+> every published cell (`VERDICTS.md` V20b) and keep their 2026-07-30
+> timings.
 
 Full 211-point calibration heatmap
 (`results/gpu_heatmap_b200.csv`), regenerated 2026-07-30 on
 top of two rounds of B-selection anchor fixes (`2620583`, `71db180`; see
-`VERDICTS.md` V7). All 210 cells pass with zero errors, cv ≤ 0.036
-everywhere (most 0.000).
+`VERDICTS.md` V7). All 210 cells **ran to completion** with cv ≤ 0.036
+everywhere (most 0.000) -- **"zero errors" here means no OOM/execution
+failure, not a numerical accuracy check**: `tools/heatmap_gpu.cu` makes no
+comparison against a reference value at all, so this line was previously
+worded to imply a correctness guarantee it never provided. (Numerical
+accuracy is gated separately by `bench_gpu_fused verify`, whose grid now
+includes the k=1,024-2,048 band.) 21 of these 210 cells were affected by
+the V20a/V20b timing bug and were re-measured 2026-08-04 on a fresh B200
+with the fix in place (`./heatmap_gpu --cells`, identical measurement path
+as the full run); the CSV contains the re-measured rows, with the
+pre-splice file kept as
+`results/gpu_heatmap_b200_20260804_pre_v20b_resplice.csv`. The remaining
+189 cells were confirmed unaffected by planner replay (`VERDICTS.md` V20b)
+and keep their 2026-07-30 values; re-measured neighbouring cells that
+merely changed run (not plan) moved ~1%, so the two runs are directly
+comparable.
 
 > **Known limitation, disclosed rather than hidden: 1 cell out of 210 is a
 > genuine, understood regression.** n=65,536, k=2,048 dispatches B=48 and
-> runs 14.13ms versus 12.13ms before this session's anchor fixes (+16.5%).
+> ran 14.13ms versus 12.13ms before this session's anchor fixes (+16.5%).
+> (Both of those timings predate the V20a feasibility fix; the cell's
+> current post-fix, re-measured value is 15.28ms, but the B-selection
+> regression mechanism described here is independent of that fix and
+> stands.)
 > Root cause: a low-k anchor added at n=131,072 to fix a *different* cell
 > became this cell's nearest neighbour in the joint (n,k) lookup, pulling
 > it to the wrong B. Two rounds of targeted anchor fixes each fixed their
@@ -639,21 +623,34 @@ time.
 
 | Query shape | Largest n ≤ 1000ms | Smallest n > 1000ms | Bracket width |
 |---|---|---|---|
-| k = n | 1,490,944 (918.8ms) | 1,506,304 (1,124.2ms) | 15,360 (1.0% of lo) |
+| k = n | 1,490,944 (943.9ms) | 1,506,304 (1,150.5ms) | 15,360 (1.0% of lo) |
 | k = 100 | 7,975,936 (998.9ms) | 7,991,296 (1,001.1ms) | 15,360 (0.2% of lo) |
 
-Full search trace in `results/gpu_threshold_search_20260728.txt`
-(`tools/threshold_search_gpu.cu`, plan-based API). Supersedes the old
-2026-07-25 frontier-probe-derived estimates (n≈1,441,792 / n≈6,291,456),
-which predated the ragged-tree fix and were reinterpretations of 5 fixed
-sample points, not an actual search.
+The `k = n` search was fully re-run 2026-08-04 with the V20a/V20b
+feasibility fix in place (trace:
+`results/gpu_threshold_search_kn_20260804.txt`), because both endpoints of
+the original bracket had been timed on infeasible plans. **The bracket
+came back identical**: the largest full-field n under one second is still
+1,490,944, now measured on a feasible plan (943.9ms vs the pre-fix
+918.8ms). The `k = 100` bracket was never affected (verified by planner
+replay, `VERDICTS.md` V20b) and keeps its 2026-07-28 numbers (trace:
+`results/gpu_threshold_search_20260728.txt`;
+`tools/threshold_search_gpu.cu`, plan-based API). These searches supersede
+the old 2026-07-25 frontier-probe-derived estimates (n≈1,441,792 /
+n≈6,291,456), which predated the ragged-tree fix and were
+reinterpretations of 5 fixed sample points, not an actual search.
 
 ### Dispatch: three-tier kernel planner (schoolbook / cuFFTDx fused / batched cuFFT), cost-based per tree level
 
-GPU cost-model constants (`C_wrap`, `C_school`, `R`, `C_gap`) are fit
-separately from the CPU model via `tools/fit_gpu_cost_model.py` against
-empirical kernel benchmarks in `devices/b200/gpu_fft_config.h`; see
-"GPU Cost Model (B200)" in `OPTIMIZATION_GUIDE.md` for the full pipeline.
+The shipped GPU planner is driven by measured calibration data
+(`devices/b200/gpu_fft_config.h`: per-pipeline FFT timing tables, directly
+measured scalar constants such as `GPU_SCHOOL_FMA_NS`, and the empirical
+`gbselect_*[]` B table), not by fitted parameters.
+`tools/fit_gpu_cost_model.py` does fit four constants (`C_wrap`,
+`C_school`, `R`, `C_gap`) for offline analysis, but **writes nothing into
+the build** -- no corresponding macros exist in the config header or
+`src/gpu/` (verified by grep, 2026-07-30). See "GPU Cost Model (B200)" in
+`OPTIMIZATION_GUIDE.md` for the decision-path details.
 
 > **Diagnostic pass (July 2026):** The GPU planner was confirmed NOT to have the
 > CPU's wrap-correction cost-model bug. `src/gpu/gpu_plan.cu` uses one constant

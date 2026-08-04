@@ -45,8 +45,11 @@ subproduct tree with FFTW3's r2c/c2r transforms, with per-level decisions driven
 by offline-calibrated data.
 
 #### Offline calibration pipeline
-1. **PATIENT wisdom**: generate FFTW_PATIENT plans for all 749 smooth (7-smooth:
-   2^a·3^b·5^c·7^d) sizes up to 131072. Stored in `devices/<machine>/fftw_wisdom.dat`.
+1. **PATIENT wisdom**: generate FFTW_PATIENT plans for every 7-smooth
+   (2^a·3^b·5^c·7^d) size up to the calibration ceiling (`./calibrate --max-size N`,
+   default 131072; the shipped devices are calibrated higher, see
+   `N_CALIBRATED_SIZES`/`CALIBRATED_MAX_CONV_LEN` in each
+   `devices/<machine>/fft_config.h`). Stored in `devices/<machine>/fftw_wisdom.dat`.
 2. **Per-size benchmarking**: time the full r2c + pointwise + c2r pipeline at each
    smooth size (10K-10M reps). Stored in `devices/<machine>/fft_config.h` as
    `calib_sizes[]` and `calib_times_ns[]`.
@@ -363,7 +366,8 @@ cp fftw_wisdom.dat devices/zen4/fftw_wisdom.dat
 ```
 
 This generates:
-- FFTW PATIENT wisdom for all 749 smooth sizes (2^a·3^b·5^c·7^d up to 131072)
+- FFTW PATIENT wisdom for every 7-smooth size (2^a·3^b·5^c·7^d) up to the
+  `--max-size` ceiling (default 131072)
 - `calib_sizes[]` and `calib_times_ns[]` arrays with per-size FFT pipeline costs
 - Skeleton `#define`s for platform constants (need manual update in Step 3)
 

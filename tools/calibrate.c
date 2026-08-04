@@ -273,15 +273,34 @@ static void write_config(const char *filename) {
     fprintf(f, "/* Auto-generated FFT configuration from calibrate */\n");
     fprintf(f, "/* Generated on this machine; do not use on different hardware */\n\n");
 
-    /* CALIBRATED_MAX_CONV_LEN: largest convolution length the FFT timing
-     * table can honestly cover.  Derived from max(calib_sizes):
-     * best_fft_config(L) returns a non-sentinel cost for
-     * L ≤ 2 * max(calib_sizes) - 1. */
+    /* CALIBRATED_MAX_CONV_LEN: largest convolution length the calibrated
+     * path is TRUSTED to handle, not merely the largest it can technically
+     * still produce an answer for.
+     *
+     * best_fft_config(L) structurally returns a non-sentinel answer for any
+     * L <= 2*max(calib_sizes)-1 (that's the widest L for which max(calib_sizes)
+     * still falls inside its [L/2+1, 2L] search window). But reaching a valid
+     * answer near the top of that range can require wrap_m up to
+     * max(calib_sizes)-1 -- and WRAP_FMA_NS was only ever fit over the
+     * realistic operating range wrap_m in [64,384] (bench_wrap_fma.c). Beyond
+     * that, its cost estimate is untrustworthy, not just imprecise: this is
+     * the exact mechanism behind the n=89,856 / 433.7s regression (found
+     * 2026-08-03, see HANDOFF.md) -- the model picked a huge, underpriced
+     * wrap correction because nothing stopped it from considering one.
+     *
+     * So this ceiling is deliberately TIGHTER than the structural maximum:
+     * max(calib_sizes) + WRAP_SAFE_MARGIN, where WRAP_SAFE_MARGIN is the top
+     * of the validated wrap_m range. Past it, the uncalibrated fallback
+     * (always FFT, wrap-free, FFTW_ESTIMATE) engages -- slower, but every
+     * cost number it relies on is either exact (wrap_m=0) or within its
+     * validated range, never extrapolated. */
     int max_calib = smooth_nums[n_smooth - 1];
-    int calib_max_conv_len = 2 * max_calib - 1;
-    fprintf(f, "/* Largest convolution length the FFT timing table can honestly cover.\n");
-    fprintf(f, " * Derived from max(calib_sizes) = %d: best_fft_config(L) returns a\n", max_calib);
-    fprintf(f, " * non-sentinel cost for L ≤ 2*%d-1 = %d. */\n", max_calib, calib_max_conv_len);
+    int wrap_safe_margin = 384;
+    int calib_max_conv_len = max_calib + wrap_safe_margin;
+    fprintf(f, "/* Largest convolution length the calibrated path is TRUSTED to handle\n");
+    fprintf(f, " * (not the structural max -- see tools/calibrate.c for why).\n");
+    fprintf(f, " * max(calib_sizes) = %d + WRAP_SAFE_MARGIN(%d) = %d. */\n",
+            max_calib, wrap_safe_margin, calib_max_conv_len);
     fprintf(f, "#ifndef CALIBRATED_MAX_CONV_LEN\n");
     fprintf(f, "#define CALIBRATED_MAX_CONV_LEN %d\n", calib_max_conv_len);
     fprintf(f, "#endif\n\n");
@@ -361,10 +380,19 @@ int main(int argc, char **argv) {
     write_config("fft_config.h");
 
     int max_calib = smooth_nums[n_smooth - 1];
-    int calib_max_conv_len = 2 * max_calib - 1;
+    /* Must match write_config()'s CALIBRATED_MAX_CONV_LEN exactly. This used
+     * to print the old structural bound (2*max-1) while write_config() emitted
+     * the tighter max+WRAP_SAFE_MARGIN, so the closing banner claimed roughly
+     * double the range the header it had just written actually trusts. */
+    int calib_max_conv_len = max_calib + 384;
     printf("Done. Next steps:\n");
-    printf("  1. cp fft_config.h devices/<DEVICE>/fft_config.h\n");
-    printf("  2. cp fftw_wisdom.dat devices/<DEVICE>/fftw_wisdom.dat\n");
+    printf("  1. Merge into the device header (do NOT plain-cp over an\n");
+    printf("     already-calibrated device -- that destroys the crossover,\n");
+    printf("     B-selection, wrap-FMA and schoolbook tables layered in by\n");
+    printf("     other tools):\n");
+    printf("       python3 tools/extend_calib_sizes.py --device <DEVICE> fft_config.h\n");
+    printf("     (A plain cp is correct only for a brand-new device.)\n");
+    printf("  2. cp fftw_wisdom.dat devices/<DEVICE>/fftw_wisdom.dat  (wholesale is fine)\n");
     printf("  3. make DEVICE=<DEVICE> && ./bench_grid verify\n");
     printf("  4. Run full calibration pipeline: ./tools/calibrate_full.sh <DEVICE>\n");
     printf("\n  Calibration ceiling: conv lengths up to %d are fully optimal;\n", calib_max_conv_len);

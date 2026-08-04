@@ -23,6 +23,18 @@
 #include <stddef.h>  /* NULL */
 #include <math.h>    /* log, exp */
 
+/* Top of WRAP_FMA_NS's validated operating range (bench_wrap_fma.c fits it
+ * over wrap_m in [64,384], see CLAUDE.md). best_fft_config()/
+ * best_fft_config_joint() must never choose a candidate whose wrap
+ * correction falls outside this, regardless of gaps in calib_sizes[] --
+ * a gap anywhere in the table (not just past the largest calibrated size)
+ * can otherwise let an under-priced huge wrap_m win a cost comparison it
+ * has no business winning (the exact mechanism behind the n=89,856/433.7s
+ * regression, HANDOFF.md 2026-08-03). */
+#ifndef WRAP_SAFE_MARGIN
+#define WRAP_SAFE_MARGIN 384
+#endif
+
 /* ── Empirical linear-vs-hybrid crossover lookup ──────────────────────
  *
  * Precedent: LAPACK's ILAENV ISPEC=3 (NX) parameter -- a problem-size
@@ -131,6 +143,22 @@ static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,
         if (S < min_size) continue;
         int mb = (S >= build_conv) ? 0 : build_conv - S;
         int mc = (S >= corr_conv) ? 0 : corr_conv - S;
+        /* Skip candidates needing an untrustworthy wrap on EITHER side --
+         * a candidate that's cheap on build but needs a huge correlate
+         * wrap (or vice versa) is exactly as unsafe as one that's bad on
+         * both. */
+        if (mb > WRAP_SAFE_MARGIN || mc > WRAP_SAFE_MARGIN) continue;
+        /* FEASIBILITY (not cost): the correlate implementations require
+         * fft_n >= len_g, i.e. the g operand must fit the transform whole.
+         * len_g = corr_conv - p_eff + 1, so the constraint is mc <= p_eff-1.
+         * Past it, correlate_fft_cached_*_wrap silently TRUNCATES g
+         * (copy_g = min(len_g, fft_n)) and its wrap corrections -- which
+         * model cyclic aliasing of a g that fully fit -- produce wrong
+         * output; the non-cached correlate_fft/_pair would heap-overflow.
+         * This is a domain-of-validity bound on the implementations, not a
+         * tunable: do not relax it without teaching the correlates to
+         * restore the truncated tail terms (VERDICTS.md V20). */
+        if (mc >= p_eff) continue;
         double cost = calib_times_ns[i]
                     + (double)mb*(mb+1)/2.0 * WRAP_FMA_NS
                     + calib_times_ns[i] * PAIRED_CACHED_CORR_RATIO
@@ -141,6 +169,28 @@ static double best_fft_config_joint(int build_conv, int corr_conv, int p_eff,
             *out_build_m = mb;
             *out_corr_m = mc;
         }
+    }
+    if (*out_size == 0) {
+        /* No calibrated candidate in [min_size, 2*max_conv] has a
+         * trustworthy wrap on both sides. Fall back exactly like the
+         * fully-uncalibrated path: smallest smooth size >= max_conv,
+         * wrap-free on both build and correlate. */
+        *out_size = next_smooth_ge(max_conv);
+        *out_build_m = 0;
+        *out_corr_m = 0;
+        int fidx;
+        { int lo2=0,hi2=N_CALIBRATED_SIZES-1;
+          while(lo2<hi2){int m2=(lo2+hi2)>>1;if(calib_sizes[m2]<*out_size)lo2=m2+1;else hi2=m2;}
+          fidx = lo2; }
+        /* If this fallback size happens to be a real calibrated entry
+         * (possible when it's just past the window this loop searched),
+         * use its real timing; otherwise an honest "uncalibrated, don't
+         * trust this number for a joint-vs-independent choice" sentinel --
+         * the caller's cost comparison will then correctly prefer whichever
+         * side (joint vs independent) has real data instead of silently
+         * comparing against a wrong neighboring size's timing. */
+        best_cost = (fidx < N_CALIBRATED_SIZES && calib_sizes[fidx] == *out_size)
+                   ? calib_times_ns[fidx] * (1.0 + PAIRED_CACHED_CORR_RATIO) : 1e18;
     }
     return best_cost;
 }
@@ -161,6 +211,20 @@ static void best_fft_config(int L, int *out_size, int *out_wrap_m, int len_P) {
         if (S > 2 * L) break;
         if (S < min_size) continue;
         int m = (S >= L) ? 0 : L - S;
+        /* Skip candidates needing an untrustworthy wrap -- see
+         * WRAP_SAFE_MARGIN's comment. A wrap-free (or small-wrap)
+         * candidate anywhere in the window will naturally win the cost
+         * comparison anyway; this only matters when NO such candidate
+         * exists nearby (an internal gap in calib_sizes[], not just past
+         * the largest calibrated size). */
+        if (m > WRAP_SAFE_MARGIN) continue;
+        /* FEASIBILITY for correlate mode (len_P > 0): fft_n >= len_g, i.e.
+         * m <= len_P - 1. Same bound as best_fft_config_joint()'s mc
+         * constraint -- see the comment there (VERDICTS.md V20). Pure
+         * convolution (len_P == 0, the build/polymul path) reads its wrap
+         * terms directly from the original input arrays, so any m within
+         * WRAP_SAFE_MARGIN is feasible there. */
+        if (len_P > 0 && m >= len_P) continue;
         double correction = (len_P > 0) ? (double)m * (m + 1) * WRAP_FMA_NS
                                         : (double)m * (m + 1) / 2.0 * WRAP_FMA_NS;
         double cost = calib_times_ns[i] + correction;
@@ -169,6 +233,13 @@ static void best_fft_config(int L, int *out_size, int *out_wrap_m, int len_P) {
             *out_size = S;
             *out_wrap_m = m;
         }
+    }
+    if (*out_size == 0) {
+        /* No calibrated candidate in [L/2+1, 2L] has a trustworthy wrap.
+         * Fall back exactly like the fully-uncalibrated path: smallest
+         * smooth size >= L, wrap-free. */
+        *out_size = next_smooth_ge(L);
+        *out_wrap_m = 0;
     }
 }
 

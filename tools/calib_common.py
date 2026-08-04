@@ -75,7 +75,11 @@ def inject_table(config_path: str, device_meta: dict,
     )
 
     # ── Replace n array ──
-    n_pattern = rf'(static const int {prefix}_n\[{n_macro}\]\s*=\s*\{{)'
+    # `[<digits>]` is also accepted: calibrate_gpu.cu emits an empty
+    # placeholder table as `gbselect_n[1] = {0}` with the N macro at 0
+    # (a zero-sized array would be invalid C++), and the first real splice
+    # rewrites it into the canonical `[N_MACRO]` form below.
+    n_pattern = rf'(static const int {prefix}_n\[(?:{n_macro}|\d+)\]\s*=\s*\{{)'
     n_match = re.search(n_pattern, text)
     if not n_match:
         raise RuntimeError(f"{prefix}_n[] array not found in {config_path}")
@@ -87,7 +91,7 @@ def inject_table(config_path: str, device_meta: dict,
     text = text[:n_match.start()] + new_n_array + text[brace_end + 1:]
 
     # ── Replace k array ──
-    k_pattern = rf'(static const int {prefix}_k\[{n_macro}\]\s*=\s*\{{)'
+    k_pattern = rf'(static const int {prefix}_k\[(?:{n_macro}|\d+)\]\s*=\s*\{{)'
     k_match = re.search(k_pattern, text)
     if not k_match:
         raise RuntimeError(f"{prefix}_k[] array not found in {config_path}")
@@ -97,7 +101,7 @@ def inject_table(config_path: str, device_meta: dict,
     text = text[:k_match.start()] + new_k_array + text[brace_end + 1:]
 
     # ── Replace B array ──
-    b_pattern = rf'(static const int {prefix}_B\[{n_macro}\]\s*=\s*\{{)'
+    b_pattern = rf'(static const int {prefix}_B\[(?:{n_macro}|\d+)\]\s*=\s*\{{)'
     b_match = re.search(b_pattern, text)
     if not b_match:
         raise RuntimeError(f"{prefix}_B[] array not found in {config_path}")
@@ -168,6 +172,58 @@ def _find_matching_brace(text: str, open_pos: int) -> int:
             if depth == 0:
                 return i
     raise ValueError("Unmatched brace")
+
+
+# Public alias: extend_calib_sizes.py needs this to splice size-indexed
+# tables (calib_sizes[]/calib_times_ns[]/schoolbook_*_ns[]), which are a
+# different shape (one flat array per table, not an (n,k,B) triple) from
+# what inject_table()/read_existing_table() above handle, so it reuses just
+# the brace-matching primitive rather than duplicating it.
+find_matching_brace = _find_matching_brace
+
+
+def find_array_block(text: str, array_decl_regex: str) -> tuple[int, int, int]:
+    """
+    Locate a `static const TYPE name[SIZE] = { ... };` block.
+    Returns (decl_start, brace_start, brace_end) character offsets into
+    text. Raises RuntimeError if not found -- callers should let this
+    propagate rather than silently skipping a table that used to be there.
+    """
+    m = re.search(array_decl_regex, text)
+    if not m:
+        raise RuntimeError(f"pattern not found: {array_decl_regex}")
+    brace_start = m.end() - 1  # the '{' the regex is required to end on
+    if text[brace_start] != "{":
+        raise RuntimeError(
+            f"array_decl_regex must end matching the opening '{{': "
+            f"{array_decl_regex}"
+        )
+    brace_end = _find_matching_brace(text, brace_start)
+    return m.start(), brace_start, brace_end
+
+
+def read_number_array(text: str, array_decl_regex: str, cast) -> list:
+    """Parse the numeric contents of a `{ ... }` initializer matched by
+    array_decl_regex. cast is int or float."""
+    _, brace_start, brace_end = find_array_block(text, array_decl_regex)
+    body = text[brace_start + 1:brace_end]
+    tokens = re.findall(r'-?\d+\.?\d*(?:[eE][+-]?\d+)?', body)
+    return [cast(t) for t in tokens]
+
+
+def format_number_array(decl: str, values: list, per_line: int = 10) -> str:
+    """Format a float/int array declaration with fixed-width wrapping,
+    matching this project's existing device-header style (see any
+    devices/*/fft_config.h calib_times_ns[] block)."""
+    def fmt(v):
+        return str(v) if isinstance(v, int) else f"{v:.4f}".rstrip("0").rstrip(".") or "0"
+    lines = [f"{decl} = {{"]
+    for i in range(0, len(values), per_line):
+        chunk = values[i:i + per_line]
+        inner = ",".join(fmt(v) for v in chunk)
+        lines.append(f"   {inner},")
+    lines.append("};")
+    return "\n".join(lines) + "\n"
 
 
 def _format_int_array(decl: str, values: list[int]) -> str:

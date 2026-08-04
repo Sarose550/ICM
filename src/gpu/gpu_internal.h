@@ -321,6 +321,40 @@ inline double now_ns_host() {
 }
 
 int next_pow2_int(int n);
+
+/* ── Correlate FFT-size feasibility ─────────────────────────────────
+ *
+ * Every correlate path loads the WHOLE g operand into an fft_n-sized
+ * transform: cufftdx_load_real() (gpu_kernels.cu) copies src[idx] only for
+ * idx < fft_n, and the cuFFT gather path is bounded the same way. Neither
+ * reads nor writes out of bounds -- so an fft_n below len_g does not crash,
+ * it silently DROPS g[fft_n .. len_g-1] while the wrap correction goes on
+ * modelling the cyclic aliasing of a g that fully fit. The result is wrong
+ * output with no diagnostic.
+ *
+ * The cost model must therefore treat "the operand fits" as a hard
+ * constraint, never merely as something to price. With
+ *     corr_conv = len_g + len_P - 1        and   wrap_m = corr_conv - fft_n
+ * the three statements below are the same statement:
+ *     fft_n >= len_g   <=>   wrap_m <= len_P - 1   <=>   wrap_m < len_P
+ *
+ * This is the GPU half of VERDICTS.md V20 (the CPU half is
+ * src/cpu/fft_cost_model.h). len_P <= 0 marks pure-convolution/build mode,
+ * which is unconstrained here -- see the build-mode note in V20. */
+inline bool corr_wrap_feasible(int wrap_m, int len_P) {
+    return len_P <= 0 || wrap_m < len_P;
+}
+
+/* Smallest power of two that can hold the g operand as well as the build
+ * operand, for the fused (cuFFTDx) candidate. Returns the same value as
+ * next_pow2_int(conv_build) whenever that is already feasible. */
+inline int fused_p2_feasible(int conv_build, int corr_conv, int p_eff) {
+    int p2 = next_pow2_int(conv_build);
+    int len_g = corr_conv - p_eff + 1;
+    if (p2 < len_g) p2 = next_pow2_int(len_g);
+    return p2;
+}
+
 void update_vram_alloc(GpuPlan *plan, size_t bytes);
 bool alloc_device(GpuPlan *plan, void **ptr, size_t bytes, cudaStream_t stream);
 void free_device(GpuPlan *plan, void *ptr, cudaStream_t stream);

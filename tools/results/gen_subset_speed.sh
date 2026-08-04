@@ -33,8 +33,18 @@ mkdir -p results
 DATE_SUFFIX="$(date +%Y%m%d)"
 OUTFILE="results/subset_speed_${DEVICE}_${DATE_SUFFIX}.txt"
 
-echo "Running bench_grid subset-speed for $DEVICE ..."
-"$BINARY" subset-speed > "$OUTFILE" 2>&1
+# Subset-speed is reported single-threaded, and must be MEASURED that way.
+#
+# refresh_all.sh exports OMP_NUM_THREADS=$NCPU for the whole pipeline, and by
+# the time this step runs, ./bench_grid on disk is the parallel build. Left
+# alone, this step therefore produced a 12-thread measurement while the paper's
+# subset table (and its caption) says "single-threaded" -- target-locality
+# pruning shows a real 1.1-1.5x win serially but flattens to ~1.00x across the
+# board in parallel, so the generated file silently stopped supporting the
+# table it exists to back up. Pin one thread here rather than depending on
+# whichever build happens to be on disk.
+echo "Running bench_grid subset-speed for $DEVICE (single-threaded) ..."
+OMP_NUM_THREADS=1 "$BINARY" subset-speed > "$OUTFILE" 2>&1
 
 if [ -s "$OUTFILE" ]; then
     echo "Saved $OUTFILE ($(wc -l < "$OUTFILE") lines)"

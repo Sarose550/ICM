@@ -170,6 +170,13 @@ bool build_plan_metadata(GpuPlan *plan) {
             /* If the cuFFT config chose a non-fused size, check whether a
              * power-of-2 fused size would be cheaper.  Override fft_n so
              * the execution engine uses the fused kernel.
+             * The power-of-2 rounding is not a heuristic: cuFFTDx kernels
+             * are instantiated at COMPILE TIME, only at the power-of-two
+             * sizes in gpu_kernels.cu's dispatch switches (64..4096, plus
+             * 8192 when GPU_FUSED_MAX_CONV_LEN allows), so a fused level
+             * can only run at one of those sizes.  This override rounds to
+             * the smallest feasible compiled size; fused_p2_feasible()
+             * enforces the correlate-operand bound on that rounding.
              * Also fire when tier is already GPU_TIER_FUSED but paying a
              * nonzero wrap penalty: best_fft_config_joint_gpu() may have
              * chosen a small fft_n with heavy wrap correction that looked
@@ -177,7 +184,19 @@ bool build_plan_metadata(GpuPlan *plan) {
              * fused size with zero wrap may be faster on real hardware. */
             if (conv_build <= g_runtime_fused_max_conv_len
                 && (tier != GPU_TIER_FUSED || build_wrap_m > 0 || corr_wrap_m > 0)) {
-                int p2 = next_pow2_int(conv_build);
+                /* next_pow2_int(conv_build) alone is NOT always feasible: it
+                 * bounds only the build operand, while the same fused kernel
+                 * also loads the full g operand (len_g = conv_corr - p_eff + 1)
+                 * for the correlate. On the shipped B200 data this override
+                 * was the ONLY producer of infeasible plans -- both searches
+                 * above returned feasible sizes and this then overrode them
+                 * with a smaller power of two carrying a wrap past len_g.
+                 * Bump to the smallest power of two that holds g as well.
+                 * If that size has no fused calibration the isfinite() test
+                 * rejects the candidate and the cuFFT config stands, which is
+                 * also what keeps this inside the sizes cuFFTDx can actually
+                 * instantiate (see is_cufftdx_supported_fft_n()). */
+                int p2 = fused_p2_feasible(conv_build, conv_corr, p_eff);
                 double fb = estimate_fused_build_ns(p2);
                 double fc = estimate_fused_corr_ns(p2);
                 if (std::isfinite(fb) && std::isfinite(fc)) {

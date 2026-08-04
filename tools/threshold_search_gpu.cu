@@ -43,6 +43,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 #include "icm_gpu.h"
@@ -279,7 +280,19 @@ static int binary_search_threshold(int k_mode) {
 
 /* ── main ───────────────────────────────────────────────────────── */
 
-int main() {
+int main(int argc, char **argv) {
+    /* Optional mode argument: run one search instead of both (a k=100
+     * search probes n up to 16M and is by far the more expensive one). */
+    int run_kn = 1, run_k100 = 1;
+    if (argc > 1) {
+        if (strcmp(argv[1], "kn") == 0) run_k100 = 0;
+        else if (strcmp(argv[1], "k100") == 0) run_kn = 0;
+        else if (strcmp(argv[1], "all") != 0) {
+            fprintf(stderr, "usage: %s [kn|k100|all]\n", argv[0]);
+            return 2;
+        }
+    }
+
     if (!icm_gpu_init(0)) {
         fprintf(stderr, "icm_gpu_init failed: %s\n", icm_gpu_last_error());
         return 1;
@@ -290,19 +303,23 @@ int main() {
            N_REPS, Q_POINTS);
     printf("plan-based API (icm_gpu_plan_create + icm_gpu_equity_with_plan)\n");
 
-    int threshold_kn = binary_search_threshold(0);   /* k=n */
-    int threshold_k100 = binary_search_threshold(1); /* k=100 */
+    int threshold_kn = run_kn ? binary_search_threshold(0) : -2;     /* k=n */
+    int threshold_k100 = run_k100 ? binary_search_threshold(1) : -2; /* k=100 */
 
     printf("\n========================================\n");
     printf("FINAL RESULTS:\n");
-    if (threshold_kn >= 0)
-        printf("  k=n   threshold n = %d\n", threshold_kn);
-    else
-        printf("  k=n   threshold: SEARCH FAILED\n");
-    if (threshold_k100 >= 0)
-        printf("  k=100 threshold n = %d\n", threshold_k100);
-    else
-        printf("  k=100 threshold: SEARCH FAILED\n");
+    if (run_kn) {
+        if (threshold_kn >= 0)
+            printf("  k=n   threshold n = %d\n", threshold_kn);
+        else
+            printf("  k=n   threshold: SEARCH FAILED\n");
+    }
+    if (run_k100) {
+        if (threshold_k100 >= 0)
+            printf("  k=100 threshold n = %d\n", threshold_k100);
+        else
+            printf("  k=100 threshold: SEARCH FAILED\n");
+    }
     printf("========================================\n");
 
     icm_gpu_shutdown();

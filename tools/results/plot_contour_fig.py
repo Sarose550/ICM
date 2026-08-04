@@ -22,6 +22,44 @@ from plot_common import (  # noqa: E402
 )
 
 
+def _label_diagonal(ax):
+    """Place the 'n = k' label on the visible part of the n=k diagonal.
+
+    Must be called AFTER set_xlim/set_ylim. On these log-log axes the data
+    ranges for n and k barely overlap, so the diagonal is only visible in a
+    short segment; anchoring the label to the raw data range put it off-axes
+    and on top of the x-axis title.
+    """
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+
+    seg_lo = max(x0, y0)
+    seg_hi = min(x1, y1)
+    if seg_hi <= seg_lo:
+        return  # diagonal not visible at all; nothing sensible to label
+
+    # Geometric midpoint of the visible segment, pulled slightly toward the
+    # low end so the label sits clear of the upper-right legend box.
+    anchor = np.sqrt(seg_lo * seg_hi) * 0.75
+    anchor = min(max(anchor, seg_lo * 1.05), seg_hi * 0.95)
+
+    # Rotation must be measured in display space: on log-log axes with
+    # different decade counts per inch, the n=k line is NOT drawn at 45deg.
+    p_lo = ax.transData.transform((seg_lo, seg_lo))
+    p_hi = ax.transData.transform((seg_hi, seg_hi))
+    angle = np.degrees(np.arctan2(p_hi[1] - p_lo[1], p_hi[0] - p_lo[0]))
+
+    ax.annotate(
+        'n = k', xy=(anchor, anchor),
+        xytext=(-6, 7), textcoords='offset points',
+        fontsize=10, color='#444444', alpha=0.9,
+        rotation=angle, rotation_mode='anchor',
+        ha='center', va='bottom', zorder=6,
+        bbox=dict(boxstyle='round,pad=0.15', facecolor='white',
+                  edgecolor='none', alpha=0.65),
+    )
+
+
 def plot_contour(cfg, serial_path, parallel_path, out_path):
     ks, ns, es = load_contour(serial_path)
     kp, np_, ep = load_contour(parallel_path)
@@ -61,9 +99,10 @@ def plot_contour(cfg, serial_path, parallel_path, out_path):
     lo, hi = min(all_vals) * 0.5, max(all_vals) * 2
     k_diag = np.logspace(np.log10(lo), np.log10(hi), 200)
     ax.plot(k_diag, k_diag, '--', color='#666666', alpha=0.6, linewidth=1.5, zorder=2)
-    mid = np.sqrt(lo * hi)
-    ax.text(mid * 0.8, mid * 0.55, 'n = k', fontsize=10, color='#666666',
-            alpha=0.7, rotation=38)
+    # NOTE: the 'n = k' label is placed later, after the axis limits are set --
+    # it must sit on the *visible* portion of the diagonal. Placing it here
+    # (from the raw data range) put it outside the axes, on top of the x-axis
+    # title, which is what made this reference line unreadable.
 
     # Mark intersection of n=k line with contours
     for label, k_arr, n_arr, color in [('serial', ks, ns, SERIAL_COLOR),
@@ -108,6 +147,8 @@ def plot_contour(cfg, serial_path, parallel_path, out_path):
     y_hi = max(max(ns), max(np_)) * 2
     ax.set_ylim(y_lo, y_hi)
     ax.grid(True, which='both', alpha=0.2)
+
+    _label_diagonal(ax)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches='tight')

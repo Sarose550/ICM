@@ -38,7 +38,10 @@ INCLUDES = -Isrc/cpu -Idevices/$(DEVICE)
 LDFLAGS = -lfftw3 -lm
 NVCC ?= nvcc
 CUDA_ARCH ?= sm_100
-CUDA_FLAGS = -O3 -std=c++17 -arch=$(CUDA_ARCH)
+# cuFFTDx takes the target SM as an integer (sm_100 -> 1000, sm_90a -> 900);
+# gpu_kernels.cu gates per-arch unsupported FFT sizes via cufftdx::is_supported.
+ICM_CUFFTDX_ARCH = $(patsubst sm_%,%,$(patsubst %a,%,$(CUDA_ARCH)))0
+CUDA_FLAGS = -O3 -std=c++17 -arch=$(CUDA_ARCH) -DICM_CUFFTDX_ARCH=$(ICM_CUFFTDX_ARCH)
 CUDA_LIBS = -lcufft -lcudart
 CUFFTDX_INC ?=
 ifeq ($(strip $(CUFFTDX_INC)),)
@@ -181,12 +184,16 @@ $(CPU_REF_OBJ): src/cpu/icm.c src/cpu/icm.h devices/$(DEVICE)/fft_config.h | $(B
 	$(CC) $(CFLAGS) $(INCLUDES) -c src/cpu/icm.c -o $@
 
 CUFFTDX_FLAGS = $(CUFFTDX_INC) -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY
-GPU_INCLUDES = $(INCLUDES) -Idevices/b200
+# GPU device config selection, mirroring the CPU's DEVICE=.  b200 is the
+# shipped calibration; for a new card, generate devices/<name>/gpu_fft_config.h
+# with ./calibrate_gpu and build with GPU_DEVICE=<name>.
+GPU_DEVICE ?= b200
+GPU_INCLUDES = $(INCLUDES) -Idevices/$(GPU_DEVICE)
 
 # ── Multi-file GPU compilation (separate compilation + device linking) ──
 GPU_SRCS = src/gpu/gpu_kernels.cu src/gpu/gpu_cost_model.cu src/gpu/gpu_plan.cu src/gpu/gpu_memory.cu src/gpu/gpu_fft_plans.cu src/gpu/gpu_exec.cu src/gpu/gpu_api.cu
 GPU_OBJS = $(patsubst src/gpu/%.cu,$(BUILD_DIR)/gpu_%.o,$(GPU_SRCS))
-GPU_HDRS = src/gpu/gpu_internal.h src/gpu/icm_gpu.h devices/b200/gpu_fft_config.h
+GPU_HDRS = src/gpu/gpu_internal.h src/gpu/icm_gpu.h devices/$(GPU_DEVICE)/gpu_fft_config.h
 
 $(BUILD_DIR)/gpu_%.o: src/gpu/%.cu $(GPU_HDRS) | $(BUILD_DIR)
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu -dc -o $@ $<
@@ -239,9 +246,20 @@ gpu_phase_profile: tools/gpu_phase_profile.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/gpu_phase_profile.o tools/gpu_phase_profile.cu
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_phase_profile.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
+threshold_search_gpu: tools/threshold_search_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/threshold_search_gpu.o tools/threshold_search_gpu.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/threshold_search_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
+
 test_gpu_cost_model: tools/test_gpu_cost_model.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_cost_model.o tools/test_gpu_cost_model.cu
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_cost_model.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
+
+# Host-side only: no kernel launches, no device allocation. Compiles with
+# nvcc (it includes gpu_internal.h) but RUNS on any machine, including one
+# with no NVIDIA device present.
+test_gpu_wrap_feasibility: tools/test_gpu_wrap_feasibility.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/test_gpu_wrap_feasibility.o tools/test_gpu_wrap_feasibility.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/test_gpu_wrap_feasibility.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
 test_cpu_cost_model: tools/test_cpu_cost_model.c src/cpu/icm.c src/cpu/icm.h devices/$(DEVICE)/fft_config.h
 	# -Wno-unused-function: this tool only exercises a subset of icm.c
@@ -254,7 +272,7 @@ test_bselect_lookup: tools/test_bselect_lookup.c src/cpu/fft_cost_model.h device
 	# functions; this test only calls empirical_best_B.
 	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -o $@ tools/test_bselect_lookup.c $(LDFLAGS)
 
-.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model test_bselect_lookup campaign_b200 calibrate_gpu_best_b
+.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu threshold_search_gpu test_gpu_cost_model test_gpu_wrap_feasibility test_cpu_cost_model test_bselect_lookup campaign_b200 calibrate_gpu_best_b
 
 campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	bash tools/run_b200_campaign.sh
@@ -263,6 +281,6 @@ campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate
 
 clean:
 	rm -f $(OUT) calibrate contour_1s contour_1s_par accuracy_bench validate_best_b calibrate_best_b
-	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu test_gpu_cost_model test_cpu_cost_model test_bselect_lookup
+	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu threshold_search_gpu test_gpu_cost_model test_gpu_wrap_feasibility test_cpu_cost_model test_bselect_lookup
 	rm -rf $(BUILD_DIR)
 	rm -rf python/*.egg-info python/build python/dist

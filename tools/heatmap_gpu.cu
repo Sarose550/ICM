@@ -54,6 +54,27 @@ static double cv_ms(const std::vector<double> &x) {
     return sqrt(var) / mean;
 }
 
+/* --cells n:k,n:k,... restricts the sweep to the listed grid cells, using
+ * the identical per-cell measurement path as a full run -- for re-measuring
+ * a known subset (e.g. the V20b-affected cells) without paying for the
+ * whole grid.  Cells not on the standard grid pattern are never visited. */
+struct NkCell { int n, k; };
+
+static bool parse_cells_csv(const char *s, std::vector<NkCell> &out) {
+    while (*s) {
+        char *end = nullptr;
+        long n = strtol(s, &end, 10);
+        if (end == s || *end != ':') return false;
+        s = end + 1;
+        long k = strtol(s, &end, 10);
+        if (end == s) return false;
+        out.push_back({(int)n, (int)k});
+        s = (*end == ',') ? end + 1 : end;
+        if (*end && *end != ',') return false;
+    }
+    return !out.empty();
+}
+
 static IcmGpuOptions default_opts() {
     IcmGpuOptions opts{};
     opts.device_id = 0;
@@ -130,7 +151,8 @@ static double gpu_time_ms(int n, int k, int Q, int fast,
    MODE 1: 2D HEATMAP SWEEP
    ══════════════════════════════════════════════════════════════ */
 
-static void run_heatmap(const char *out_csv, int Q, int fast) {
+static void run_heatmap(const char *out_csv, int Q, int fast,
+                        const std::vector<NkCell> &cells) {
     std::vector<int> grid = {
         64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
         131072, 262144, 524288, 1048576, 2097152, 4194304, 8388608,
@@ -149,6 +171,12 @@ static void run_heatmap(const char *out_csv, int Q, int fast) {
         for (int k : ks) {
             if (k > n) continue;
             if (fast && (k != n) && (k > std::min(n, 4096))) continue;
+            if (!cells.empty()) {
+                bool wanted = false;
+                for (const NkCell &c : cells)
+                    if (c.n == n && c.k == k) { wanted = true; break; }
+                if (!wanted) continue;
+            }
             printf("n=%d k=%d ... ", n, k);
             fflush(stdout);
 
@@ -287,10 +315,17 @@ int main(int argc, char **argv) {
     int fast = 0;
     enum { MODE_HEATMAP, MODE_NK } mode = MODE_HEATMAP;
 
+    std::vector<NkCell> cells;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--nk") == 0) mode = MODE_NK;
         else if (strcmp(argv[i], "--fast") == 0) fast = 1;
         else if (strcmp(argv[i], "--Q") == 0 && i + 1 < argc) Q = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--cells") == 0 && i + 1 < argc) {
+            if (!parse_cells_csv(argv[++i], cells)) {
+                printf("bad --cells list (expected n:k,n:k,...): %s\n", argv[i]);
+                return 2;
+            }
+        }
         else if (argv[i][0] != '-') out_csv = argv[i];
     }
 
@@ -300,7 +335,7 @@ int main(int argc, char **argv) {
     }
 
     switch (mode) {
-    case MODE_HEATMAP: run_heatmap(out_csv, Q, fast); break;
+    case MODE_HEATMAP: run_heatmap(out_csv, Q, fast, cells); break;
     case MODE_NK:      run_nk_threshold(Q, fast); break;
     }
 

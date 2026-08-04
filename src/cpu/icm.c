@@ -14,6 +14,12 @@
 #include <fftw3.h>
 #include "icm.h"
 #include "fft_config.h"       /* device-specific calibrated FFT times */
+/* Forward declaration: fft_cost_model.h's safety-fallback path (a candidate
+ * FFT size with no trustworthy calibrated wrap option) needs the same
+ * wrap-free "smallest smooth >= L" helper the fully-uncalibrated path
+ * already uses. Defined later in this file; declared here so the shared
+ * header (textually included into this translation unit) can call it. */
+static int next_smooth_ge(int n);
 #include "fft_cost_model.h"   /* shared FFT cost-model decision logic */
 #ifdef _OPENMP
 #include <omp.h>
@@ -543,6 +549,11 @@ static int count_smooth_up_to(int limit) {
     return cnt;
 }
 
+static int int_cmp(const void *a, const void *b) {
+    int ia = *(const int *)a, ib = *(const int *)b;
+    return (ia > ib) - (ia < ib);
+}
+
 /* Extend smooth_nums to cover at least `needed` value. */
 static void ensure_smooth_up_to(int needed) {
     if (smooth_max >= needed) return;
@@ -579,6 +590,16 @@ static void ensure_smooth_up_to(int needed) {
                 for (int c = b; c <= new_max; c *= 5)
                     for (int d = c; d <= new_max; d *= 7)
                         smooth_nums[n_smooth++] = d;
+        /* The nested a/b/c/d enumeration above is NOT ascending order (e.g.
+         * the a=1,b=1,c=1 sub-loop appends 1,7,49,343,... before the
+         * a=1,b=1,c=5 sub-loop appends 5, which is smaller than several
+         * already-appended values). Every binary search elsewhere in this
+         * file assumes smooth_nums[] is sorted ascending; leaving it
+         * unsorted here silently corrupted best_k_pad()'s search (found
+         * 2026-08-03: it returned 1536 for k=89600, truncating the tree's
+         * per-level polynomial size and producing wrong equity output,
+         * sum(equity) off from sum(payout) by 27x). Sort once here. */
+        qsort(smooth_nums, (size_t)n_smooth, sizeof(int), int_cmp);
     } else {
         int old_count = n_smooth;
         for (int a = 1; a <= new_max; a *= 2)
@@ -805,7 +826,10 @@ static inline void correlate_wrap_input_correction(double *out, int len_out,
                                              int fft_n);
 
 /* Correlate via FFT (from scratch: FFTs both g and P):
- * out[m] = sum_j P[j] * g[m+j] */
+ * out[m] = sum_j P[j] * g[m+j]
+ * PRECONDITION (all correlate_* variants below): fft_n >= len_g -- g must
+ * fit the transform whole. best_fft_config()/best_fft_config_joint()
+ * enforce this via the wrap_m <= len_P-1 feasibility bound (V20). */
 static inline __attribute__((always_inline)) void correlate_fft(const double *g, int len_g,
                           const double *P, int len_P,
                           double *out, int len_out,
@@ -1402,9 +1426,17 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
                         { int lo2=0, hi2=N_CALIBRATED_SIZES-1;
                           while(lo2<hi2){int m2=(lo2+hi2)>>1;if(calib_sizes[m2]<cfn)lo2=m2+1;else hi2=m2;}
                           cfn_idx = lo2; }
+                        /* cfn may be best_fft_config()'s wrap-free fallback
+                         * (a smooth size outside calib_sizes[] entirely,
+                         * when no candidate nearby had a trustworthy wrap) --
+                         * mirror the exact-match guard already used for
+                         * fft_build above rather than silently reading a
+                         * neighboring size's timing. */
+                        double corr_fft_ns = (cfn_idx < N_CALIBRATED_SIZES && calib_sizes[cfn_idx] == cfn)
+                                             ? calib_times_ns[cfn_idx] : 1e18;
                         double corr_correction = (double)cwm * (cwm + 1) * WRAP_FMA_NS;
                         double icost = fft_build + build_correction
-                            + INDEP_PAIR_RATIO * calib_times_ns[cfn_idx]
+                            + INDEP_PAIR_RATIO * corr_fft_ns
                             + corr_correction;
 
                         if (jcost < icost) {

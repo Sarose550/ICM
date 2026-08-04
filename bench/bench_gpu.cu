@@ -100,25 +100,25 @@ static int run_verify(int extended) {
             std::vector<double> S;
             make_stacks(n, dists[di], S);
 
-            int ks_basic[] = {std::min(100, n), n};
-            int ks_ext[] = {
-                std::min(16, n),
-                std::min(100, n),
-                std::min(512, n),
-                std::max(1, n / 2),
-                n
-            };
+            std::vector<int> ks;
             if (extended) {
                 const char *lite_env = getenv("ICM_GPU_VERIFY_EXT_LITE");
                 if (lite_env && lite_env[0] && atoi(lite_env) != 0) {
-                    ks_ext[0] = std::min(100, n);
-                    ks_ext[1] = std::max(1, n / 2);
-                    ks_ext[2] = n;
+                    ks = {std::min(100, n), std::max(1, n / 2), n};
+                } else {
+                    ks = {std::min(16, n), std::min(100, n), std::min(512, n),
+                          std::max(1, n / 2), n};
                 }
+            } else {
+                ks = {std::min(100, n), n};
             }
-            const int *ks = extended ? ks_ext : ks_basic;
-            int n_k = extended ? ((getenv("ICM_GPU_VERIFY_EXT_LITE") && atoi(getenv("ICM_GPU_VERIFY_EXT_LITE")) != 0) ? 3 : 5) : 2;
-            for (int ki = 0; ki < n_k; ++ki) {
+            /* k ~ 1024-2048 at n >= 65536 is the band where the fused
+             * power-of-2 feasibility bug lived (VERDICTS.md V20a/V20b); the
+             * historical grid stepped straight over it, which is why the
+             * 28 affected published cells passed this gate.  Keep the band
+             * under the CPU-referenced comparison permanently. */
+            if (n >= 65536) { ks.push_back(1024); ks.push_back(2048); }
+            for (size_t ki = 0; ki < ks.size(); ++ki) {
                 int k = ks[ki];
                 std::vector<double> payout;
                 make_payout(n, k, payout);

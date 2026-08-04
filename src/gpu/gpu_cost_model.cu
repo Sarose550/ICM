@@ -228,6 +228,11 @@ void best_fft_config_gpu(int conv_len, int len_P, double correction_scale,
         if (s < min_size) continue;
         int m = (s >= conv_len) ? 0 : (conv_len - s);
         if (m > wrap_cap) continue;
+        /* Hard feasibility bound, not a cost term: in correlate mode
+         * (len_P > 0) the g operand must fit the transform whole, or the
+         * correlate silently truncates it. See corr_wrap_feasible() in
+         * gpu_internal.h and VERDICTS.md V20. */
+        if (!corr_wrap_feasible(m, len_P)) continue;
         double correction = (double)m * (double)(m + 1) / 2.0 * fma_ns * correction_scale;
         double cost = estimate_cufft_pipeline_ns(s) + correction;
         if (cost < best_cost) {
@@ -283,6 +288,11 @@ double best_fft_config_joint_gpu(int build_conv, int corr_conv, int p_eff,
         int bm = (s >= build_conv) ? 0 : (build_conv - s);
         int cm = (s >= corr_conv) ? 0 : (corr_conv - s);
         if (bm > wrap_cap || cm > wrap_cap) continue;
+        /* Same hard feasibility bound as best_fft_config_gpu(), on the
+         * correlate half of the joint choice. The build half is
+         * unconstrained: min_size below is derived from max_conv >=
+         * build_conv, which already guarantees s >= the build operand. */
+        if (!corr_wrap_feasible(cm, p_eff)) continue;
         double cost = estimate_cufft_pipeline_ns(s)
             + (double)bm * (double)(bm + 1) / 2.0 * fma_ns * correction_scale
             + estimate_cufft_pipeline_ns(s) * GPU_PAIRED_CACHED_CORR_RATIO
@@ -745,7 +755,11 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
          * size with zero wrap may be faster on real hardware. */
         if (conv_build <= g_runtime_fused_max_conv_len
             && (tier != GPU_TIER_FUSED || bwrap > 0 || cwrap > 0)) {
-            int p2 = next_pow2_int(conv_build);
+            /* Feasibility-bounded, mirroring build_plan_metadata() in
+             * gpu_plan.cu -- the cost estimate must model the same fused
+             * size the planner will actually choose. See fused_p2_feasible()
+             * in gpu_internal.h. */
+            int p2 = fused_p2_feasible(conv_build, conv_corr, p_eff);
             double fb = estimate_fused_build_ns(p2);
             double fc = estimate_fused_corr_ns(p2);
             if (std::isfinite(fb) && std::isfinite(fc)) {
