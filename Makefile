@@ -246,6 +246,10 @@ gpu_phase_profile: tools/gpu_phase_profile.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/gpu_phase_profile.o tools/gpu_phase_profile.cu
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_phase_profile.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
 
+gpu_dispatch_validate: tools/gpu_dispatch_validate.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
+	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/gpu_dispatch_validate.o tools/gpu_dispatch_validate.cu
+	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/gpu_dispatch_validate.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
+
 threshold_search_gpu: tools/threshold_search_gpu.cu $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o
 	$(NVCC) $(CUDA_FLAGS) $(GPU_INCLUDES) -Isrc/gpu $(CUFFTDX_FLAGS) -dc -o $(BUILD_DIR)/threshold_search_gpu.o tools/threshold_search_gpu.cu
 	$(NVCC) $(CUDA_FLAGS) -o $@ $(BUILD_DIR)/threshold_search_gpu.o $(GPU_OBJS_FUSED) $(BUILD_DIR)/gpu_dlink_fused.o $(CUDA_LIBS)
@@ -272,7 +276,7 @@ test_bselect_lookup: tools/test_bselect_lookup.c src/cpu/fft_cost_model.h device
 	# functions; this test only calls empirical_best_B.
 	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -o $@ tools/test_bselect_lookup.c $(LDFLAGS)
 
-.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu threshold_search_gpu test_gpu_cost_model test_gpu_wrap_feasibility test_cpu_cost_model test_bselect_lookup campaign_b200 calibrate_gpu_best_b
+.PHONY: bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu gpu_dispatch_validate threshold_search_gpu test_gpu_cost_model test_gpu_wrap_feasibility test_cpu_cost_model test_bselect_lookup campaign_b200 calibrate_gpu_best_b
 
 campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu
 	bash tools/run_b200_campaign.sh
@@ -281,6 +285,6 @@ campaign_b200: bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate
 
 clean:
 	rm -f $(OUT) calibrate contour_1s contour_1s_par accuracy_bench validate_best_b calibrate_best_b
-	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu threshold_search_gpu test_gpu_cost_model test_gpu_wrap_feasibility test_cpu_cost_model test_bselect_lookup
+	rm -f bench_gpu bench_gpu_fused calibrate_gpu heatmap_gpu push_limit_gpu validate_planner_gpu gpu_dispatch_validate threshold_search_gpu test_gpu_cost_model test_gpu_wrap_feasibility test_cpu_cost_model test_bselect_lookup
 	rm -rf $(BUILD_DIR)
 	rm -rf python/*.egg-info python/build python/dist

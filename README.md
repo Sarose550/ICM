@@ -5,7 +5,7 @@
 
 High-performance C library for computing tournament placement equities using generating-function quadrature. Computes exact ICM equities for poker tournaments with up to 26,816 players / payouts in 1 second single-threaded, or 65,536 across 16 threads, on the AMD Zen 4 reference box (18,368 / 88,064 on Apple M3 Pro; see [RESULTS.md](RESULTS.md) for per-device figures). All are direct binary-search measurements, not interpolations. A CUDA backend extends this to up to 1.49 million players in under a second on an NVIDIA B200 (full field, `k=n`). Python bindings (ctypes, calling straight into the compiled shared library) are included for the CPU library.
 
-> 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf) - full derivation, proofs, and performance evaluation.
+> 📄 **Paper:** [Fast Tournament Equity Computation via Generating-Function Quadrature and FFT-Accelerated Subproduct Trees](paper/icm_paper.pdf): full derivation, proofs, and performance evaluation.
 >
 > **Status:** arXiv submission pending.
 
@@ -13,7 +13,8 @@ High-performance C library for computing tournament placement equities using gen
 
 The Independent Chip Model (ICM) is a tournament equity model that converts
 chip stacks into real-money expected payouts by accounting for the payout
-structure. In a poker tournament, chips do not have a fixed dollar value - your last chip is worth far less than your first - and ICM computes each
+structure. In a poker tournament, chips do not have a fixed dollar value
+(your last chip is worth far less than your first), and ICM computes each
 player's fair expected share of the prize pool. For a general introduction,
 see the [ICM Wikipedia page](https://en.wikipedia.org/wiki/Independent_Chip_Model).
 
@@ -54,7 +55,8 @@ All correctness tests pass at < 1.6e-10 relative error.
 **Subset equity.** `icm_equity_subset()` computes equities for only a chosen
 subset of players (`targets`) instead of all `n`. It prunes the hybrid
 engine's propagate pass with a per-level hot/cold bitmask marking which
-tree branches can contain a target player, skipping cold branches entirely - the sort order used by the rest of the engine is untouched, so this is
+tree branches can contain a target player, skipping cold branches entirely.
+The sort order used by the rest of the engine is untouched, so this is
 purely a pruning optimization, not a different algorithm. Worthwhile when
 you only need a handful of players' equities out of a large field; the
 speedup is workload-dependent (larger `n`, smaller target fraction helps
@@ -83,6 +85,10 @@ int status = icm_gpu_equity(n, S, Q, payout, k, equity, /* opts */ NULL, &stats)
 
 icm_gpu_shutdown();
 ```
+
+The CUDA device is selected once, by `icm_gpu_init(device_id)`, before any
+other call; the `device_id` field in `IcmGpuOptions` is informational only
+and ignored as an input.
 
 All correctness tests pass at < 1e-8 relative error against the CPU reference
 (`bench_gpu verify`). See [src/gpu/icm_gpu.h](src/gpu/icm_gpu.h) for the full API,

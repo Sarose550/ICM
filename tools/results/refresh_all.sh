@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# refresh_all.sh — full results refresh for a given device.
+# refresh_all.sh: full results refresh for a given device.
 #
 # Usage:  ./tools/results/refresh_all.sh --device <device>
 # Example: ./tools/results/refresh_all.sh --device m3_pro
@@ -156,7 +156,7 @@ python3 "$PLOT_DIR/plot_runtime_fig.py" --device "$DEVICE"
 # Convention from calibrate_adaptive.py: GPU devices have devices/<dev>/gpu_fft_config.h.
 if [ -f "devices/$DEVICE/gpu_fft_config.h" ] || [ -f "devices/b200/gpu_fft_config.h" ]; then
     echo "  -> GPU contour + GPU runtime_vs_n"
-    python3 "$PLOT_DIR/plot_gpu_contour_fig.py" || echo "    (GPU plots skipped — no heatmap data)"
+    python3 "$PLOT_DIR/plot_gpu_contour_fig.py" || echo "    (GPU plots skipped, no heatmap data)"
 fi
 
 echo "  -> accuracy_convergence"

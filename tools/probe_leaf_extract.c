@@ -3,8 +3,7 @@
  *
  * Methodology: replicates engine_hybrid_core with timing splits at each phase
  * boundary; block_build, tree_build+propagate, leaf_divide. Runs Q=256 points,
- * median over N_REPS independent runs. This is the same rigor as
- * probe_tree_levels.c.
+ * median over N_REPS independent runs.
  *
  * The main sweep reports raw per-phase timings (block, tree, leaf) at a grid
  * of (n,k) values.  The B-sweep phase (n=8192, k=320, all 6 candidate B

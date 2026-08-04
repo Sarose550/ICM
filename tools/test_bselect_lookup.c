@@ -1,16 +1,16 @@
 /*
- * test_bselect_lookup.c: Pin the shadowing bug in empirical_best_B().
+ * test_bselect_lookup.c: Pin empirical_best_B()'s joint-nearest-neighbour
+ * contract against a shadowing failure mode.
  *
- * empirical_best_B() (src/cpu/fft_cost_model.h) is documented as a
- * 2D nearest-neighbour lookup over the calibrated (n,k,B) table, but
- * it uses two sequential 1D passes: first find the nearest n, then
- * among only points with that n, find the nearest k.  A sparse
- * single-sample refinement point closer in n than a dense grid row
- * shadows the entire row, returning a wildly wrong B.
+ * empirical_best_B() (src/cpu/fft_cost_model.h) must be a single-pass 2D
+ * nearest-neighbour lookup over the calibrated (n,k,B) table. Two
+ * sequential 1D passes (nearest n first, then nearest k among only the
+ * points with that n) are NOT equivalent: a sparse single-sample
+ * refinement point closer in n than a dense grid row shadows the entire
+ * row, returning a wildly wrong B.
  *
  * This test implements a true joint-NN reference inside the test file
  * and asserts that empirical_best_B() agrees with it over a sweep.
- * It MUST FAIL against the current code.
  *
  * Build: make test_bselect_lookup DEVICE=m3_pro  (or zen4, generic)
  * Run:   ./test_bselect_lookup
@@ -23,7 +23,17 @@
 #include <stdlib.h>
 #include <math.h>
 
-/* Pull in the device tables and the function under test. */
+/* Pull in the device tables and the function under test.
+ * fft_cost_model.h requires the including TU to provide next_smooth_ge()
+ * (icm.c owns the real smooth-table implementation).  This test only calls
+ * empirical_best_B(), which never reaches the fallback path that uses it,
+ * so a next-power-of-2 stub satisfies the contract. */
+static int next_smooth_ge(int n) {
+    int p = 1;
+    while (p < n) p <<= 1;
+    return p;
+}
+
 #include "fft_config.h"
 #include "fft_cost_model.h"
 

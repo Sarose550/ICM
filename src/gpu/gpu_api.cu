@@ -859,40 +859,4 @@ int icm_gpu_measure_hbm_bandwidth_gbps(double *gbps_out) {
     return 1;
 }
 
-int icm_gpu_write_config_header(const char *output_path) {
-    if (!output_path) return 0;
-    FILE *f = fopen(output_path, "w");
-    if (!f) { set_last_errorf("Cannot open %s for write", output_path); return 0; }
-    double gbps = 0.0;
-    icm_gpu_measure_hbm_bandwidth_gbps(&gbps);
-    fprintf(f, "/* Auto-generated bootstrap GPU config. Replace with calibrate_gpu.cu output. */\n");
-    fprintf(f, "#ifndef ICM_GPU_FFT_CONFIG_H\n#define ICM_GPU_FFT_CONFIG_H\n\n");
-    fprintf(f, "#define GPU_N_CALIBRATED_SIZES %d\n", GPU_N_CALIBRATED_SIZES);
-    fprintf(f, "static const int gpu_calib_sizes[GPU_N_CALIBRATED_SIZES] = {");
-    for (int i = 0; i < GPU_N_CALIBRATED_SIZES; ++i) fprintf(f, "%s%d", (i ? "," : ""), gpu_calib_sizes[i]);
-    fprintf(f, "};\n");
-    fprintf(f, "static const double gpu_calib_cufft_ns[GPU_N_CALIBRATED_SIZES] = {");
-    for (int i = 0; i < GPU_N_CALIBRATED_SIZES; ++i) fprintf(f, "%s%.1f", (i ? "," : ""), gpu_calib_cufft_ns[i]);
-    fprintf(f, "};\n");
-    fprintf(f, "static const double gpu_calib_cufftdx_build_ns[GPU_N_CALIBRATED_SIZES] = {");
-    for (int i = 0; i < GPU_N_CALIBRATED_SIZES; ++i) fprintf(f, "%s%.1f", (i ? "," : ""), gpu_calib_cufftdx_build_ns[i]);
-    fprintf(f, "};\n");
-    fprintf(f, "static const double gpu_calib_cufftdx_corr_ns[GPU_N_CALIBRATED_SIZES] = {");
-    for (int i = 0; i < GPU_N_CALIBRATED_SIZES; ++i) fprintf(f, "%s%.1f", (i ? "," : ""), gpu_calib_cufftdx_corr_ns[i]);
-    fprintf(f, "};\n\n");
-    fprintf(f, "#define GPU_SCHOOL_FMA_NS %.6f\n", GPU_SCHOOL_FMA_NS);
-    fprintf(f, "#define GPU_FFT_OVERHEAD_NS %.6f\n", GPU_FFT_OVERHEAD_NS);
-    fprintf(f, "#define GPU_HBM_BANDWIDTH %.3f\n", (gbps > 0.0 ? gbps : GPU_HBM_BANDWIDTH));
-    fprintf(f, "#define GPU_FUSED_MAX_CONV_LEN %d\n", GPU_FUSED_MAX_CONV_LEN);
-    fprintf(f, "#define GPU_PAIRED_CACHED_CORR_RATIO %.6f\n", GPU_PAIRED_CACHED_CORR_RATIO);
-    fprintf(f, "#define GPU_INDEP_PAIR_RATIO %.6f\n", GPU_INDEP_PAIR_RATIO);
-    fprintf(f, "#define GPU_BLOCK_BUILD_NS_PER_FMA %.6f\n", GPU_BLOCK_BUILD_NS_PER_FMA);
-    fprintf(f, "#define GPU_LEAF_EXTRACT_NS_PER_FMA %.6f\n", GPU_LEAF_EXTRACT_NS_PER_FMA);
-    fprintf(f, "#define GPU_VRAM_BYTES %lluULL\n", (unsigned long long)GPU_VRAM_BYTES);
-    fprintf(f, "#define GPU_SM_COUNT %d\n", GPU_SM_COUNT);
-    fprintf(f, "\n#endif\n");
-    fclose(f);
-    return 1;
-}
-
 }  // extern "C"

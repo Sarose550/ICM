@@ -95,10 +95,9 @@ static double cv_of(const double *x, int count) {
 
 /* ── Adaptive median-of-N timing ──────────────────────────────────
  * Start at N_REPS_MIN reps, extend up to N_REPS_MAX until cv<=3%.
- * Replaces the old fixed-count time_one()/time_median7() split: every
- * candidate (Phase 1) and the final auto/best comparison (Phase 2) now
- * go through this one converging measurement, closing the mis-ranking
- * gap described above the includes. */
+ * Every candidate (Phase 1) and the final auto/best comparison
+ * (Phase 2) go through this one converging measurement, closing the
+ * mis-ranking gap described above the includes. */
 static double time_adaptive(int n, int k, int B, const double *S,
                             const double *payout, double *equity) {
     double samples[N_REPS_MAX];

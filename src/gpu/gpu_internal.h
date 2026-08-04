@@ -1,9 +1,8 @@
 /* gpu_internal.h -- shared declarations for GPU compilation units.
  *
- * All .cu files in src/gpu/ include this header.  It replaces the anonymous
- * namespace that wrapped the original monolithic icm_gpu.cu with a named
- * namespace (icm_gpu_detail) so that symbols are visible across TUs while
- * remaining hidden from public linkage.
+ * All .cu files in src/gpu/ include this header.  Internal symbols live in
+ * the named namespace icm_gpu_detail so they are visible across TUs while
+ * remaining out of the public linkage surface.
  */
 #ifndef ICM_GPU_INTERNAL_H
 #define ICM_GPU_INTERNAL_H
@@ -45,12 +44,9 @@
 #if __has_include(<cufftdx.hpp>)
 #include <cufftdx.hpp>
 #define ICM_HAVE_CUFFTDX 1
-/* Check for R2C/C2R support (available in cuFFTDx 1.2+) */
-#if __has_include(<cufftdx/traits/detail/fft_traits.hpp>)
+/* R2C/C2R support (cuFFTDx 1.2+) is assumed present whenever cufftdx.hpp
+ * is found; the dispatchers fall back to cuFFT if a launch fails anyway. */
 #define ICM_HAVE_CUFFTDX_R2C 1
-#else
-#define ICM_HAVE_CUFFTDX_R2C 1  /* Assume available in modern cuFFTDx */
-#endif
 #else
 #define ICM_HAVE_CUFFTDX 0
 #define ICM_HAVE_CUFFTDX_R2C 0
@@ -162,7 +158,7 @@ struct GpuPlan {
     std::vector<GpuLevelPlan> levels;
 
     /* 1 = skip the phantom (padding) nodes of a ragged tree level.
-     * 0 = process every padded slot, exactly as the pre-ragged code did.
+     * 0 = process every padded slot.
      * Overridable at runtime with ICM_GPU_RAGGED=0 (A/B diagnosis). */
     int ragged_skip = 1;
 
@@ -252,9 +248,9 @@ struct CandidateCost {
  * `LevelLaunch` keeps them apart.  `parents` is a per-Q-plane count and
  * `qplanes` becomes gridDim.y, so a kernel recovers its Q-plane from
  * blockIdx.y and offsets by the *allocated* (nn[]-based) plane strides.
- * When there is nothing to skip the helper degenerates to the historical
- * flat launch (one plane of qb*nn[ell] parents, zero plane strides), which
- * keeps the non-ragged case bit-for-bit unchanged. */
+ * When there is nothing to skip the helper degenerates to a flat launch
+ * (one plane of qb*nn[ell] parents, zero plane strides), which keeps the
+ * non-ragged case bit-for-bit identical to a plane-unaware launch. */
 struct LevelLaunch {
     int parents = 0;            /* parents processed per Q-plane */
     int qplanes = 1;            /* gridDim.y */
@@ -274,7 +270,7 @@ inline LevelLaunch level_launch(const GpuPlan *plan, int ell, int qb) {
     if (work > nn_p || work <= 0) work = nn_p;
 
     if (work == nn_p) {
-        /* Nothing to skip: the exact pre-existing flat launch. */
+        /* Nothing to skip: flat launch over every allocated slot. */
         w.parents = qb * nn_p;
         w.qplanes = 1;
         w.parent_plane = 0;
@@ -359,7 +355,8 @@ void update_vram_alloc(GpuPlan *plan, size_t bytes);
 bool alloc_device(GpuPlan *plan, void **ptr, size_t bytes, cudaStream_t stream);
 void free_device(GpuPlan *plan, void *ptr, cudaStream_t stream);
 
-/* ── Plan helpers (gpu_plan.cu) ─────────────────────────────────── */
+/* ── Plan helpers (gpu_cost_model.cu, gpu_plan.cu, gpu_memory.cu,
+ *    gpu_fft_plans.cu) ──────────────────────────────────────────── */
 void build_smooth_table(int max_n, std::vector<int> &smooth);
 int first_calib_ge(int n);
 int find_calib_index(int fft_n);

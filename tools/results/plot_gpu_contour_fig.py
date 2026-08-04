@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Generate gpu_contour.png — GPU 1-second contour from heatmap data,
-and runtime_vs_n_gpu.png — Runtime(n) at fixed k, log-log (GPU).
+Generate gpu_contour.png: GPU 1-second contour from heatmap data,
+and runtime_vs_n_gpu.png: Runtime(n) at fixed k, log-log (GPU).
 
 Usage:
   python3 tools/results/plot_gpu_contour_fig.py
@@ -144,7 +144,7 @@ if __name__ == '__main__':
     gpu_heatmap = args.heatmap or find_latest('gpu_heatmap_*.csv')
 
     if not gpu_heatmap:
-        print("No GPU heatmap CSV found — cannot generate GPU plots.")
+        print("No GPU heatmap CSV found, cannot generate GPU plots.")
         sys.exit(1)
 
     # GPU contour

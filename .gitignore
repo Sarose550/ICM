@@ -140,6 +140,8 @@ validate_dispatch
 !results/wrap_fma_bench_*.csv
 !results/crossover_*.txt
 !results/subset_speed_*.txt
+!results/threshold_*.txt
+!results/gpu_threshold_search_*.txt
 !results/dispatch_validation_*.csv
 .dsar/
 
@@ -149,3 +151,6 @@ CLAUDE.md
 # AI agent session logs / ephemeral sprint boards -- internal only, contain
 # rented-hardware IPs and cloud rental contract IDs, not for public repo view
 HANDOFF.md
+
+# Ephemeral supervisor-dag sprint boards (deleted at close; never ship)
+SPRINT_*_DAG.md

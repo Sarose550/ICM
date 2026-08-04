@@ -297,8 +297,8 @@ static bool launch_cufftdx_build_qp(const double *child, int cps,
          * every block full: a half-retired block would leave its surviving FFT
          * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
          * per-plane count is even by construction (n_work is rounded up), so the
-         * second test is a guard, not a restriction.  At qplanes == 1 this is
-         * exactly the historical `nparents >= 4`. */
+         * second test is a guard, not a restriction.  At qplanes == 1 it
+         * reduces to `nparents >= 4`. */
         bool fpb2_ok = ((long long)nparents * qplanes >= 4)
                        && (qplanes == 1 || nparents % FPB2 == 0);
         if (fpb2_ok && shmem2 <= 200 * 1024) {
@@ -367,8 +367,8 @@ static bool launch_cufftdx_corr_qp(const double *g_parent, int parent_gsz, int l
          * every block full: a half-retired block would leave its surviving FFT
          * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
          * per-plane count is even by construction (n_work is rounded up), so the
-         * second test is a guard, not a restriction.  At qplanes == 1 this is
-         * exactly the historical `nparents >= 4`. */
+         * second test is a guard, not a restriction.  At qplanes == 1 it
+         * reduces to `nparents >= 4`. */
         bool fpb2_ok = ((long long)nparents * qplanes >= 4)
                        && (qplanes == 1 || nparents % FPB2 == 0);
         if (fpb2_ok && shmem2 <= 200 * 1024) {
@@ -547,8 +547,8 @@ static bool launch_cufftdx_build_r2c_qp(const double *child, int cps,
          * every block full: a half-retired block would leave its surviving FFT
          * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
          * per-plane count is even by construction (n_work is rounded up), so the
-         * second test is a guard, not a restriction.  At qplanes == 1 this is
-         * exactly the historical `nparents >= 4`. */
+         * second test is a guard, not a restriction.  At qplanes == 1 it
+         * reduces to `nparents >= 4`. */
         bool fpb2_ok = ((long long)nparents * qplanes >= 4)
                        && (qplanes == 1 || nparents % FPB2 == 0);
         if (fpb2_ok && shmem2 <= 200 * 1024) {
@@ -614,8 +614,8 @@ static bool launch_cufftdx_corr_r2c_qp(const double *g_parent, int parent_gsz, i
          * every block full: a half-retired block would leave its surviving FFT
          * calling cuFFTDx's internal __syncthreads() alone.  With Q-planes the
          * per-plane count is even by construction (n_work is rounded up), so the
-         * second test is a guard, not a restriction.  At qplanes == 1 this is
-         * exactly the historical `nparents >= 4`. */
+         * second test is a guard, not a restriction.  At qplanes == 1 it
+         * reduces to `nparents >= 4`. */
         bool fpb2_ok = ((long long)nparents * qplanes >= 4)
                        && (qplanes == 1 || nparents % FPB2 == 0);
         if (fpb2_ok && shmem2 <= 200 * 1024) {
@@ -700,7 +700,7 @@ bool is_cufftdx_supported_fft_n(int fft_n) {
             return false;
     }
 #else
-    /* Non-cuFFTDx build: keep the historical size list; every caller gates
+    /* Non-cuFFTDx build: a static size list is enough; every caller gates
      * on opts.use_cufftdx or falls back when the dispatchers return false. */
     switch (fft_n) {
         case 64:

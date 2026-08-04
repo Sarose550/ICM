@@ -113,9 +113,8 @@ static int run_verify(int extended) {
                 ks = {std::min(100, n), n};
             }
             /* k ~ 1024-2048 at n >= 65536 is the band where the fused
-             * power-of-2 feasibility bug lived (VERDICTS.md V20a/V20b); the
-             * historical grid stepped straight over it, which is why the
-             * 28 affected published cells passed this gate.  Keep the band
+             * power-of-2 feasibility bug lives (VERDICTS.md V20a/V20b), and
+             * the rest of the k grid steps straight over it.  Keep the band
              * under the CPU-referenced comparison permanently. */
             if (n >= 65536) { ks.push_back(1024); ks.push_back(2048); }
             for (size_t ki = 0; ki < ks.size(); ++ki) {
@@ -129,7 +128,6 @@ static int run_verify(int extended) {
                 double t_cpu_ns = now_ns() - t_cpu0;
 
                 IcmGpuOptions opts{};
-                opts.device_id = 0;
                 opts.use_cufftdx = 1;
                 opts.enable_graphs = 0;
                 opts.enable_q_pipeline = 1;
@@ -212,7 +210,6 @@ static int run_single_bench(int argc, char **argv) {
     std::vector<double> equity(n, 0.0);
 
     IcmGpuOptions opts{};
-    opts.device_id = 0;
     opts.use_cufftdx = 1;
     opts.enable_graphs = 0;
     opts.enable_q_pipeline = 1;
@@ -261,7 +258,6 @@ static int run_quick_grid() {
             make_payout(n, k, payout);
             std::vector<double> eq(n, 0.0);
             IcmGpuOptions opts{};
-            opts.device_id = 0;
             opts.use_cufftdx = 1;
             opts.enable_graphs = 0;
             opts.enable_q_pipeline = 1;

@@ -5,14 +5,10 @@
 // k=256 and k=512. Uses the plan-based API (icm_gpu_plan_create); tests
 // that plan creation succeeds, not that equity results are correct.
 //
-// Kept as a standalone tool (not integrated into bench/bench_gpu.cu) because
-// bench_gpu.cu uses the equity API (icm_gpu_equity) exclusively, and
-// introducing a plan-API regression check there would require untestable
-// restructuring without a CUDA toolchain on hand. Run directly:
+// Standalone rather than part of bench/bench_gpu.cu, which drives the equity
+// API (icm_gpu_equity) exclusively and never exercises the plan API. Run
+// directly:
 //   nvcc -I src/gpu -o gpu_ws_repro tools/gpu_ws_repro.cu && ./gpu_ws_repro
-//
-// Regression check for: original GPU workspace-sizing OOM bug
-// (n=2097152, k=256/512).
 
 #include <cstdio>
 #include <cstdlib>
@@ -55,7 +51,6 @@ int main() {
         make_payout(n, k, payout);
 
         IcmGpuOptions opts{};
-        opts.device_id = 0;
         opts.use_cufftdx = 1;
         opts.enable_graphs = 0;
         opts.enable_q_pipeline = 1;

@@ -5,10 +5,6 @@
  * creation (including the 64-bit API path for batch x size products that
  * overflow cuFFT's internal 32-bit indexing) and offline-calibrated
  * workspace estimation.
- *
- * Split out of gpu_plan.cu unchanged. create_cufft_plan was already called
- * across translation units from gpu_exec.cu's lazy fallback path, so this
- * boundary was proven in production before the move.
  */
 
 #include "gpu_internal.h"
@@ -159,7 +155,7 @@ size_t estimate_cufft_workspace_bytes(GpuPlan *plan, int qb) {
     }
     if (table_ok) return table_max_ws;
 
-    /* Fallback: live trial-plan creation (G2, commit 2f8fd22).
+    /* Fallback: live trial-plan creation.
      * Creates 4 throwaway cuFFT plans per FFT level at candidate qb,
      * queries work_size, takes the max, destroys all.  Kept as a
      * safety net for any fft_n not in the calibration table. */

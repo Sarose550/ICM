@@ -1,0 +1,28 @@
+threshold_search_gpu: binary search for 1000ms crossing
+method: median of 5 reps per candidate n, Q=256
+plan-based API (icm_gpu_plan_create + icm_gpu_equity_with_plan)
+
+=== Binary search: k=n ===
+n            k        median_ms    verdict
+----------------------------------------
+262144       262144   100.053      BELOW
+4194304      4194304  2330.843     ABOVE
+2228224      2228224  2085.915     ABOVE  [lo=262144 hi=2228224]
+1245184      1245184  803.131      BELOW  [lo=1245184 hi=2228224]
+1736704      1736704  1171.402     ABOVE  [lo=1245184 hi=1736704]
+1490944      1490944  943.884      BELOW  [lo=1490944 hi=1736704]
+1613824      1613824  1149.931     ABOVE  [lo=1490944 hi=1613824]
+1552384      1552384  1163.219     ABOVE  [lo=1490944 hi=1552384]
+1521664      1521664  1153.118     ABOVE  [lo=1490944 hi=1521664]
+1506304      1506304  1150.540     ABOVE  [lo=1490944 hi=1506304]
+
+--- k=n threshold ---
+Largest n ≤ 1000ms: 1490944
+Smallest n > 1000ms: 1506304
+Search bracket width: 15360 (1.0% of lo)
+
+========================================
+FINAL RESULTS:
+  k=n   threshold n = 1490944
+========================================
+THRESH_EXIT=0

@@ -9,7 +9,7 @@
  * For each n in a fixed sparse grid, binary-searches k to find where the
  * hybrid engine starts winning against the batched linear engine, using
  * real timing (median of several reps) at each candidate k -- exactly
- * what tools/bench.c's "crossover" mode already does on a fixed grid,
+ * what bench/bench.c's "crossover" mode already does on a fixed grid,
  * then refined to the exact boundary via bisection instead of reading it
  * off coarse steps.
  *

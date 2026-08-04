@@ -7,10 +7,7 @@
  * and wrap-correction selection, k-padding, tree geometry, the full candidate
  * cost estimate, and the B / engine choices built on it.
  *
- * Split out of gpu_plan.cu unchanged. Every symbol this file exports was
- * already declared in gpu_internal.h before the move -- the cost model was
- * already API-clean across translation units, it merely shared a file with its
- * callers. Nothing here allocates device memory or launches a kernel; that is
+ * Nothing here allocates device memory or launches a kernel; that is
  * gpu_memory.cu and gpu_kernels.cu respectively.
  *
  * The calibration-boundary static_assert lives here, above
@@ -102,12 +99,10 @@ double estimate_cufft_pipeline_ns(int fft_n) {
  * overhead fully amortises and the per-pipeline cost drops to a floor
  * determined by HBM bandwidth and compute throughput.
  *
- * The floor values are measured directly:
- *   (1) bench_batch.cu sweeps batch=1..65536 for R2C+C2R to find the
- *       fwd+inv floor at each FFT size.
- *   (2) level_timer.cu measures the full tree pipeline (fwd + pw + inv +
- *       scale) per level at qb=64 to get the full-pipeline floor.
- * These are stored in gpu_floor_ns[] in gpu_fft_config.h.
+ * The floor values are measured directly, by a batch sweep for the fwd+inv
+ * floor at each FFT size and by a per-level timing of the full tree pipeline
+ * (fwd + pointwise + inv + scale) at qb=64 for the full-pipeline floor.
+ * They are stored in gpu_floor_ns[] in gpu_fft_config.h.
  *
  * The model interpolates between the calibrated cost and the floor:
  *
@@ -377,7 +372,7 @@ int fused_max_conv_len_runtime() {
             fprintf(stderr,
                     "WARNING: ICM_GPU_FUSED_MAX_CONV_LEN=%d is below the "
                     "calibration-boundary safety floor %d; clamping. See "
-                    "pick_tier_for_fft_len() in gpu_plan.cu.\n", v, floor_v);
+                    "pick_tier_for_fft_len() in gpu_cost_model.cu.\n", v, floor_v);
         }
         v = floor_v;
     }
@@ -427,11 +422,11 @@ double leaf_extract_ns_per_fma_model() {
 
 /* ── Calibration-boundary safety invariant ──────────────────────────
  *
- * The CPU side had a real bug here (fixed in commit f2ad24e): past the
- * calibrated ceiling both sides of its schoolbook-vs-FFT comparison were
- * meaningless, and schoolbook -- O(len^2) -- always won, silently. The GPU
- * does NOT share that bug, but only because of an arithmetic coincidence
- * that nothing was enforcing. This assert enforces it.
+ * Past a calibrated ceiling, both sides of a schoolbook-vs-FFT comparison
+ * are meaningless, and schoolbook -- O(len^2) -- wins silently. The CPU
+ * closes that hole by always choosing FFT past its own ceiling. The GPU
+ * closes it only through an arithmetic coincidence that nothing was
+ * enforcing. This assert enforces it.
  *
  * Below, schoolbook is only ever *considered* when
  * conv_len > fused_max_conv_len_runtime(). Past the calibrated ceiling the
@@ -448,18 +443,15 @@ double leaf_extract_ns_per_fma_model() {
  *
  * On B200 the crossover sits at conv_len ~= 5396, comfortably below
  * GPU_FUSED_MAX_CONV_LEN (8192) -- so schoolbook can never win past the
- * ceiling, and FFT is always chosen there. That is the same end state the
- * CPU fix had to be engineered to produce.
+ * ceiling, and FFT is always chosen there.
  *
  * (Do not simplify this to GPU_UNCALIB_NS_PER_POINT / GPU_SCHOOL_FMA_NS.
  * Dropping GPU_FFT_OVERHEAD_NS moves the crossover from 5396 to 5375 and
- * admits a band of conv_len where schoolbook really does win -- caught by
- * the standalone check when this was first written.)
+ * admits a band of conv_len where schoolbook really does win.)
  *
  * The danger is that this holds by numeric accident. Recalibrating
  * GPU_SCHOOL_FMA_NS downward, or lowering GPU_FUSED_MAX_CONV_LEN, would
- * silently reintroduce the CPU's failure mode on the GPU. Fail the build
- * instead. */
+ * silently reopen the failure mode. Fail the build instead. */
 static_assert((double)GPU_FUSED_MAX_CONV_LEN * (double)GPU_FUSED_MAX_CONV_LEN
                   * (double)GPU_SCHOOL_FMA_NS
                   > (double)GPU_FUSED_MAX_CONV_LEN * (double)GPU_UNCALIB_NS_PER_POINT
@@ -682,10 +674,8 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
          * psz[ell] as low as cps+1, below the unclamped cps+cps/2 --
          * without this clamp g_eff could exceed the allocated parent
          * g-array size (pgsz), an out-of-bounds read in the correlate
-         * kernels. Under the OLD strict-equality trigger this never
-         * mattered (psz[ell] was always exactly 2*cps >= cps+cps/2), so
-         * this clamp is a no-op there and only bites at the newly-fired
-         * boundary level. */
+         * kernels. It only binds at that boundary level; everywhere else
+         * psz[ell] is already >= cps+cps/2 and the clamp is a no-op. */
         int g_eff_max = is_below ? std::min(cps + cps / 2, pgsz) : pgsz;
         int g_eff = std::min(g_eff_needed, g_eff_max);
 
@@ -701,7 +691,6 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
         best_fft_config_gpu(conv_build, 0, wrap_scale, &bfn, &bwm);
         double fft_build = estimate_cufft_pipeline_ns_batched(bfn, eff_batch)
             + (double)bwm * (double)(bwm + 1) / 2.0 * fma_ns * wrap_scale;
-        /* Check whether fused (cuFFTDx) is available for this level. */
         double fused_build_cost = std::numeric_limits<double>::infinity();
         if (conv_build <= g_runtime_fused_max_conv_len) {
             int fused_fft_n = next_pow2_int(conv_build);
@@ -838,14 +827,13 @@ double estimate_candidate_cost(int n, int k_pad, int B, const std::vector<int> &
 
 /* Joint (n,k) nearest-neighbor lookup over the calibrated (n,k,B) grid
  * in devices/<DEVICE>/gpu_fft_config.h (gbselect_n[]/gbselect_k[]/
- * gbselect_B[], produced by tools/calibrate_gpu_best_b.c), single pass
+ * gbselect_B[], produced by tools/calibrate_gpu_best_b.cu), single pass
  * in log space. B is a discrete choice among kBCandidates, so
  * nearest-neighbor (not interpolation) is the right lookup. */
 int gpu_empirical_best_B(int n, int k) {
     /* Empty-table guard: when no GPU B-selection calibration data exists
      * (uncalibrated device), return the fixed uncalibrated default B=64.
-     * This also fixes the out-of-bounds read on gbselect_n[0] when
-     * GPU_N_BSELECT_POINTS == 0. */
+     * Also keeps the gbselect_n[0] seed read below in bounds. */
     if (GPU_N_BSELECT_POINTS == 0) return 64;
 
     double log_n = log((double)n);
@@ -864,11 +852,11 @@ int gpu_empirical_best_B(int n, int k) {
 int gpu_select_best_B_est(int n, int k_pad, const std::vector<int> &smooth) {
     /* B need NOT be <= k_pad: build_tree_geometry() already caps each
      * level's polynomial size at k_pad (see its "boundary level" comment),
-     * so a block size larger than k_pad is structurally fine. A `B > k_pad`
-     * filter here mirrors a CPU bug fixed the same day (VERDICTS.md V16,
-     * src/cpu/icm.c's select_best_B()): it silently discarded the
-     * calibration table's answer whenever k_pad was small, since every
-     * GPU candidate above 16 exceeds any k_pad < 24. Removed. */
+     * so a block size larger than k_pad is structurally fine. Do not add a
+     * `B > k_pad` filter here: it silently discards the calibration table's
+     * answer whenever k_pad is small, since every GPU candidate above 16
+     * exceeds any k_pad < 24. See VERDICTS.md V16 for the CPU analogue in
+     * src/cpu/icm.c's select_best_B(). */
     int emp_B = gpu_empirical_best_B(n, k_pad);
     int largest_valid = -1;
     for (int i = 0; i < MAX_B_CANDIDATES; ++i) {

@@ -20,7 +20,11 @@
  * B-selection anchor points in devices/b200/gpu_fft_config.h, including
  * points in the n=1,048,576 to 1,572,864 gap between adjacent anchors.
  *
- * Build (B200, cuFFTDx-enabled):
+ * Build (B200, cuFFTDx-enabled).  There is no Makefile target for this
+ * tool; build the fused GPU objects first (e.g. `make bench_gpu_fused
+ * CUDA_ARCH=sm_100 CUFFTDX_INC=-I<path>`), then link against the same
+ * $(GPU_OBJS_FUSED) set the Makefile defines -- all seven translation
+ * units in src/gpu/, plus build/gpu_dlink_fused.o:
  *
  *   CUFFTDX_INC=$(find /usr/local/lib -maxdepth 4 -type d -path '*dist-packages/nvidia/mathdx/include' | head -1)
  *
@@ -31,8 +35,10 @@
  *
  *   nvcc -O3 -std=c++17 -arch=sm_100 \
  *        -o gpu_dispatch_validate build/gpu_dispatch_validate.o \
- *        build/gpu_gpu_kernels_fused.o build/gpu_gpu_plan_fused.o \
- *        build/gpu_gpu_exec_fused.o build/gpu_gpu_api_fused.o \
+ *        build/gpu_gpu_kernels_fused.o build/gpu_gpu_cost_model_fused.o \
+ *        build/gpu_gpu_plan_fused.o build/gpu_gpu_memory_fused.o \
+ *        build/gpu_gpu_fft_plans_fused.o build/gpu_gpu_exec_fused.o \
+ *        build/gpu_gpu_api_fused.o \
  *        build/gpu_dlink_fused.o -lcufft -lcudart
  */
 
@@ -170,7 +176,6 @@ static double measure_at_b(int n, int k, int B, int *out_actual_B) {
     eq.assign(n, 0.0);
 
     IcmGpuOptions opts{};
-    opts.device_id                 = 0;
     opts.use_cufftdx               = 1;
     opts.enable_graphs             = 0;
     opts.enable_q_pipeline         = 1;
@@ -275,7 +280,8 @@ static int check_b_optimality(int n, int k) {
             continue;
         }
         /* ICM_GPU_FORCE_B is silently ignored by the real dispatch code
-         * whenever the requested B exceeds plan->k_pad (gpu_plan.cu:853).
+         * whenever the requested B exceeds plan->k_pad
+         * (build_plan_metadata() in src/gpu/gpu_plan.cu).
          * If that happened, actual_B == dispatched_B and this "alternative"
          * is a second measurement of the exact same
          * configuration -- comparing against it would produce a false

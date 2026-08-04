@@ -77,7 +77,6 @@ static bool parse_cells_csv(const char *s, std::vector<NkCell> &out) {
 
 static IcmGpuOptions default_opts() {
     IcmGpuOptions opts{};
-    opts.device_id = 0;
     opts.use_cufftdx = 1;
     opts.enable_graphs = 0;
     opts.enable_q_pipeline = 1;

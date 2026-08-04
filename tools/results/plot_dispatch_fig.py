@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate engine_dispatch[_<device>].png — engine coloring on contour (CPU).
+Generate engine_dispatch[_<device>].png: engine coloring on contour (CPU).
 
 Usage:
   python3 tools/results/plot_dispatch_fig.py --device m3_pro
@@ -74,7 +74,7 @@ if __name__ == '__main__':
     serial_csv = args.serial or find_latest(cfg['serial_csv'])
 
     if not serial_csv:
-        print("Missing serial contour CSV — cannot generate dispatch plot.")
+        print("Missing serial contour CSV, cannot generate dispatch plot.")
         sys.exit(1)
 
     out_path = args.out or os.path.join(RESULTS, f'engine_dispatch{suffix}.png')

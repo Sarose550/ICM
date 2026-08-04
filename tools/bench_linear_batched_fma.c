@@ -1,14 +1,14 @@
 /* bench_linear_batched_fma.c: isolated microbenchmark for the batched
  * linear engine's inner-loop per-FMA cost (BQ=8 interleaved layout).
  *
- * Historical note: an earlier analytical cost model (src/cost_model.h,
- * deleted SPRINT_FINAL_CLOSEOUT) used FMA_NS=0.0677 derived from a scalar
- * schoolbook polymul_modk microbenchmark and predicted linear-engine cost
- * as 4.0*n*k*FMA_NS per QP. Real measured times were ~1.73-1.80x higher,
- * with a flat multiplicative bias -- the model's form was right but its
- * per-FMA constant was wrong. The old FMA_NS was removed with that header;
- * the current cost model uses directly measured per-B lookup tables
- * instead of a single scalar FMA_NS.
+ * The comparison baseline this tool reports against (old_fma_ns below):
+ * an earlier analytical cost model used FMA_NS=0.0677, derived from a
+ * scalar schoolbook polymul_modk microbenchmark, and predicted
+ * linear-engine cost as 4.0*n*k*FMA_NS per QP. Real measured times were
+ * ~1.73-1.80x higher, with a flat multiplicative bias: the model's form
+ * was right, its per-FMA constant wrong. The shipped cost model uses
+ * directly measured per-B lookup tables instead of a single scalar
+ * FMA_NS.
  *
  * This benchmark isolates the EXACT inner loops verbatim from
  * src/cpu/linear_batched_impl.inc (BQ=8, interleaved a_batch layout):
@@ -17,7 +17,8 @@
  *   2. Backward fused: dot product + suffix update, BQ*(3k-1) FMAs per player
  *
  * Total: BQ*(5k-2) ≈ 5*k*BQ FMAs per player per BQ quadrature points,
- * i.e. ~5*k FMAs per QP.  (The old model used 4*k, a ~25% undercount.)
+ * i.e. ~5*k FMAs per QP.  (The 4*k of the baseline model above is a
+ * ~25% undercount; fma_scale below converts between the two.)
  *
  * We sweep k ∈ {32, 64, 128, 256, 512} and n ∈ {256, 512, 1024, 2048}
  * to extract the marginal per-FMA cost via linear regression of

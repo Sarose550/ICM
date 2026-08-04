@@ -1,4 +1,7 @@
-/* gpu_plan.cu -- Cost model, B selection, plan creation, memory allocation. */
+/* gpu_plan.cu -- Plan construction: per-level tier/FFT-size decisions, cache
+ * selection, ragged work counts, and the host-side player sort.  The cost
+ * model it consults lives in gpu_cost_model.cu; allocation lives in
+ * gpu_memory.cu. */
 #include "gpu_internal.h"
 
 /* LTO callbacks disabled: cuFFT's JIT-compiled callback introduces ~1e-9
@@ -104,10 +107,8 @@ bool build_plan_metadata(GpuPlan *plan) {
          * psz[ell] as low as cps+1, below the unclamped cps+cps/2 --
          * without this clamp g_eff could exceed the allocated parent
          * g-array size (pgsz), an out-of-bounds read in the correlate
-         * kernels. Under the OLD strict-equality trigger this never
-         * mattered (psz[ell] was always exactly 2*cps >= cps+cps/2), so
-         * this clamp is a no-op there and only bites at the newly-fired
-         * boundary level. */
+         * kernels. It only binds at that boundary level; everywhere else
+         * psz[ell] is already >= cps+cps/2 and the clamp is a no-op. */
         int g_eff_max = is_below ? std::min(cps + cps / 2, pgsz) : pgsz;
         int g_eff = std::min(g_eff_needed, g_eff_max);
         int conv_build = is_below ? (2 * (cps / 2) + 1) : (2 * cps - 1);
@@ -456,10 +457,5 @@ bool device_sort_players(GpuPlan *plan) {
     if (d_vals_out) cudaFree(d_vals_out);
     return ok;
 }
-
-/* ── cuFFT plan creation ───────────────────────────────────────── */
-
-
-
 
 }  // namespace icm_gpu_detail

@@ -175,7 +175,7 @@ static const double calib_times_ns[N_CALIBRATED_SIZES] = {
 #ifndef WRAP_FMA_NS
 #define WRAP_FMA_NS 0.4360  /* ns per FMA in wrap correction (memory-latency-bound) */
 #endif
-/* Real Zen4 measurement (2026-07-22, box 84.32.71.47). The batched linear
+/* Real Zen4 measurement (2026-07-22, rented Zen4 box). The batched linear
  * engine (src/linear_batched_impl.inc, BQ=8) needs 5*n*k FMAs/QP (not
  * 4*n*k as the old formula assumed). tools/bench_linear_batched_fma.c's
  * own isolated-inner-loop regression gave 0.0923 ns/FMA, but direct
@@ -216,7 +216,7 @@ static const double block_build_ns_per_player[6] = {
 };
 #endif
 
-/* Recalibrated 2026-07-22 (box 84.32.71.47) from tools/probe_leaf_extract.c's
+/* Recalibrated 2026-07-22 (rented Zen4 box) from tools/probe_leaf_extract.c's
  * B-sweep phase (n=8192, k=320, fresh HybridCtx per rep), same fix as M3 Pro
  * this session: the old bench_leaf_fma.c-derived table over-predicted real
  * cost (geo_mean(meas/pred)=0.743) because it only ever exercised the
@@ -243,10 +243,10 @@ static const double leaf_fma_ns_per_player[6] = {
 #endif
 
 /* ── Empirical linear-vs-hybrid crossover table ──────────────────────
- * RECALIBRATED 2026-07-27 (a fresh redeployment of the user's Zen4
+ * RECALIBRATED 2026-07-27 (a fresh redeployment of the Zen4 reference
  * instance -- same reference machine, but a genuinely different
  * physical/virtualized machine than the 2026-07-22 measurement below).
- * The prior table (measured on box 84.32.71.47, a since-superseded
+ * The prior table (measured on a since-superseded rented
  * instance) was found to systematically disagree with this box's real
  * bench_grid crossover sweep -- reproduced across two independent full
  * sweeps before recalibrating, not a one-off noise blip: dispatch would
@@ -269,8 +269,8 @@ static const double leaf_fma_ns_per_player[6] = {
  * numbers (`results` files with "zen4" in the name, dated 2026-07-22
  * through 07-24) remain a
  * useful historical reference for extrapolated "1DPC would give
- * roughly X" commentary, not silently discarded, per the user's explicit
- * framing. Recalibrate crossover on every redeploy regardless -- this
+ * roughly X" commentary, not silently discarded, per an explicit project
+ * decision. Recalibrate crossover on every redeploy regardless -- this
  * project has now seen real-world performance differ meaningfully across
  * nominally-identical "AMD Ryzen 9 7950X" cloud instances twice, don't
  * assume a prior box's table still applies just because the CPU model
@@ -294,7 +294,7 @@ static const int crossover_k[N_CROSSOVER_POINTS] = {249, 259, 258, 277, 281, 258
 #endif
 
 /* ── Empirical hybrid block-size (B) table ───────────────────────────
- * Measured 2026-07-22 (box 84.32.71.47) via tools/calibrate_best_b.c:
+ * Measured 2026-07-22 (rented Zen4 box) via tools/calibrate_best_b.c:
  * direct timing (median of 7 reps, Q=256) of the real hybrid engine at
  * every candidate B, per (n,k) grid point. See src/fft_cost_model.h's
  * empirical_best_B() for how this is consulted (2D nearest-neighbor,

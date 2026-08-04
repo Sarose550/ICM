@@ -15,6 +15,13 @@
  *   calib_times_ns[]
  *   WRAP_FMA_NS
  *   PAIRED_CACHED_CORR_RATIO
+ *
+ * Also requires, from the including translation unit itself:
+ *   static int next_smooth_ge(int n)  -- smallest 7-smooth number >= n,
+ *   used only on the past-the-calibrated-ceiling fallback path.  icm.c
+ *   provides the real smooth-table implementation; a standalone test TU
+ *   that never exercises that path may stub it (see
+ *   tools/test_bselect_lookup.c).
  */
 
 #ifndef FFT_COST_MODEL_H

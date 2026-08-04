@@ -194,11 +194,8 @@ static void wisdom_save(void) {
 static int next_pow2(int n);
 
 /* ══════════════════════════════════════════════════════════════
-   FFTW PLAN CACHE: create once, reuse across all quad points
-   ══════════════════════════════════════════════════════════════ */
-
-/* ══════════════════════════════════════════════════════════════
    FFT PLAN CACHE: FFTW + vDSP interleaved dual-dispatch.
+   Plans are created once and reused across all quad points.
 
    On Apple Silicon, vDSP's interleaved-complex DFT API is 5-23% faster
    than FFTW at supported sizes (f × 2^g where f ∈ {1,3,5,15}, g ≥ 4).
@@ -531,7 +528,7 @@ static inline int next_pow2(int n) {
  * current maximum.  This lets the uncalibrated fallback path pick viable
  * FFT sizes at any practical scale without a fixed ceiling.
  *
- * Default initial ceiling: 131072 (same as calibrate.c's historical MAX_SIZE).
+ * Default initial ceiling: 131072 (calibrate.c's default --max-size).
  * Each extension doubles the ceiling, amortized O(1) per query. */
 static int *smooth_nums = NULL;   /* dynamically allocated, sorted ascending */
 static int n_smooth = 0;
@@ -595,8 +592,8 @@ static void ensure_smooth_up_to(int needed) {
          * a=1,b=1,c=5 sub-loop appends 5, which is smaller than several
          * already-appended values). Every binary search elsewhere in this
          * file assumes smooth_nums[] is sorted ascending; leaving it
-         * unsorted here silently corrupted best_k_pad()'s search (found
-         * 2026-08-03: it returned 1536 for k=89600, truncating the tree's
+         * unsorted here silently corrupted best_k_pad()'s search (it
+         * returned 1536 for k=89600, truncating the tree's
          * per-level polynomial size and producing wrong equity output,
          * sum(equity) off from sum(payout) by 27x). Sort once here. */
         qsort(smooth_nums, (size_t)n_smooth, sizeof(int), int_cmp);
@@ -1378,7 +1375,7 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
                     needed[n_needed++] = cfn;
                 }
             } else {
-                /* ── Calibrated path (original logic) ───────────── */
+                /* ── Calibrated path ────────────────────────────── */
 
                 int bfn, bwm;
                 best_fft_config(build_conv_len, &bfn, &bwm, 0);  /* polymul: no input-wrap */
@@ -1388,7 +1385,9 @@ static TreeCtx *tree_ctx_create_ex2(int n_leaves, int leaf_degree, int k,
                   fft_idx = lo; }
                 double fft_build = (fft_idx < N_CALIBRATED_SIZES && calib_sizes[fft_idx] == bfn)
                                    ? calib_times_ns[fft_idx] : 1e18;
-                double fft_overhead = 0.0;  /* was FFT_OVERHEAD_NS, always 0.0 */
+                /* Per-call FFT overhead is already baked into
+                 * calib_times_ns[] (it times the full pipeline). */
+                double fft_overhead = 0.0;
                 double build_correction = (double)bwm * (bwm + 1) / 2.0 * WRAP_FMA_NS;
 
                 /* Build cost comparison: schoolbook vs FFT.
@@ -1937,12 +1936,6 @@ typedef struct {
 #define L3_CACHE_SIZE 33554432  /* 32MB */
 #endif
 
-/* ══════════════════════════════════════════════════════════════
-   ADAPTIVE BQ: compile-time parameterized batched linear engine.
-   Two versions (BQ=4 and BQ=8) compiled via template inclusion.
-   Runtime dispatch based on L2 working set: n*k*BQ*8 ≤ L2_CACHE_SIZE.
-   ══════════════════════════════════════════════════════════════ */
-
 /* BQ for non-batched paths (engine_linear_ctx, etc.): always 2 */
 #ifndef BQ
 #define BQ 2
@@ -2083,9 +2076,7 @@ static void engine_linear_ctx(int n, const double *a,
 }
 
 /* ══════════════════════════════════════════════════════════════
-   BATCHED LINEAR ENGINE: adaptive BQ via template instantiation.
-   Two versions compiled: BQ=8 (3x throughput) and BQ=4 (2x throughput).
-   Runtime dispatch: BQ=8 when g_store fits in L2, BQ=4 otherwise.
+   BATCHED LINEAR ENGINE: BQ-parameterized via template instantiation.
    Inner q-loops auto-vectorize to full-width FMAs with -O3.
    ══════════════════════════════════════════════════════════════ */
 
@@ -2388,9 +2379,6 @@ static double run_engine_ctx(int n, const double *S, int Q,
  * equity: output array of length n (only equity[targets[i]] are set).
  * Dispatches to the best engine with active-player masks for skipping work. */
 static int select_best_B(int n, int k);
-
-/* Batch width of the linear engine used by icm_equity (run_linear_batched_bq8). */
-#define LINEAR_BQ 8
 
 /* Engine dispatch: linear vs hybrid, for given (n, k).
  * Returns the optimal B if hybrid wins, or 0 if linear wins.

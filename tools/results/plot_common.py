@@ -1,7 +1,7 @@
 """
 Shared helpers for ICM benchmark plot scripts.
 
-Extracted from tools/plot_contour.py — do not modify that file.
+Extracted from tools/plot_contour.py: do not modify that file.
 All per-chart scripts under tools/results/ import from here.
 """
 
@@ -100,7 +100,7 @@ def load_contour(path, max_time_ms=2000):
     """Load contour CSV. Filter out 'ok' points where time > max_time_ms (these
     indicate anomalous bisection search behavior, not real 1s-budget data).
     Always includes the row where n_max <= k (the true n=k crossing) regardless
-    of its measured time, then stops — floor-row probes intentionally use a
+    of its measured time, then stops: floor-row probes intentionally use a
     generous timeout to confirm the crossing, so their time is expected to
     exceed max_time_ms and must not be filtered out."""
     k, n, engine = [], [], []

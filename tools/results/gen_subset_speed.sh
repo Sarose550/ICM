@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gen_subset_speed.sh — run bench_grid subset-speed benchmark and save dated output.
+# gen_subset_speed.sh: run bench_grid subset-speed benchmark and save dated output.
 #
 # Usage:  ./tools/results/gen_subset_speed.sh <device>
 # Example: ./tools/results/gen_subset_speed.sh m3_pro
@@ -49,6 +49,6 @@ OMP_NUM_THREADS=1 "$BINARY" subset-speed > "$OUTFILE" 2>&1
 if [ -s "$OUTFILE" ]; then
     echo "Saved $OUTFILE ($(wc -l < "$OUTFILE") lines)"
 else
-    echo "ERROR: empty output — subset-speed failed?" >&2
+    echo "ERROR: empty output, subset-speed failed?" >&2
     exit 1
 fi

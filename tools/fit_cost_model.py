@@ -403,11 +403,9 @@ def write_constants_to_header(params, config_path, indep_pair_ratio=None):
         else:
             print(f"  ⚠ WARNING: #ifndef/#define/#endif block for INDEP_PAIR_RATIO not found ,  skipping")
 
-    # Write back
     with open(config_path, 'w') as f:
         f.write(text)
 
-    # Print diff summary
     print(f"\n{'='*70}")
     print(f"WROTE {config_path} ,  {len(changes)} macro(s) touched")
     print(f"{'='*70}")
@@ -499,7 +497,6 @@ def main():
             else:
                 params[i] = INITIAL[i]  # out-of-scope placeholder
 
-        # Print the pinned values
         print(f"\nPinned constants:")
         print(f"  WRAP_FMA_NS               = {params[P_WRAP]:.4f}")
         print(f"  PAIRED_CACHED_CORR_RATIO  = {params[P_R]:.4f}")

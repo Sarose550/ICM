@@ -6,18 +6,17 @@
  * measure the real decision directly rather than summing calibrated
  * constants).
  *
- * UPGRADED (A3): reads skeleton CSV from gen_calib_skeleton.py instead of
- * hardcoded n_grid/k_grid; supports --narrow-around for single-point
- * refinement; supports resumability (skips already-computed rows in
- * the output CSV on restart).
+ * The (n,k) grid comes from a skeleton CSV produced by
+ * gen_calib_skeleton.py.  --narrow-around restricts the candidate set for
+ * single-point refinement, and runs are resumable: rows already present in
+ * the output CSV are skipped on restart.
  *
  * Timing methodology: every candidate B gets its own adaptive
  * median-of-N measurement (3 reps minimum, up to 15 until cv<=3%), then
- * argmin. An earlier "1-rep-rank + confirm-if-close-top-2" scheme was
- * replaced after it caused a 281% regression on B200 -- a noise fluke
- * at sub-few-ms problem sizes mis-ranked the true winner outside the
- * top-2, where the confirmation step never got a chance to catch it.
- * See VERDICTS.md V6.
+ * argmin.  Do not replace this with a cheap "1-rep-rank + confirm the
+ * top-2" scheme: a noise fluke at sub-few-ms problem sizes can rank the
+ * true winner outside the top-2, where the confirmation step never sees
+ * it, and that cost a 281% regression on B200.  See VERDICTS.md V6.
  *
  * This is a ONE-TIME, OFFLINE calibration step; it never runs in
  * production.
@@ -42,7 +41,8 @@
 
 #include "icm_gpu.h"
 
-/* ── Full candidate B set; matches kBCandidates in src/gpu/gpu_plan.cu ── */
+/* ── Candidate B set swept by this tool: the subset of kBCandidates
+ *    (src/gpu/gpu_plan.cu) worth measuring on the GPU ── */
 static const std::vector<int> kBCandidates = {
     16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 192, 224, 256,
     320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536
@@ -77,7 +77,6 @@ static double time_one_rep(int n, int k, int Q, int force_B) {
     }
 
     IcmGpuOptions opts{};
-    opts.device_id = 0;
     opts.use_cufftdx = 1;
     opts.enable_graphs = 0;
     opts.enable_q_pipeline = 0;
@@ -113,13 +112,9 @@ static double cv_of(const std::vector<double> &x) {
 }
 
 /* Adaptive median-of-N timing for one (n,k,Q,B) case: 3 reps minimum,
- * extended up to 15 until cv<=3%. Ported from validate_planner_gpu.cu's
- * run_case_median() / heatmap_gpu.cu's gpu_time_ms() (see VERDICTS.md
- * V6). Replaces the old "1-rep-rank, runoff only on the top-2" scheme:
- * a noise fluke that mis-ranked the true winner outside the top-2 was
- * never corrected, since the runoff only ever compared the (already
- * wrong) top-2 against each other -- exactly what caused a 281%
- * regression at sub-few-ms problem sizes. */
+ * extended up to 15 until cv<=3%. Same loop as validate_planner_gpu.cu's
+ * run_case_median() and heatmap_gpu.cu's gpu_time_ms(); see VERDICTS.md
+ * V6 and the timing-methodology note at the top of this file. */
 static double time_adaptive_ms(int n, int k, int Q, int B) {
     double first = time_one_rep(n, k, Q, B);
     if (first < 0.0) return -1.0;

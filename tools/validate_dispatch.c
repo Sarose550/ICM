@@ -4,17 +4,8 @@
  * (tab:parallel): n in {1024,2048,4096,8192,16384,32768,65536}, k in
  * {10,50,100,n/4,n/2,n} -- 42 cells.
  *
- * This did not exist as a committed tool before now. The paper's dispatch-
- * accuracy claim ("100% correct... on all serial bench_grid cells, 83/84
- * parallel") was originally computed by an ephemeral, uncommitted process
- * (traced to icm_paper repo commit 759833e, 2026-07-23, "recomputed
- * dispatch-accuracy figure" -- no accompanying tool). Confirmed via git
- * history search that no prior committed tool (including ones deleted in
- * earlier cleanup passes: quantify_dispatch_gap.c, eval_model_vs_plans.c,
- * check_engine.c) did this comparison either -- the first two evaluate the
- * old pre-empirical-table analytical cost formula, unrelated to the
- * current select_engine() lookup; the third is a one-off debug dump for
- * an unrelated bug, not a systematic validator.
+ * This is the reproducible source for the paper's dispatch-accuracy claim
+ * ("100% correct... on all serial bench_grid cells, 83/84 parallel").
  *
  * Usage:
  *   validate_dispatch [--parallel]

@@ -312,14 +312,14 @@ static void run_profile(void) {
             tree_ctx_destroy(tc);
         }
 
-        /* Hybrid B=8 */
+        /* Hybrid (B auto-selected) */
         {
             HybridCtx *hctx = hybrid_ctx_create(n, S, k, select_best_B(n, k));
             memset(eq, 0, n * sizeof(double));
             double t = run_engine_ctx(n, S, Q, payout, k, eq,
                                       engine_hybrid_ctx, hctx) / 1e6;
             char tbuf[32]; fmt_ms_3sf(t, tbuf, sizeof(tbuf));
-            printf("  hyb8:  %7s ms\n", tbuf);
+            printf("  hyb:   %7s ms\n", tbuf);
             hybrid_ctx_destroy(hctx);
         }
 
@@ -502,7 +502,7 @@ int main(int argc, char **argv) {
             HybridCtx *hc = hybrid_ctx_create(hi, S, hi, select_best_B(hi, hi));
             /* Warmup, then median-of-BENCH_REPS: a single sample here can
              * show spurious non-monotonicity from scheduler/thermal noise
-             * (confirmed directly, 2026-08-04 -- see VERDICTS.md), even
+             * (confirmed directly -- see VERDICTS.md), even
              * though this doesn't change where the threshold itself lands. */
             run_engine_ctx(hi, S, Q, payout, hi, eq, engine_hybrid_ctx, hc);
             double samples[BENCH_REPS];
@@ -709,7 +709,7 @@ int main(int argc, char **argv) {
             ves[n_eng++] = (VE){"tree",   engine_tree_ctx,   tc};
             if (nc) ves[n_eng++] = (VE){"naive",  engine_naive_ctx,  nc};
             if (lc) ves[n_eng++] = (VE){"linear", engine_linear_ctx, lc};
-            ves[n_eng++] = (VE){"hyb8",   engine_hybrid_ctx, hc};
+            ves[n_eng++] = (VE){"hyb",    engine_hybrid_ctx, hc};
 
             for (int ei = 0; ei < n_eng; ei++) {
                 double *eq = (double *)calloc(n, sizeof(double));
@@ -970,7 +970,7 @@ int main(int argc, char **argv) {
         free(S);
     }
 
-    printf("\nLegend: T=tree(+FFT), L=linear, H=hybrid(B=8). Best engine shown.\n");
+    printf("\nLegend: T=tree(+FFT), L=linear, H=hybrid (B auto-selected). Best engine shown.\n");
     printf("Done.\n");
     return all_pass ? 0 : 1;
 }

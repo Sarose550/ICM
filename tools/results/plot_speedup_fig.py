@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate parallel_speedup[_<device>].png — speedup bar chart (CPU).
+Generate parallel_speedup[_<device>].png: speedup bar chart (CPU).
 
 Usage:
   python3 tools/results/plot_speedup_fig.py --device m3_pro
@@ -81,7 +81,7 @@ if __name__ == '__main__':
     parallel_csv = args.parallel or find_latest(cfg['parallel_csv'])
 
     if not serial_csv or not parallel_csv:
-        print("Missing contour CSV files — cannot generate speedup plot.")
+        print("Missing contour CSV files, cannot generate speedup plot.")
         sys.exit(1)
 
     out_path = args.out or os.path.join(RESULTS, f'parallel_speedup{suffix}.png')

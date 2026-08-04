@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate accuracy_convergence.png — Quadrature accuracy vs Q (log-log).
+Generate accuracy_convergence.png: Quadrature accuracy vs Q (log-log).
 
 Usage:
   python3 tools/results/plot_accuracy_fig.py
@@ -122,7 +122,7 @@ if __name__ == '__main__':
 
     accuracy_csv = args.csv or os.path.join(RESULTS, 'accuracy_convergence.csv')
     if not os.path.exists(accuracy_csv):
-        print(f"Missing {accuracy_csv} — cannot generate accuracy plot.")
+        print(f"Missing {accuracy_csv}, cannot generate accuracy plot.")
         sys.exit(1)
 
     out_path = args.out or os.path.join(RESULTS, 'accuracy_convergence.png')

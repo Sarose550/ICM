@@ -84,9 +84,6 @@ int icm_select_best_B(int n, int k);
 
 /* ── Diagnostic / profiling ──────────────────────────────────── */
 
-/* Measure per-call FFT overhead (prints to stdout). */
-void icm_measure_fft_overhead(void);
-
 /* Closed-form references for verification */
 void icm_v1_exact(int n, const double *S, double *V1);
 void icm_v2_exact(int n, const double *S, double *V2);

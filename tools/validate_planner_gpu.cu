@@ -34,8 +34,8 @@
 
 #include "icm_gpu.h"
 
-/* Full candidate B set; must match calibrate_gpu_best_b.cu and
- * kBCandidates in src/gpu/gpu_plan.cu. */
+/* Candidate B set swept here; must match calibrate_gpu_best_b.cu, which is
+ * the subset of kBCandidates (src/gpu/gpu_plan.cu) measured on the GPU. */
 static const std::vector<int> kBCandidates = {
     16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 192, 224, 256,
     320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536
@@ -72,7 +72,6 @@ static double run_case(int n, int k, int Q, int force_B, int *out_B) {
     }
 
     IcmGpuOptions opts{};
-    opts.device_id = 0;
     opts.use_cufftdx = 1;
     opts.enable_graphs = 0;
     opts.enable_q_pipeline = 0;
@@ -111,12 +110,10 @@ static double cv_of(const std::vector<double> &x) {
 
 /* Adaptive median-of-N timing for one (n,k,force_B) case: more reps for
  * fast/noisy cases, fewer for slow ones, extending until cv<=3% or
- * max_reps. Ported verbatim from heatmap_gpu.cu's gpu_time_ms() loop
- * (already shipped, already proven) rather than invented -- see
- * VERDICTS.md V6. A single-rep sweep across 24 candidates spanning
- * B=16..1536 was picking spurious "fastest" B purely from launch-jitter
- * noise at sub-few-ms problem sizes; this closes that gap the same way
- * the production heatmap tool already does. */
+ * max_reps.  Same loop as heatmap_gpu.cu's gpu_time_ms(); see VERDICTS.md
+ * V6.  A single-rep sweep across 24 candidates spanning B=16..1536 picks
+ * spurious "fastest" B purely from launch-jitter noise at sub-few-ms
+ * problem sizes, so the repetition is load-bearing, not defensive. */
 static double run_case_median(int n, int k, int Q, int force_B, int *out_B) {
     double first_ms = run_case(n, k, Q, force_B, out_B);
     if (first_ms < 0.0) return -1.0;

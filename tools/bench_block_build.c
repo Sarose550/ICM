@@ -9,7 +9,7 @@
  * The block-build phase builds the per-block polynomial product
  *   P(x) = ∏_{j in block} (a_j·x + (1-a_j))
  * via a nested loop: for each player, bsize FMAs update the coefficient
- * array P[0..B].  The cost-model estimate (src/cpu/icm.c lines 2178, 2526-2528):
+ * array P[0..B].  The cost-model estimate this tool fits:
  *   block_build = n * ((B+1)/2 * BLOCK_FMA_NS + BLOCK_MEM_NS)
  * models this as a per-player FMA term scaling with (B+1)/2 plus a fixed
  * per-player memory-streaming cost.

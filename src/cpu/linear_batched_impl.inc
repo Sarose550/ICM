@@ -1,10 +1,10 @@
 /* linear_batched_impl.inc; Template for BQ-parameterized batched linear engine.
- * Included twice from icm.c with different BQ_IMPL values (4 and 8).
+ * Included from icm.c once per instantiated batch width.
  * Do NOT compile this file standalone.
  *
  * Required defines before #include:
- *   BQ_IMPL ; the batch width (4 or 8)
- *   SUFFIX  ; function name suffix (_bq4 or _bq8)
+ *   BQ_IMPL ; the batch width
+ *   SUFFIX  ; function name suffix (e.g. _bq8)
  */
 
 #ifndef BQ_IMPL

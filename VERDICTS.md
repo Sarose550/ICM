@@ -107,7 +107,7 @@ transparent tradeoff rather than an implicit one. See the tooling commit
 for the full detail. Not yet run for real on B200 (would need funding);
 this is a tooling fix, not a claim that V7's remaining cell is now closed.
 
-**Superseded, same day.** The user asked for a fully non-discretionary,
+**Superseded, same day.** A project requirement called for a fully non-discretionary,
 one-command production tool; patching `calibrate_block_size.py`'s
 Step 2/Step 4 split still left real hand-tuned knobs (`--skeleton-lo/hi`,
 `--clean-streak-target`, `--max-probes-per-band`) a fresh device port
@@ -223,8 +223,8 @@ Found this the hard way mid-run today (see above); worked around with
 an explicit `--validate-bin` flag at the time, now fixed at the source.
 
 **Root cause found and fixed, same day, before another B200 rental.**
-The user pushed back on "nearest-neighbor is unsafe" as too vague for a
-281% regression and asked for the actual mechanism. Traced it precisely:
+Review pushback on "nearest-neighbor is unsafe" as too vague for a
+281% regression called for the actual mechanism. Traced it precisely:
 
 - Every worst regression (n=2048,k=512 -> B=1280 vs true B=64, gap
   292.75%; n=16384,k=64 -> B=1024 vs true B=48, gap 265.32%) landed at
@@ -336,7 +336,8 @@ locally (`live_table` only lived on the remote instance, an important
 accident of this session's architecture); nothing to revert. The
 broken 345-point table is preserved as
 `results/gpu_fft_config_20260731_run2_BROKEN_evidence.h`, and its
-heatmap as `results/gpu_heatmap_b200_20260731_run2_final.csv`, both
+heatmap as `results/evidence/gpu_heatmap_b200_20260731_run2_final_NOT_SHIPPED.csv`
+(moved into `results/evidence/` in a later hygiene pass), both
 evidence, neither usable calibration data. Instance destroyed
 (`46367689`).
 
@@ -544,6 +545,27 @@ new data against the **dated 20260727 files**. Comparing against the undated
 files shows a spurious ~1.8x slowdown that is purely the 1DPC/2DPC difference.
 This mistake was made on 2026-07-30 and corrected.
 
+### V9a. Correction: the "1DPC" label was a theory, and it was wrong (2026-08-04)
+
+The "1DPC" characterization of the earlier, faster box above was an
+inference from its higher measured bandwidth, never a verified hardware
+fact, and the 2026-08-03 replacement box disproved the framing: it
+measures 32.7 GB/s streaming, ordinary 3600 MT/s 2DPC, with no elevated
+bandwidth anywhere, and the original box was lost before its discrepancy
+was ever explained. Per an explicit project decision, the multi-machine
+comparison is dropped entirely: the current box's data is the single Zen4
+reference, presented without configuration qualifiers, and the unexplained
+old-box discrepancy is not chased further.
+
+Final disposition: `contour_zen4_{serial,parallel}_q256_1dpc.csv`,
+`results/zen4_1dpc_vs_2dpc.png`, and `tools/results/plot_zen4_1dpc_2dpc.py`
+are deleted (git history retains the data; the filenames asserted an
+unverified configuration as fact). The undated
+`bench_grid_zen4_*.txt`/`contour_zen4_*_q256.csv` files now hold
+current-box data (2026-08-03 refresh), so this entry's "Trap" paragraph
+and its "kept and reframed" decision are historical record only. "1DPC"
+mentions in the hygiene entry further down have the same status.
+
 ## V10. Zen 4 parallel scaling cliff is a documented limit, not a bug to fix
 
 **Decided:** 2026-07-23. **Evidence:** commit `a4ce099`.
@@ -579,7 +601,7 @@ consequence.
 
 ## V12. Acceptance criterion is monotone TIME, not monotone B
 
-**Decided:** 2026-07-30. **Evidence:** user decision this session.
+**Decided:** 2026-07-30. **Evidence:** engineering decision this session.
 
 B may be non-monotonic in k; that reflects kernel/memory-layout quirks and is
 expected. What must hold is that **measured time increases with n and with k**.
@@ -599,7 +621,7 @@ were rejected because their per-element rounding compounds across tree levels to
 
 ## V14. Never regenerate Zen 4 FFTW wisdom on redeploy
 
-**Evidence:** standing user instruction; memory `feedback_zen4_wisdom_port_no_regen`.
+**Evidence:** standing project instruction; memory `feedback_zen4_wisdom_port_no_regen`.
 
 Copy `devices/zen4/fftw_wisdom.dat` onto the new box byte-identical (verify by
 md5) and rebuild AOCL-FFTW from source with the full flag set. Do not re-run a
@@ -609,7 +631,7 @@ PATIENT calibration from scratch. Verified working again 2026-07-30.
 
 ## V15. Dispatch tables are calibrated serial and reused for parallel
 
-**Decided:** before 2026-07-30, clarified by the user 2026-07-30.
+**Decided:** before 2026-07-30, clarified 2026-07-30.
 **Evidence:** the code itself.
 
 Both dispatch decisions are **thread-count-blind**: `select_best_B(int n, int k)`
@@ -760,7 +782,7 @@ other `BROKEN`/`NOT_SHIPPED`-labeled files were reviewed and deliberately
 left alone; they have real provenance in V6/V7 above and read as
 documented engineering rigor, not clutter.
 
-**Paper's past-methodology-flaw narrative was too long.** Explicit user
+**Paper's past-methodology-flaw narrative was too long.** Explicit review
 feedback: "nobody gives a fuck what past bugs looked like... at most one
 paragraph in the entire paper about it." Both calibration-methodology
 subsections (CPU and GPU) previously carried multi-paragraph blow-by-blow
@@ -781,8 +803,8 @@ across every regeneration since the first real PATIENT calibration (2026-07-20).
 
 A paper read-through flagged the pure tree engine beating hybrid at n=8192
 (k=n/2, k=n) and n=16384 (k=n/4, k=n) in both serial and parallel tables, and
-the user recalled this hadn't shown up in earlier, already-vetted data. Git
-history confirmed the memory was correct: hybrid won comfortably at these
+it was recalled this hadn't shown up in earlier, already-vetted data. Git
+history confirmed the recollection was correct: hybrid won comfortably at these
 exact cells from 2026-07-20 through 2026-07-23, then narrowed and flipped
 starting with the 2026-07-24 "widened B-selection tables" regen and again
 after 2026-08-01's refresh.
@@ -912,28 +934,28 @@ one root cause, isolated to the **tree** engine:
 
 **Ruled out, each by direct experiment rather than argument:**
 
-- *New FFTW wisdom* -- old config + new wisdom: ALL TESTS PASSED.
-- *The wrap-safety-margin fix* -- still fails with
+- *New FFTW wisdom*: old config + new wisdom: ALL TESTS PASSED.
+- *The wrap-safety-margin fix*: still fails with
   `-DWRAP_SAFE_MARGIN=1000000000` (guard effectively disabled).
-- *The `CALIBRATED_MAX_CONV_LEN` change* -- still fails with the ceiling
+- *The `CALIBRATED_MAX_CONV_LEN` change*: still fails with the ceiling
   manually reverted to 262143.
-- *The 27 new sizes* -- the old 749 sizes with only the **new times** spliced
+- *The 27 new sizes*: the old 749 sizes with only the **new times** spliced
   in still fails.
-- *`polymul_fft_cyclic()` wrap correction invalid at `wrap_m >= 5`* -- this
+- *`polymul_fft_cyclic()` wrap correction invalid at `wrap_m >= 5`*: this
   entry's **original diagnosis, disproven**. That function is bench-only
   (`ICM_BENCH_INCLUDE`, one call site in bench.c's profiling loop) and is not
   on the tree engine's compute path at all. Directly testing it at exactly
   the `(fft_n, wrap_m)` pairs `best_fft_config()` chooses for L=2..64 with
   the real 776-size data: every plan correct against a naive reference,
   including `wrap_m` well past 5.
-- *Wrap-correction math in the live correlates* -- also correct within its
+- *Wrap-correction math in the live correlates*: also correct within its
   domain. Tracing the failing `tree n=16 uniform` (err 1.63e-01) showed
   `build_wrap_m = 0` at every level, and the one nonzero-wrap correlate that
   runs through the non-cached `correlate_fft_pair()` path checked clean
   against a direct reference. The instrumented branch, however, was not the
   branch being taken: at the failing level `build_fft_n == corr_fft_n`, so
   `fft_cache_ok = 1` and propagation goes through
-  `correlate_fft_cached_pair_wrap()` -- which was uninstrumented. "No
+  `correlate_fft_cached_pair_wrap()`, which was uninstrumented. "No
   mismatch printed" meant "branch never ran", a trap worth remembering.
 
 So the trigger is purely the re-measured per-size FFT times. They differ from
@@ -945,8 +967,8 @@ generally toward a *smaller* transform with a *nonzero* wrap.
 correlate implementation (`correlate_fft`, `correlate_fft_pair`,
 `correlate_fft_cached_wrap`, `correlate_fft_cached_pair_wrap`) requires
 `fft_n >= len_g`: the g operand must fit the transform whole. The cached
-variants do `copy_g = min(len_g, fft_n)` -- past the bound they silently
-TRUNCATE g -- while their wrap corrections model the cyclic aliasing of a g
+variants do `copy_g = min(len_g, fft_n)` (past the bound they silently
+TRUNCATE g) while their wrap corrections model the cyclic aliasing of a g
 that fully fit. The non-cached variants would heap-overflow instead
 (`memcpy(rbuf, g, len_g)` with no clamp). But `best_fft_config()` and
 `best_fft_config_joint()` used `len_P`/`p_eff` only to *price* the wrap
@@ -959,13 +981,13 @@ Concretely, at the failing `n=16` level 3: `corr_conv=13`, `p_eff=5`, so
 `out[4]` loses its true `P[4]*g[8]` term, and the output-side correction
 wrongly subtracts `P[0]*g[8]` from `out[0]` (it models an output wrap that
 never happened, because g was truncated rather than wrapped). Two O(1)
-errors -- the observed 16.3%. This also explains the earlier bisection
+errors: the observed 16.3%. This also explains the earlier bisection
 finding "`wrap_m <= 4` passes, `>= 5` fails": clamping every wrap to 4
 restored `wrap_m <= p_eff - 1` feasibility at every failing level; the knob
 was different but the boundary was the same.
 
 **Fix (src/cpu/fft_cost_model.h):** a hard feasibility constraint in both
-searches -- `best_fft_config()` skips candidates with `m >= len_P` in
+searches: `best_fft_config()` skips candidates with `m >= len_P` in
 correlate mode (`len_P > 0`), `best_fft_config_joint()` skips candidates
 with `mc >= p_eff`. Pure convolution (`len_P == 0`, the build path) is
 unconstrained: `polymul_fft_wrap()` reads its wrap terms from the original
@@ -975,7 +997,7 @@ level now selects `fft_n=12, wrap_m=1` (feasible) instead of `8/5`.
 
 **Regression test:** `tools/test_wrap_feasibility.c` pins the bound with a
 SYNTHETIC calibration table crafted so the infeasible candidate wins every
-cost race it is allowed to enter -- device-independent, exactly because the
+cost race it is allowed to enter, device-independent, exactly because the
 original bug needed a data-dependent cost race to surface. 4 checks: the
 exact n=16 shape through both choosers, a convolution-mode guard proving the
 build path was not over-constrained, and a full (len_P, out) sweep. Fails
@@ -986,7 +1008,7 @@ against the pre-fix chooser, passes post-fix.
 PASSED, `libicm.a`/`libicm.dylib` clean (M3 Pro's own data never triggered
 the bug, but was exposed to the identical mechanism). One nuance: `xchk
 n=4096 adversarial` measured 1.14e-13 against a 1e-13 cross-check tolerance
-both BEFORE and AFTER the fix (identical to three digits) -- that cell's
+both BEFORE and AFTER the fix (identical to three digits): that cell's
 k=10 tree never chose an infeasible config, and the excess is legitimate
 rounding drift from different-but-feasible size choices under the new timing
 data (the 749-size data measured 7.56e-14 at the same cell, already 76% of
@@ -1000,8 +1022,8 @@ bucket, documented in place. The 776-size Zen4 calibration ships.
 now closed. It was not a clean port: the CPU fix, applied as-is, would have
 left the shipped B200 failure completely unfixed.
 
-**Method (no GPU rental).** The GPU decision path -- `gpu_cost_model.cu` and
-`gpu_plan.cu` -- is pure host C++; only `gpu_kernels.cu` / `gpu_exec.cu` need
+**Method (no GPU rental).** The GPU decision path (`gpu_cost_model.cu` and
+`gpu_plan.cu`) is pure host C++; only `gpu_kernels.cu` / `gpu_exec.cu` need
 a CUDA toolchain. Compiling those two translation units *verbatim* against
 thin CUDA shims (`cudaStream_t`, `cufftDoubleComplex`, a `cub` stub) makes
 the real, shipped planner runnable on the dev Mac against the real
@@ -1024,7 +1046,7 @@ infeasible plan comes from the **fused power-of-2 override**
 (`gpu_plan.cu`, mirrored in `estimate_candidate_cost()`), which replaces
 that with `p2 = next_pow2_int(conv_build) = 512`, wrap 206. `p2` is derived
 from the BUILD convolution only, but the same fused kernel also loads the
-full g operand for the correlate -- and 512 < 526. Constraining only the two
+full g operand for the correlate, and 512 < 526. Constraining only the two
 searches, as on CPU, fixes nothing here.
 
 **Numerical consequence, measured.** Transcribing the fused correlate
@@ -1033,7 +1055,7 @@ searches, as on CPU, fixes nothing here.
 failing shape: **max relative error 1.39e-01** (13.9%), the same order as
 the CPU's 16.3%. At the post-fix size (1024) the same code is exact to
 2.8e-16. Feasible-but-nonzero-wrap shapes from neighbouring levels
-(`fft_n=256, wrap=79`; `fft_n=128, wrap=16`) are exact to 2e-16 -- so, as on
+(`fft_n=256, wrap=79`; `fft_n=128, wrap=16`) are exact to 2e-16, so, as on
 CPU, the wrap-correction math is correct *within its domain* and only the
 missing feasibility bound is at fault.
 
@@ -1041,7 +1063,7 @@ missing feasibility bound is at fault.
 that GPU build mode might need the same protection (build and correlate
 share `cufftdx_load_real`, unlike CPU where they are separate code paths)
 was **checked and refuted with evidence, not assumed**. Across all 10809
-audited FFT levels there are **zero** build-side violations -- not even a
+audited FFT levels there are **zero** build-side violations: not even a
 truncated structural-zero tail. The reason is structural: `min_size =
 conv_len/2 + 1` inside both searches, taken over `max_conv >= build_conv`,
 already forces `fft_n >= cps` (non-below-saturation) or `>= p_eff`
@@ -1067,7 +1089,7 @@ n=39224,k=709,ell=3 level moves from `512/wrap 206` (infeasible) to
 so the bound is not over-tightening. `tools/test_gpu_wrap_feasibility.cu`
 (new): 1598 failures against the pre-fix sources, `ALL TESTS PASSED` (32879
 checks) against the fixed ones. `tools/test_gpu_cost_model.cu` holds at its
-pre-existing 483 passed / 5 failed both before and after -- the 5 are the
+pre-existing 483 passed / 5 failed both before and after: the 5 are the
 known B-selection optimality mismatches (V7), not this. Its own plan dump
 had been printing an infeasible config all along
 (`ell=3 ... fft_n=1024 cwm=414` with `p_eff=385`), now `fft_n=1296 cwm=142`.
@@ -1076,13 +1098,13 @@ had been printing an infeasible config all along
 happened; see the budget note below. What is verified is the planner
 decision (shipped code, shipped data) and the arithmetic consequence
 (transcribed kernel semantics). What is not is a live `bench_gpu_fused`
-run, nor that the fix compiles under nvcc -- the changes are plain host C++
+run, nor that the fix compiles under nvcc: the changes are plain host C++
 in files nvcc compiles, but no CUDA toolchain exists on the dev machine.
 **Run `make test_gpu_wrap_feasibility` and `./bench_gpu_fused verify` on the
 next B200 session before treating this as fully closed.** *(Done 2026-08-04:
-both pass on real hardware -- see V20c below.)*
+both pass on real hardware; see V20c below.)*
 
-**Why no rental (budget $0.66).** B200 is $5.84/hr on vast.ai -- 6.8 minutes,
+**Why no rental (budget $0.66).** B200 is $5.84/hr on vast.ai: 6.8 minutes,
 less than provisioning. Cheap consumer cards (RTX 4090/5090, ~$0.28/hr) are
 not drop-in for this codebase, contrary to the assumption that `CUDA_ARCH`
 parameterizes the build: `gpu_kernels.cu` hardcodes `cufftdx::SM<1000>()` in
@@ -1094,12 +1116,12 @@ an unbounded debugging loop against a hard cap, so the money was not spent.
 **Follow-up worth considering:** make the cuFFTDx SM trait track
 `CUDA_ARCH` rather than hardcoding 1000. It is the single thing that would
 make this class of bug verifiable on a $0.28/hr card instead of a $5.84/hr
-one. *(Done 2026-08-04 -- see V20c.)*
+one. *(Done 2026-08-04; see V20c.)*
 
 ### V20b. The published B200 numbers ARE affected (RESULTS.md not final)
 
-**Recorded:** 2026-08-04. Replaying the **pre-fix** planner -- the code that
-actually produced the published data -- over every published B200 cell:
+**Recorded:** 2026-08-04. Replaying the **pre-fix** planner (the code that
+actually produced the published data) over every published B200 cell:
 
 | population | cells | affected |
 |---|---|---|
@@ -1132,7 +1154,7 @@ operand, which was chosen precisely because it looked cheaper. Post-fix
 those cells move to a larger FFT with zero wrap, so their runtimes will
 change and must be re-measured before RESULTS.md or the paper's GPU numbers
 are treated as final. The likely direction is slower (bigger transform),
-but that is not certain -- the discarded plan also paid an O(wrap_m^2)
+but that is not certain: the discarded plan also paid an O(wrap_m^2)
 correction (wrap_m=206 and 461 at the worst levels), so the net could go
 either way at some cells. Do not guess it; re-run the grid.
 
@@ -1141,8 +1163,8 @@ the only GPU test that compares against a CPU reference, and auditing its
 exact grid (n up to 65,536 basic / 131,072 extended, k in {16, 100, 512,
 n/2, n}) gives **zero** infeasible levels pre-fix. The infeasible band lives
 around k ~ 1,024-2,048 at n >= 65,536, which the verify grid steps straight
-over. Meanwhile `tools/heatmap_gpu.cu` -- the source of the "all 210 cells
-pass with zero errors" claim -- performs **no numerical comparison at all**
+over. Meanwhile `tools/heatmap_gpu.cu` (the source of the "all 210 cells
+pass with zero errors" claim) performs **no numerical comparison at all**
 (grep: zero references to `icm_equity` or any reference/error computation);
 its "error" column means OOM or a CUDA execution failure. Since the
 truncation is memory-safe by construction it can never raise one. So
@@ -1193,17 +1215,26 @@ Everything V20a/V20b left open was closed on a fresh B200 rental
 ## Unverified recollections
 
 None outstanding. (The Zen 4 parallel-sweep item previously recorded here was
-clarified by the user on 2026-07-30 and promoted to V15; the original wording
+clarified 2026-07-30 and promoted to V15; the original wording
 misread a calibration-scope decision as a data-collection-scope decision.)
 
-## Known data-hygiene issues, not yet resolved
+## Known data-hygiene issues
 
-- `RESULTS.md`'s Zen 4 **parallel** column mixes two machines: cells at n=128
-  and n=256 match an older undated file while n >= 512 match the cited
-  `20260727` file. Serial is clean (all 66 cells match).
-- The Zen 4 1-second threshold (n=17,984) has no saved artifact, unlike the GPU
-  one.
-- `tools/sweep_best_b.sh` has now been run on Zen4 (2026-07-30, full grid,
-  `results/b_optimal_sweep_zen4_2026-07-30.csv`), closing this gap on one
-  platform; it surfaced V16 (open). Not yet run on M3 Pro (blocked, see
-  HANDOFF.md) or as a GPU analogue.
+- RESOLVED 2026-08-03: the Zen 4 parallel-column two-machine mix and the
+  missing Zen 4 threshold artifact were both superseded by the full
+  re-measurement on the current reference box; `results/threshold_zen4_*.txt`
+  now ship alongside the M3 Pro equivalents.
+- Snapshot pruning (2026-08-04, per an explicit project decision to ship
+  only the newest data generation): 14 superseded dated snapshots were
+  removed from tracking (the Zen4 bench-grid/contour 20260727 and 20260730
+  sets, crossover/subset 20260730-0802 sets, the uncited
+  `gpu_heatmap_b200_20260730.csv`, and `b_optimal_sweep_zen4_postfix2.csv`).
+  All remain in git history. What ships: current undated files, the newest
+  dated generation (20260803), dated files with live citations
+  (`gpu_heatmap_b200_20260728.csv`, `_20260730_postfix2.csv`,
+  `b_optimal_sweep_zen4_2026-07-30.csv`, the threshold traces), and the
+  V6/V7-documented `results/evidence/` set.
+- Still open: `tools/sweep_best_b.sh` has been run on Zen4 (2026-07-30, full
+  grid, `results/b_optimal_sweep_zen4_2026-07-30.csv`), closing this gap on
+  one platform; it surfaced V16 (open). Not yet run on M3 Pro or as a GPU
+  analogue.

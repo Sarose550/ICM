@@ -1,8 +1,7 @@
 /* threshold_search_gpu.cu: Binary search for the exact n where GPU
- * runtime crosses 1000ms, using the lightweight single-measurement
- * approach from frontier_probe.cu (one icm_gpu_equity_with_plan call per
- * candidate n), NOT the exhaustive B/M/T hyperparameter grid search from
- * push_limit_gpu.cu.
+ * runtime crosses 1000ms, using a lightweight single-measurement approach
+ * (one icm_gpu_equity_with_plan call per candidate n), NOT the exhaustive
+ * B/M/T hyperparameter grid search from push_limit_gpu.cu.
  *
  * Two independent binary searches:
  *   Curve 1: k = n  (full-equity-like, k scales with n)
@@ -13,23 +12,10 @@
  * Output: per-candidate log lines as the search narrows, then the final
  * threshold n for each curve.
  *
- * Build (B200, cuFFTDx-enabled; matches Makefile's push_limit_gpu target):
- *
- *   # Pre-flight: the fused GPU objects + device-link object must already
- *   # be built (e.g. via 'make bench_gpu_fused' first).  Then:
+ * Build (B200, cuFFTDx-enabled):
  *
  *   CUFFTDX_INC=$(find /usr/local/lib -maxdepth 4 -type d -path '*dist-packages/nvidia/mathdx/include' | head -1)
- *
- *   nvcc -O3 -std=c++17 -arch=sm_100 -Isrc/cpu -Idevices/b200 -Isrc/gpu \
- *        -I"$CUFFTDX_INC" -DUSE_CUFFTDX -DICM_REQUIRE_CUFFTDX \
- *        -DCUFFTDX_DISABLE_CUTLASS_DEPENDENCY \
- *        -dc -o build/threshold_search_gpu.o tools/threshold_search_gpu.cu
- *
- *   nvcc -O3 -std=c++17 -arch=sm_100 \
- *        -o threshold_search_gpu build/threshold_search_gpu.o \
- *        build/gpu_kernels_fused.o build/gpu_plan_fused.o \
- *        build/gpu_exec_fused.o build/gpu_api_fused.o \
- *        build/gpu_dlink_fused.o -lcufft -lcudart
+ *   make threshold_search_gpu CUDA_ARCH=sm_100 CUFFTDX_INC=-I"$CUFFTDX_INC"
  *
  *
  * Architecture note: -arch=sm_100 targets B200 (Blackwell).  Verify
@@ -85,7 +71,6 @@ static double measure_ms(int n, int k) {
     eq.assign(n, 0.0);
 
     IcmGpuOptions opts{};
-    opts.device_id                 = 0;
     opts.use_cufftdx               = 1;
     opts.enable_graphs             = 0;
     opts.enable_q_pipeline         = 1;

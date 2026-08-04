@@ -1,7 +1,7 @@
 /* tools/test_gpu_cost_model.cu -- GPU cost model unit tests (host-side only).
  *
- * Validates invariants of the cost model in gpu_plan.cu without launching
- * any GPU kernels.  All tested functions are pure host-side math.
+ * Validates invariants of the cost model in gpu_cost_model.cu without
+ * launching any GPU kernels.  All tested functions are pure host-side math.
  *
  * Build: make test_gpu_cost_model CUDA_ARCH=sm_100 CUFFTDX_INC=...
  * Run:   ./test_gpu_cost_model
@@ -55,7 +55,8 @@ static void test_tier_never_schoolbook_in_fused_range() {
     }
 
     /* Non-power-of-2 fft_n: fused NOT calibrated at this size, but still in range.
-     * Must return CUFFT (never SCHOOLBOOK) per our fix. */
+     * Must return CUFFT (never SCHOOLBOOK): inside the fused range the
+     * schoolbook FMA model is unreliable and is not consulted. */
     int non_p2[] = {384, 640, 768, 1280, 1536, 2560, 3072, 5120, 6144};
     int n_np2 = sizeof(non_p2) / sizeof(non_p2[0]);
     for (int i = 0; i < n_np2; i++) {

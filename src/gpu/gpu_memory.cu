@@ -7,10 +7,9 @@
  * stream-ordered memory pool, per-level FFT buffer allocation, the padded
  * identity table, and the single arena allocation with its q_batch retry loop.
  *
- * Split out of gpu_plan.cu unchanged. Treat this file with more care than the
- * other two extractions: this is where the OOM bugs lived and where the arena
- * retry and pool initialisation were debugged on real B200 hardware. Its
- * failure mode is a runtime crash, not a compile error.
+ * The failure mode of everything here is a runtime OOM or crash on real
+ * hardware, not a compile error, so nothing in this file is caught by a
+ * successful build.
  */
 
 #include "gpu_internal.h"
@@ -46,8 +45,6 @@ void free_device(GpuPlan *plan, void *ptr, cudaStream_t stream) {
         cudaFree(ptr);
     }
 }
-
-/* ── Smooth table ──────────────────────────────────────────────── */
 
 /* ── allocate_plan_device_memory ───────────────────────────────── */
 

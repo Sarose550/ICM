@@ -421,7 +421,6 @@ def main():
     # Zen4: contour files (all versions)
     zen4_cells = []
     for fname in ['contour_zen4_serial_q256.csv', 'contour_zen4_parallel_q256.csv',
-                  'contour_zen4_serial_q256_1dpc.csv', 'contour_zen4_parallel_q256_1dpc.csv',
                   'contour_zen4_serial_q256_20260727.csv', 'contour_zen4_parallel_q256_20260727.csv']:
         fpath = os.path.join(results_dir, fname)
         if os.path.exists(fpath):
@@ -490,7 +489,6 @@ def main():
 
     # Zen4 contour files
     for fname in ['contour_zen4_serial_q256.csv', 'contour_zen4_parallel_q256.csv',
-                  'contour_zen4_serial_q256_1dpc.csv', 'contour_zen4_parallel_q256_1dpc.csv',
                   'contour_zen4_serial_q256_20260727.csv', 'contour_zen4_parallel_q256_20260727.csv']:
         fpath = os.path.join(results_dir, fname)
         if not os.path.exists(fpath):
@@ -750,7 +748,6 @@ def main():
         w("- All contour CSV files (`contour_*_q256.csv`) must be regenerated\n")
         w("- All GPU heatmap CSV files (`gpu_heatmap_b200*.csv`) must be regenerated\n")
         w("- All PNG figures rendered from these CSVs must be re-rendered\n")
-        w("- The `b_optimal_report_zen4.md` report may reference affected numbers\n")
         w("- Bench grid text logs (`.txt`) do not record per-cell B and do not "
           "need regeneration, though any B-dependent analysis from them would\n\n")
 

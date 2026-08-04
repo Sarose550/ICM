@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate contour_1s[_<device>].png — serial vs parallel 1-second boundary (CPU).
+Generate contour_1s[_<device>].png: serial vs parallel 1-second boundary (CPU).
 
 Usage:
   python3 tools/results/plot_contour_fig.py --device m3_pro
@@ -176,7 +176,7 @@ if __name__ == '__main__':
     parallel_csv = args.parallel or find_latest(cfg['parallel_csv'])
 
     if not serial_csv or not parallel_csv:
-        print("Missing contour CSV files — cannot generate contour plot.")
+        print("Missing contour CSV files, cannot generate contour plot.")
         sys.exit(1)
 
     out_path = args.out or os.path.join(RESULTS, f'contour_1s{suffix}.png')

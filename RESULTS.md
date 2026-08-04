@@ -1,4 +1,4 @@
-# RESULTS.md - ICM Equity Optimization Results
+# RESULTS.md: ICM Equity Optimization Results
 
 All correctness tests pass at < 1.6e-10 relative error.
 Q=256 quadrature points.
@@ -11,7 +11,7 @@ Q=256 quadrature points.
 > from aggregate regression, see [Calibration methodology](#calibration-methodology) below.
 > Engine dispatch: `select_engine()` cost-based, B auto-selected (typically B=32).
 
-### Performance (ms, uniform stacks, median of 5) - M3 Pro
+### Performance (ms, uniform stacks, median of 5): M3 Pro
 
 Single-threaded vs 12-thread parallel, per (n, k) cell:
 
@@ -84,7 +84,7 @@ Single-threaded vs 12-thread parallel, per (n, k) cell:
 | 65536 | k=n/2 | 3820 | 575 | 6.6x |
 | 65536 | k=n | 4060 | 627 | 6.5x |
 
-### Parallel speedup - M3 Pro
+### Parallel speedup: M3 Pro
 
 At the 1-second boundary (from regenerated contour sweep, Q=256):
 
@@ -104,17 +104,17 @@ full performance grid above shows hybrid cells peaking around 7.5-7.9x at more m
 ### 1-second threshold: n = 18,368 (k=n, single-threaded), n = 88,064 (k=n, 12-thread)
 
 Real binary search (`bench_grid threshold`; `results/threshold_m3pro_serial.txt`,
-`results/threshold_m3pro_parallel.txt`), not an interpolation from grid points --
-past sessions repeatedly substituted an interpolated estimate here, which shipped
+`results/threshold_m3pro_parallel.txt`), not an interpolation from grid points.
+Past sessions repeatedly substituted an interpolated estimate here, which shipped
 a materially wrong number more than once (see HANDOFF.md). This run post-dates
 the M3 Pro calibration extension to 262,144 (905 sizes) and the wrap-safety-margin
 fix, so it reflects the corrected dispatch behavior, not the pre-fix
-catastrophic-wrap regime that affected n≈89,600-90,112 before tonight's fixes.
+catastrophic-wrap regime that affected n≈89,600-90,112 before the 2026-08-03 fixes.
 
 These specific numbers were measured with a single sample per candidate (the
-`threshold` binary search's original methodology). A later check the same night
-found that measuring with real repetition (median of 5, matching this project's
-usual convention) shifts the M3 Pro serial figure down to roughly n=16,256 --
+`threshold` binary search's original methodology). A later check found that
+measuring with real repetition (median of 5, matching this project's
+usual convention) shifts the M3 Pro serial figure down to roughly n=16,256:
 directly confirmed to be sustained thermal throttling under back-to-back
 near-1-second computations (not a bug: 8 consecutive reps at one fixed n show a
 clear upward time drift), not a change in what's actually being measured. The
@@ -151,10 +151,10 @@ cold-start figures.
 > This is the project's standing Zen4 reference; all numbers below are measured
 > directly on it. (A prior box used earlier in this project ran the same
 > nominal configuration but measured slower on hybrid/FFT-heavy cells; that
-> discrepancy was never resolved and isn't relevant to the numbers below --
-> see `VERDICTS.md` if the history matters to you.)
+> discrepancy was never resolved and isn't relevant to the numbers below.
+> See `VERDICTS.md` if the history is relevant.)
 
-### Performance (ms, uniform stacks, median of 5) - Zen 4 (current reference)
+### Performance (ms, uniform stacks, median of 5): Zen 4 (current reference)
 
 Single-threaded vs 16-thread parallel, per (n, k) cell. Source:
 `results/bench_grid_zen4_serial.txt`, `results/bench_grid_zen4_parallel.txt`
@@ -229,7 +229,7 @@ Single-threaded vs 16-thread parallel, per (n, k) cell. Source:
 | 65536 | k=n/2 | 2850 | 701 | 4.1x |
 | 65536 | k=n | 3160 | 862 | 3.7x |
 
-### Parallel speedup - Zen 4 (current reference)
+### Parallel speedup: Zen 4 (current reference)
 
 At the 1-second boundary (from contour sweep, Q=256, `OMP_NUM_THREADS=16`).
 Source: `results/contour_zen4_serial_q256.csv`,
@@ -268,10 +268,10 @@ compute-bound.
 (`results/threshold_zen4_serial.txt`, `results/threshold_zen4_parallel.txt`).
 Neither is interpolated or extrapolated. Like the M3 Pro figures above, these
 were measured single-sample per candidate (the `threshold` subcommand's
-original methodology, since fixed to a real median of 5 for future runs --
+original methodology, since fixed to a real median of 5 for future runs;
 see the M3 Pro section for why: single-sample measurements are vulnerable to
-sustained-load thermal drift, confirmed directly this session). Kept as
-originally measured for consistency with the rest of tonight's data.
+sustained-load thermal drift, confirmed directly 2026-08-03). Kept as
+originally measured for consistency with the rest of that day's data.
 
 Two changes worth stating explicitly rather than silently swapping:
 
@@ -322,16 +322,16 @@ traced to measurements on a different box that never had AOCL-FFTW installed.
 - Cost-model-driven B selection (`select_best_B`)
 - Shared tree_build_levels / tree_propagate_g helpers
 - BQ=8 batched linear with interleaved a_batch layout
-(`a_batch[j*BQ+qi]` - cache-friendly, eliminates L1 misses at all n).
-Template in `src/linear_batched_impl.inc`.
+(`a_batch[j*BQ+qi]`, cache-friendly, eliminates L1 misses at all n).
+Template in `src/cpu/linear_batched_impl.inc`.
 - L2-aware checkpointing (`ckpt_interval_batched`)
-- Cost-based engine dispatch (`select_engine`) - no fixed K_CROSS thresholds
+- Cost-based engine dispatch (`select_engine`): no fixed K_CROSS thresholds
 - Cross-correlation wrap correction handles both output-wrap and input-wrap
 cyclic aliasing (corrects a pre-existing bug with wrap_m > 0)
 
 ### M3 Pro / Apple Silicon specific
 
-- vDSP interleaved DFT dispatch (`vDSP_DFT_Interleaved_CreateSetupD`) - 10-18%
+- vDSP interleaved DFT dispatch (`vDSP_DFT_Interleaved_CreateSetupD`): 10-18%
 faster FFT at 33 supported sizes (f × 2^g where f ∈ {1,3,5,15}, g ≥ 4).
 Zero format conversion (uses same interleaved complex as FFTW). Forward ×2
 scaling absorbed into pointwise multiply; single ×0.25 on inverse output.
@@ -407,7 +407,7 @@ They live in `devices/<device>/fft_config.h`.
 > FFT calibration table (`calib_sizes[]`/`calib_times_ns[]`) and FFTW wisdom
 > in `devices/m3_pro/fft_config.h` are from a genuine FFTW PATIENT calibration
 > on this Apple M3 Pro machine (July 2026). `WRAP_FMA_NS` and `FP64_DIV_NS` are
-> direct microbenchmark measurements, not recovered from aggregate regression ,
+> direct microbenchmark measurements, not recovered from aggregate regression;
 > both were unidentifiable from the indirect fit alone (the regression converged
 > to physically implausible values: 0.1ns and 0.5ns respectively, both hitting
 > their fit lower bounds). Pinning both raises the fit's RMS log-relative error
@@ -423,7 +423,7 @@ They live in `devices/<device>/fft_config.h`.
 |---|---|---|
 | `FMA_NS` | 0.0793 | Scalar FMA cost. 8-param fit (only `WRAP_FMA_NS` pinned). |
 | `WRAP_FMA_NS` | 0.4360 | Per-FMA cost for wrap correction. **Directly measured** via `tools/bench_wrap_fma.c`, extracted as least-squares slope over the decision-relevant range `wrap_m ∈ [64,384]`. |
-| `FP64_DIV_NS` | 12.5287 | FP64 divide latency. From the unpinned 8-param fit, not independently cross-checked against a direct measurement this session. |
+| `FP64_DIV_NS` | 12.5287 | FP64 divide latency. From the unpinned 8-param fit, never independently cross-checked against a direct measurement (unlike M3 Pro's). |
 | `BLOCK_FMA_NS` | 0.6833 | FMA cost inside block build/divide (sequential dependency chain, latency- not throughput-bound). |
 | `BLOCK_MEM_NS` | 0.1 | Memory cost per element in block build/divide. |
 | `PAIRED_CACHED_CORR_RATIO` | 1.8287 | Paired cached correlate cost / full FFT pipeline cost. |
@@ -437,7 +437,7 @@ They live in `devices/<device>/fft_config.h`.
 > AOCL-FFTW PATIENT wisdom in `devices/zen4/fft_config.h` are from an AMD
 > Ryzen 9 7950X (same SKU as the benchmark machine). `WRAP_FMA_NS` was
 > directly measured after the indirect fit proved it unidentifiable from
-> aggregate `sample_plans` data (the old fit value 0.8612 was arbitrary ,
+> aggregate `sample_plans` data (the old fit value 0.8612 was arbitrary;
 > wrap-correction cost never exceeds 1.5% of any sampled plan's total time,
 > a "persistency of excitation" failure). Fixing this constant (and unifying
 > the code-level `FMA_NS`/`WRAP_FMA_NS` mismatch in the planner) produced a
@@ -573,7 +573,7 @@ Full 211-point calibration heatmap
 (`results/gpu_heatmap_b200.csv`), regenerated 2026-07-30 on
 top of two rounds of B-selection anchor fixes (`2620583`, `71db180`; see
 `VERDICTS.md` V7). All 210 cells **ran to completion** with cv ≤ 0.036
-everywhere (most 0.000) -- **"zero errors" here means no OOM/execution
+everywhere (most 0.000). **"zero errors" here means no OOM/execution
 failure, not a numerical accuracy check**: `tools/heatmap_gpu.cu` makes no
 comparison against a reference value at all, so this line was previously
 worded to imply a correctness guarantee it never provided. (Numerical
@@ -591,7 +591,7 @@ comparable.
 
 > **Known limitation, disclosed rather than hidden: 1 cell out of 210 is a
 > genuine, understood regression.** n=65,536, k=2,048 dispatches B=48 and
-> ran 14.13ms versus 12.13ms before this session's anchor fixes (+16.5%).
+> ran 14.13ms versus 12.13ms before the 2026-07-30 anchor fixes (+16.5%).
 > (Both of those timings predate the V20a feasibility fix; the cell's
 > current post-fix, re-measured value is 15.28ms, but the B-selection
 > regression mechanism described here is independent of that fix and
@@ -648,7 +648,7 @@ measured scalar constants such as `GPU_SCHOOL_FMA_NS`, and the empirical
 `gbselect_*[]` B table), not by fitted parameters.
 `tools/fit_gpu_cost_model.py` does fit four constants (`C_wrap`,
 `C_school`, `R`, `C_gap`) for offline analysis, but **writes nothing into
-the build** -- no corresponding macros exist in the config header or
+the build**: no corresponding macros exist in the config header or
 `src/gpu/` (verified by grep, 2026-07-30). See "GPU Cost Model (B200)" in
 `OPTIMIZATION_GUIDE.md` for the decision-path details.
 
@@ -658,5 +658,5 @@ the build** -- no corresponding macros exist in the config header or
 > code-level asymmetry. Additionally, the GPU's fitted `C_wrap` is
 > diagnostic-only (`fit_gpu_cost_model.py` never writes it to any config
 > header), so even if under-identified it has zero effect on real planning.
-> No GPU numbers changed this session.
+> No GPU numbers changed in that pass.
 

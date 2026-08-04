@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gen_crossover.sh — run bench_grid crossover sweep and save dated output.
+# gen_crossover.sh: run bench_grid crossover sweep and save dated output.
 #
 # Usage:  ./tools/results/gen_crossover.sh <device>
 # Example: ./tools/results/gen_crossover.sh m3_pro
@@ -49,11 +49,10 @@ PARALLEL_OUT="results/crossover_${DEVICE}_${DATE_SUFFIX}_parallel.txt"
 #                dispatch accuracy as the artifact that tests whether the
 #                heuristic holds.
 #
-# History: this file was serial through 2026-07-31, then silently became
-# parallel-only once refresh_all.sh began exporting OMP_NUM_THREADS for the
-# whole pipeline and leaving the parallel bench_grid on disk for later steps.
-# Neither mode alone is right, so pin both explicitly rather than inheriting
-# whatever build and thread count happen to be in scope.
+# Neither mode alone answers both questions above, so pin both explicitly
+# rather than inheriting whatever build and thread count (e.g. from
+# refresh_all.sh exporting OMP_NUM_THREADS for the whole pipeline) happen
+# to be in scope.
 if command -v nproc &>/dev/null; then
     NCPU="$(nproc)"
 else
@@ -76,7 +75,7 @@ for f in "$SERIAL_OUT" "$PARALLEL_OUT"; do
     if [ -s "$f" ]; then
         echo "Saved $f ($(wc -l < "$f") lines) -- $(head -1 "$f")"
     else
-        echo "ERROR: empty output — crossover failed? ($f)" >&2
+        echo "ERROR: empty output, crossover failed? ($f)" >&2
         rc=1
     fi
 done

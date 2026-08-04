@@ -380,10 +380,9 @@ int main(int argc, char **argv) {
     write_config("fft_config.h");
 
     int max_calib = smooth_nums[n_smooth - 1];
-    /* Must match write_config()'s CALIBRATED_MAX_CONV_LEN exactly. This used
-     * to print the old structural bound (2*max-1) while write_config() emitted
-     * the tighter max+WRAP_SAFE_MARGIN, so the closing banner claimed roughly
-     * double the range the header it had just written actually trusts. */
+    /* Must match write_config()'s CALIBRATED_MAX_CONV_LEN exactly, or this
+     * closing banner reports a trusted range the emitted header does not
+     * actually back. */
     int calib_max_conv_len = max_calib + 384;
     printf("Done. Next steps:\n");
     printf("  1. Merge into the device header (do NOT plain-cp over an\n");

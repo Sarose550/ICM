@@ -38,8 +38,8 @@ int single_kernel_max_n(int k) {
      * one block, leaving the GPU severely underutilised.
      *
      * The hybrid engine (plan creation + FFT-based tree) is available for
-     * all n and is faster at large k even for small n.  This function now
-     * returns a k-dependent cutoff: permissive for small-k (typical poker
+     * all n and is faster at large k even for small n.  Hence the
+     * k-dependent cutoff below: permissive for small-k (typical poker
      * payout structures), restrictive for large-k (worst-case schoolbook).
      *
      * Thresholds are conservative and tunable via the env var above.  The
@@ -749,8 +749,6 @@ bool run_prop_level_fused_qb(GpuPlan *plan, int ell, int qb) {
 
 bool run_hybrid_batched_q(GpuPlan *plan, const QP *pts, int qb) {
     int threads = GPU_THREADS_PER_BLOCK;
-    int blocks_n = (plan->n + threads - 1) / threads;
-    (void)blocks_n;
 
 
 

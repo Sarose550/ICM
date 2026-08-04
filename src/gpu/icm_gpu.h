@@ -10,7 +10,13 @@ extern "C" {
 typedef struct IcmGpuPlan IcmGpuPlan;
 
 typedef struct {
-    int device_id;              /* CUDA device index (default: 0) */
+    int device_id;              /* INFORMATIONAL ONLY, set by the library.
+                                  * icm_gpu_plan_create overwrites whatever
+                                  * the caller puts here with the device
+                                  * chosen by icm_gpu_init, and nothing reads
+                                  * it afterwards.  To select a device, call
+                                  * icm_gpu_init(device_id) once, before any
+                                  * other call. */
     int use_cufftdx;            /* Enable Tier-2 fused kernels when available */
     int enable_graphs;          /* Enable CUDA Graph execution */
     int enable_q_pipeline;      /* Enable q+1 build overlap with q propagate */
@@ -103,7 +109,6 @@ int icm_gpu_equity_subset(int n, const double *S, int Q,
                           IcmGpuRunStats *stats);
 
 /* Calibration + diagnostics helpers */
-int icm_gpu_write_config_header(const char *output_path);
 int icm_gpu_measure_hbm_bandwidth_gbps(double *gbps_out);
 int icm_gpu_measure_fused_pair_ns(int fft_n, int batch, int quick,
                                   double *build_ns_out, double *corr_ns_out);

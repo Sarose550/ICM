@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate runtime_vs_n_cpu[_<device>].png — Runtime(n) at fixed k, log-log (CPU).
+Generate runtime_vs_n_cpu[_<device>].png: Runtime(n) at fixed k, log-log (CPU).
 
 Usage:
   python3 tools/results/plot_runtime_fig.py --device m3_pro
@@ -85,7 +85,7 @@ if __name__ == '__main__':
     bench_full = args.bench or find_latest(cfg['bench_grid'])
 
     if not bench_full:
-        print("Missing bench_grid output — cannot generate runtime-vs-n plot.")
+        print("Missing bench_grid output, cannot generate runtime-vs-n plot.")
         sys.exit(1)
 
     data = extract_runtime_data_from_bench_grid(bench_full)
