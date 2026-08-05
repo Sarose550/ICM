@@ -350,6 +350,21 @@ input, textarea {
   bottom: 10px;
 }
 
+.chart-tooltip {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 2;
+}
+
 .stack-curve-container svg {
   width: 100%;
   height: 160px;
@@ -413,6 +428,7 @@ input, textarea {
 }
 
 .equity-chart-container {
+  position: relative;
   margin-top: 16px;
   background: var(--panel-bg-2);
   border: 1px solid var(--border);

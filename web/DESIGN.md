@@ -65,8 +65,16 @@ evidence.
   chosen over exponential because it spans equal stacks to heavy skew with
   a single parameter: the spread slider maps to sigma = spread x 2.5,
   clamped per n so the max/min ratio stays inside the 1e9 guard, sampled
-  deterministically via the quantile function (Acklam probit). The preview
-  chart labels its max and min stack values.
+  deterministically via the quantile function (Acklam probit). Log-normal
+  was kept over a gamma family by owner decision (simplicity; both sit in
+  the empirically supported inflected class, Sire's validated stationary
+  bulk being near-exponential).
+- **Charts use linear axes with a hover crosshair** (owner, 2026-08-05):
+  the stack preview and the equity chart plot values linearly (the earlier
+  log axis was inherited from the reference design and hid shape changes),
+  with a top max-value label and a zero baseline. Hovering either chart
+  shows a dashed vertical crosshair, a point marker, and a tooltip reading
+  "Player i: value" for the nearest sampled player.
 - **Payout presets carry real provenance where possible** (owner feedback,
   2026-08-05, researched): WSOP Main Event 2026 final table (fixed pay
   table normalized to the money at the table), classic PokerStars 180-man

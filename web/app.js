@@ -70,6 +70,8 @@ let stackMode = "automatic";
 let computing = false;
 let pendingStacks = null;
 let pendingPayouts = null;
+let stackCurvePoints = [];
+let equityChartPoints = [];
 
 const worker = new Worker("worker.js", { type: "module" });
 
@@ -399,27 +401,31 @@ function redrawStackCurve() {
   }
   const mean = sum / sampleCount;
   const stacks = Array.from(raw, (v) => (avg * v) / mean);
-  const logVals = stacks.map((v) => Math.log10(Math.max(v, 1e-6)));
-  const minLog = Math.min(...logVals);
-  const maxLog = Math.max(...logVals);
-  const range = maxLog - minLog || 1;
+  const maxVal = Math.max(...stacks, 1e-9);
 
   const w = 400;
   const h = 160;
   const pad = 8;
   const points = [];
+  stackCurvePoints = [];
   for (let i = 0; i < stacks.length; i++) {
     const x = pad + (i / (stacks.length - 1 || 1)) * (w - 2 * pad);
-    const y = pad + (1 - (logVals[i] - minLog) / range) * (h - 2 * pad);
+    const y = pad + (1 - stacks[i] / maxVal) * (h - 2 * pad);
     points.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+    const rank = Math.round((i / (stacks.length - 1 || 1)) * (n - 1)) + 1;
+    stackCurvePoints.push({
+      vx: x,
+      vy: y,
+      label: `Player ${rank}: ${formatMoney(stacks[i])}`,
+    });
   }
   const poly = document.createElementNS(SVG_NS, "polyline");
   poly.setAttribute("points", points.join(" "));
   poly.setAttribute("style", "fill:none;stroke:var(--accent);stroke-width:2");
   stackCurveSvg.appendChild(poly);
 
-  curveMaxLabel.textContent = formatMoney(stacks[0]);
-  curveMinLabel.textContent = formatMoney(stacks[stacks.length - 1]);
+  curveMaxLabel.textContent = formatMoney(maxVal);
+  curveMinLabel.textContent = "0";
 }
 
 [playersRemainingInput, averageStackInput].forEach((el) =>
@@ -614,6 +620,11 @@ function drawEquityChart(rows, payouts) {
   }
 
   const pts = downsample(equities, 2000);
+  equityChartPoints = pts.map(([rank, eq]) => ({
+    vx: xOf(rank),
+    vy: yOf(eq),
+    label: `Player ${rank + 1}: ${formatMoney(eq)}`,
+  }));
   const points = pts
     .map(([rank, eq]) => `${xOf(rank).toFixed(1)},${yOf(eq).toFixed(1)}`)
     .join(" ");
@@ -621,6 +632,69 @@ function drawEquityChart(rows, payouts) {
   poly.setAttribute("points", points);
   poly.setAttribute("style", "fill:none;stroke:var(--accent);stroke-width:2");
   equityChartSvg.appendChild(poly);
+}
+
+function attachChartHover(svg, container, getPoints) {
+  const tooltip = document.createElement("div");
+  tooltip.className = "chart-tooltip";
+  tooltip.hidden = true;
+  container.appendChild(tooltip);
+
+  function crosshair() {
+    let line = svg.querySelector(".hover-line");
+    let dot = svg.querySelector(".hover-dot");
+    if (!line) {
+      line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("class", "hover-line");
+      line.setAttribute("style",
+        "stroke:var(--text-faint);stroke-width:1;stroke-dasharray:3 3");
+      svg.appendChild(line);
+      dot = document.createElementNS(SVG_NS, "circle");
+      dot.setAttribute("class", "hover-dot");
+      dot.setAttribute("r", "3.5");
+      dot.setAttribute("style", "fill:var(--accent)");
+      svg.appendChild(dot);
+    }
+    return { line, dot };
+  }
+
+  svg.addEventListener("mousemove", (ev) => {
+    const points = getPoints();
+    if (points.length === 0) return;
+    const rect = svg.getBoundingClientRect();
+    const vb = svg.getAttribute("viewBox").split(" ").map(Number);
+    const vw = vb[2];
+    const vh = vb[3];
+    const vx = ((ev.clientX - rect.left) / rect.width) * vw;
+    let best = points[0];
+    let bd = Infinity;
+    for (const p of points) {
+      const d = Math.abs(p.vx - vx);
+      if (d < bd) { bd = d; best = p; }
+    }
+    const { line, dot } = crosshair();
+    line.setAttribute("x1", best.vx.toFixed(1));
+    line.setAttribute("x2", best.vx.toFixed(1));
+    line.setAttribute("y1", "0");
+    line.setAttribute("y2", String(vh));
+    dot.setAttribute("cx", best.vx.toFixed(1));
+    dot.setAttribute("cy", best.vy.toFixed(1));
+    const contRect = container.getBoundingClientRect();
+    const px = rect.left - contRect.left + (best.vx / vw) * rect.width;
+    tooltip.textContent = best.label;
+    tooltip.hidden = false;
+    const half = tooltip.offsetWidth / 2;
+    const left = Math.min(Math.max(px, half + 4), contRect.width - half - 4);
+    tooltip.style.left = `${left}px`;
+  });
+
+  svg.addEventListener("mouseleave", () => {
+    tooltip.hidden = true;
+    const line = svg.querySelector(".hover-line");
+    const dot = svg.querySelector(".hover-dot");
+    if (line) line.remove();
+    if (dot) dot.remove();
+  });
 }
 
 function renderResults(result, stacks, payouts) {
@@ -664,6 +738,10 @@ function init() {
   renderPresetsList();
   redrawStackCurve();
   updateManualMeta();
+  attachChartHover(stackCurveSvg, stackCurveSvg.parentElement,
+    () => stackCurvePoints);
+  attachChartHover(equityChartSvg, equityChartSvg.parentElement,
+    () => equityChartPoints);
 }
 
 init();
