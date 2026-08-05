@@ -246,6 +246,13 @@ function renderPresetsList() {
         presetsOverlay.hidden = true;
       });
       item.append(btn, fieldInput);
+    } else if (preset.amounts) {
+      btn.addEventListener("click", () => {
+        prizes = preset.amounts.slice();
+        renderPrizesTable();
+        presetsOverlay.hidden = true;
+      });
+      item.append(btn);
     } else {
       btn.addEventListener("click", () => {
         applyPayoutPercents(preset.percents);

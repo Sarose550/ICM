@@ -1,11 +1,11 @@
 /*
 Payout and stack presets for the Prefill overlay.
 PAYOUT_PRESETS entries are one of:
-  { id, name, percents }: fixed structure, percents of pool summing to 100
-  { id, name, amounts }: real published payouts; percents derived by
-    normalization at load so the source figures stay verbatim
-  { id, name, generator, defaultFieldSize, fieldLabel }: generator(n)
-    returns percents
+  { id, name, percents }: fixed structure, percents of pool summing to 100,
+    scaled to the current pool on apply
+  { id, name, amounts }: real published payouts in dollars, applied
+    verbatim (the pool becomes the sum of the amounts)
+  { id, name, generator, defaultFieldSize }: generator(n) returns percents
 Structures with real-world provenance:
   wsop2026ft: WSOP Main Event 2026 final table, fixed pay table
     ($10M, $6M, $3.75M, $2.75M, $2.25M, $1.75M, $1.5M, $1.25M, $1M),
@@ -18,11 +18,6 @@ STACK_PRESETS: { id, name, percents, defaultAvgStack }, percent of total
   chips in play; percentsToStacks converts to absolute stacks.
 AUTOMATIC_PRESETS fill the Automatic mode inputs directly.
 */
-
-function normalizeToPercents(amounts) {
-  const total = amounts.reduce((a, b) => a + b, 0);
-  return amounts.map((v) => (v / total) * 100);
-}
 
 function mtt15Percent(fieldSize) {
   const places = Math.max(1, Math.round(fieldSize * 0.15));
@@ -56,10 +51,10 @@ export const PAYOUT_PRESETS = [
   {
     id: "wsop2026ft",
     name: "WSOP Main Event 2026 final table",
-    percents: normalizeToPercents([
+    amounts: [
       10000000, 6000000, 3750000, 2750000, 2250000, 1750000, 1500000,
       1250000, 1000000,
-    ]),
+    ],
   },
   {
     id: "sng180",
