@@ -1,0 +1,4 @@
+# The repo root ignores dist/ generally; the prebuilt WASM bundle is
+# deliberately committed so GitHub Pages can deploy without a toolchain.
+!dist/
+.build/
