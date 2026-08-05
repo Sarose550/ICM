@@ -11,7 +11,6 @@
 <header class="page-header">
   <h1>ICM Calculator</h1>
   <p class="subtitle">Exact ICM equities computed in your browser</p>
-  <p class="caption">Same C library as the repo, generic calibration profile, compiled to WebAssembly.</p>
 </header>
 
 <div id="errorBanner" class="error-banner" hidden>
@@ -84,6 +83,8 @@
 
       <div class="stack-curve-container">
         <svg id="stackCurveSvg" viewBox="0 0 400 160" preserveAspectRatio="none"></svg>
+        <span id="curveMaxLabel" class="curve-label curve-label-max"></span>
+        <span id="curveMinLabel" class="curve-label curve-label-min"></span>
       </div>
     </div>
 
@@ -133,7 +134,6 @@
     <a href="https://github.com/Sarose550/ICM" target="_blank" rel="noopener">GitHub repository</a>
     <a href="https://github.com/Sarose550/ICM/blob/main/paper/icm_paper.pdf" target="_blank" rel="noopener">Paper (PDF)</a>
   </p>
-  <p>All computation runs locally; nothing is uploaded.</p>
 </footer>
 
 <script type="module" src="app.js"></script>

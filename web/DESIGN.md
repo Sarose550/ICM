@@ -53,6 +53,32 @@ evidence.
   with zero stacks show equity 0 and are excluded from the ratio check.
 - **Stack ratio guard** (owner): max/min over nonzero stacks must be at most
   1e9, enforced in the worker with an error message, never silently clamped.
+- **Automatic stack generator is log-normal** (owner feedback, 2026-08-05):
+  the original exponential-in-rank generator is a log-uniform distribution,
+  which renders as the same straight line on an auto-scaled log axis at
+  every spread setting. The empirical literature supports an inflected
+  curve instead: Sire, "Universal statistical properties of poker
+  tournaments" (arXiv:physics/0703122), validated against real tournament
+  chip counts, finds a stationary stack distribution with near-exponential
+  decay (and a Gumbel-distributed chip leader), and any such distribution
+  has an inflection in log-stack vs percentile. The log-normal family was
+  chosen over exponential because it spans equal stacks to heavy skew with
+  a single parameter: the spread slider maps to sigma = spread x 2.5,
+  clamped per n so the max/min ratio stays inside the 1e9 guard, sampled
+  deterministically via the quantile function (Acklam probit). The preview
+  chart labels its max and min stack values.
+- **Payout presets carry real provenance where possible** (owner feedback,
+  2026-08-05, researched): WSOP Main Event 2026 final table (fixed pay
+  table normalized to the money at the table), classic PokerStars 180-man
+  (labeled classic; current lobbies may differ), double-or-nothing (exact
+  by definition), satellite equal-seats generator, plus evergreen 50/30/20
+  and winner-take-all. A previously drafted 45-man structure was dropped
+  because no source verified its percentages, and a Sunday Million table
+  was rejected as a deal-affected single outcome rather than a structure.
+- **Q is not shown in the UI** (owner feedback, 2026-08-05): the results
+  summary reports elapsed time and the achieved accuracy residual only, and
+  ladder progress displays as "refining accuracy" rather than a Q value.
+  The ladder mechanics are unchanged.
 - **k is clamped to the number of nonzero stacks** (build): with fewer live
   players than paid places, the trailing payouts are unreachable; the UI
   surfaces a notice when this happens rather than erroring.
@@ -104,3 +130,11 @@ Chosen limits:
   queries can take minutes and the UI says so before computing.
 - Time scales close to linearly in Q; the full ladder costs at most about 2x
   its final rung.
+
+End-to-end UI measurements (Chromium via Playwright, M3 Pro, 2026-08-05):
+n=10000 with k=1500 completes in about 17 s of compute (ladder-escalated for
+a wide spread, residual 1.2e-12) plus 2 s of chunked table rendering, and the
+page stays interactive. At the ?maxn= hard ceiling (n=100000, k=15) compute
+takes 2.1 s but progressively appending 100000 table rows takes about 70 s;
+the page remains scrollable and responsive during and after (sub-400 ms
+event latency). No crashes or hangs at either size.

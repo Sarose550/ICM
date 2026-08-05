@@ -327,10 +327,27 @@ input, textarea {
 }
 
 .stack-curve-container {
+  position: relative;
   background: var(--panel-bg-2);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px;
+}
+
+.curve-label {
+  position: absolute;
+  left: 12px;
+  font-size: 0.7rem;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.curve-label-max {
+  top: 10px;
+}
+
+.curve-label-min {
+  bottom: 10px;
 }
 
 .stack-curve-container svg {

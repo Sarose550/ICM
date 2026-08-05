@@ -50,6 +50,8 @@ const averageStackInput = document.getElementById("averageStack");
 const spreadSlider = document.getElementById("spreadSlider");
 const spreadValue = document.getElementById("spreadValue");
 const stackCurveSvg = document.getElementById("stackCurveSvg");
+const curveMaxLabel = document.getElementById("curveMaxLabel");
+const curveMinLabel = document.getElementById("curveMinLabel");
 const manualStacksTextarea = document.getElementById("manualStacksTextarea");
 const manualStacksMeta = document.getElementById("manualStacksMeta");
 
@@ -314,14 +316,51 @@ stackModeToggle.addEventListener("click", (ev) => {
   manualStacks.hidden = mode !== "manual";
 });
 
+function probit(p) {
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687,
+    138.357751867269, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866,
+    66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838,
+    -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996,
+    3.754408661907416];
+  const pl = 0.02425;
+  if (p < pl) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+      ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  if (p <= 1 - pl) {
+    const q = p - 0.5;
+    const r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+      (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+  }
+  const q = Math.sqrt(-2 * Math.log(1 - p));
+  return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+    ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+}
+
+/* Log-normal quantile generator: multiplicative chip dynamics make mid-MTT
+ * stack distributions approximately log-normal, so log-stack vs percentile
+ * has an inflection at the median instead of the straight line a log-uniform
+ * (exponential in rank) generator produces. sigma is clamped so the
+ * max/min ratio stays within the 1e9 guard for the requested n. */
+function sigmaFor(n, spread) {
+  const zEdge = -probit(0.5 / Math.max(n, 2));
+  const cap = (Math.log(1e9) * 0.999) / (2 * zEdge);
+  return Math.min(spread * 2.5, cap);
+}
+
 function generateAutomaticStacks(n, avg, spread) {
   n = Math.max(1, Math.floor(n));
-  const lambda = spread * Math.log(1e6);
+  const sigma = sigmaFor(n, spread);
   const raw = new Float64Array(n);
   let sum = 0;
   for (let i = 0; i < n; i++) {
-    const r = i / n;
-    const v = Math.exp(-lambda * r);
+    const p = 1 - (i + 0.5) / n;
+    const v = Math.exp(sigma * probit(p));
     raw[i] = v;
     sum += v;
   }
@@ -341,11 +380,26 @@ function redrawStackCurve() {
   const avg = parseFloat(averageStackInput.value);
   const spread = parseFloat(spreadSlider.value);
   stackCurveSvg.textContent = "";
-  if (!Number.isFinite(n) || n < 1 || !Number.isFinite(avg) || avg <= 0) return;
+  if (!Number.isFinite(n) || n < 1 || !Number.isFinite(avg) || avg <= 0) {
+    curveMaxLabel.textContent = "";
+    curveMinLabel.textContent = "";
+    return;
+  }
 
+  const sigma = sigmaFor(n, spread);
   const sampleCount = Math.max(2, Math.min(n, 200));
-  const stacks = generateAutomaticStacks(sampleCount, avg, spread);
-  const logVals = Array.from(stacks, (v) => Math.log10(Math.max(v, 1e-6)));
+  const pLo = 0.5 / n;
+  const pHi = 1 - 0.5 / n;
+  const raw = new Float64Array(sampleCount);
+  let sum = 0;
+  for (let j = 0; j < sampleCount; j++) {
+    const p = pHi - (j / (sampleCount - 1)) * (pHi - pLo);
+    raw[j] = Math.exp(sigma * probit(p));
+    sum += raw[j];
+  }
+  const mean = sum / sampleCount;
+  const stacks = Array.from(raw, (v) => (avg * v) / mean);
+  const logVals = stacks.map((v) => Math.log10(Math.max(v, 1e-6)));
   const minLog = Math.min(...logVals);
   const maxLog = Math.max(...logVals);
   const range = maxLog - minLog || 1;
@@ -363,6 +417,9 @@ function redrawStackCurve() {
   poly.setAttribute("points", points.join(" "));
   poly.setAttribute("style", "fill:none;stroke:var(--accent);stroke-width:2");
   stackCurveSvg.appendChild(poly);
+
+  curveMaxLabel.textContent = formatMoney(stacks[0]);
+  curveMinLabel.textContent = formatMoney(stacks[stacks.length - 1]);
 }
 
 [playersRemainingInput, averageStackInput].forEach((el) =>
@@ -442,7 +499,7 @@ calculateBtn.addEventListener("click", () => {
 
   computing = true;
   calculateBtn.disabled = true;
-  calculateBtn.textContent = "computing, Q=256";
+  calculateBtn.textContent = "computing...";
   pendingStacks = stacks;
   pendingPayouts = payouts;
   worker.postMessage({ type: "compute", stacks, payouts });
@@ -451,7 +508,8 @@ calculateBtn.addEventListener("click", () => {
 worker.onmessage = (ev) => {
   const msg = ev.data;
   if (msg.type === "progress") {
-    calculateBtn.textContent = `computing, Q=${msg.q}`;
+    calculateBtn.textContent =
+      msg.q === 256 ? "computing..." : "refining accuracy...";
   } else if (msg.type === "result") {
     computing = false;
     calculateBtn.disabled = false;
@@ -580,7 +638,7 @@ function renderResults(result, stacks, payouts) {
     `<strong>${result.kEffective}</strong> paid`,
     `pool <strong>${formatMoney(pool)}</strong>`,
     `<strong>${result.elapsedMs.toFixed(0)}</strong> ms`,
-    `accuracy <strong>${result.residual.toExponential(1)}</strong>, Q=${result.q}`,
+    `accuracy <strong>${result.residual.toExponential(1)}</strong>`,
   ];
   let html = parts.join(", ") + ".";
   if (result.notice) {

@@ -1,13 +1,28 @@
 /*
 Payout and stack presets for the Prefill overlay.
-PAYOUT_PRESETS: { id, name, percents } for fixed structures, or
-  { id, name, generator, defaultFieldSize } where generator(fieldSize) returns
-  percents. percents are percent of pool, in place order, summing to 100.
-STACK_PRESETS: { id, name, percents, defaultAvgStack }. percents are percent
-  of total chips in play; percentsToStacks converts them to absolute stacks.
-AUTOMATIC_PRESETS: { id, name, playersRemaining, averageStack, spread }, fills
-  the Automatic mode inputs directly.
+PAYOUT_PRESETS entries are one of:
+  { id, name, percents }: fixed structure, percents of pool summing to 100
+  { id, name, amounts }: real published payouts; percents derived by
+    normalization at load so the source figures stay verbatim
+  { id, name, generator, defaultFieldSize, fieldLabel }: generator(n)
+    returns percents
+Structures with real-world provenance:
+  wsop2026ft: WSOP Main Event 2026 final table, fixed pay table
+    ($10M, $6M, $3.75M, $2.75M, $2.25M, $1.75M, $1.5M, $1.25M, $1M),
+    normalized to the money at the table.
+  sng180 is the long-cited classic PokerStars 180-man table (18 paid,
+    10th-18th tied); labeled classic because current lobbies may differ.
+  Double-or-nothing follows from its defining rule: top half each receive
+    2/N of the pool.
+STACK_PRESETS: { id, name, percents, defaultAvgStack }, percent of total
+  chips in play; percentsToStacks converts to absolute stacks.
+AUTOMATIC_PRESETS fill the Automatic mode inputs directly.
 */
+
+function normalizeToPercents(amounts) {
+  const total = amounts.reduce((a, b) => a + b, 0);
+  return amounts.map((v) => (v / total) * 100);
+}
 
 function mtt15Percent(fieldSize) {
   const places = Math.max(1, Math.round(fieldSize * 0.15));
@@ -17,6 +32,11 @@ function mtt15Percent(fieldSize) {
   }
   const sum = weights.reduce((a, b) => a + b, 0);
   return weights.map((w) => (w / sum) * 100);
+}
+
+function satelliteSeats(seats) {
+  const n = Math.max(1, Math.round(seats));
+  return new Array(n).fill(100 / n);
 }
 
 export function percentsToStacks(percents, averageStack) {
@@ -29,20 +49,35 @@ export const PAYOUT_PRESETS = [
   { id: "headsup", name: "Heads up, winner takes all", percents: [100] },
   { id: "sng9max", name: "9 max SNG (50 / 30 / 20)", percents: [50, 30, 20] },
   {
-    id: "final45",
-    name: "45 man final table (40 / 23 / 16 / 12 / 9)",
-    percents: [40, 23, 16, 12, 9],
+    id: "don10",
+    name: "Double or nothing, 10 players (top 5 double)",
+    percents: [20, 20, 20, 20, 20],
   },
   {
-    id: "top180",
-    name: "180 man, top 27 paid",
-    percents: mtt15Percent(180),
+    id: "wsop2026ft",
+    name: "WSOP Main Event 2026 final table",
+    percents: normalizeToPercents([
+      10000000, 6000000, 3750000, 2750000, 2250000, 1750000, 1500000,
+      1250000, 1000000,
+    ]),
+  },
+  {
+    id: "sng180",
+    name: "180 man SNG, top 18 paid (classic)",
+    percents: [30, 20, 11.9, 8, 6.5, 5, 3.5, 2.6, 1.7,
+      1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2],
   },
   {
     id: "mtt15",
-    name: "MTT, top 15% paid",
+    name: "MTT, top 15% paid (generic curve)",
     generator: mtt15Percent,
     defaultFieldSize: 500,
+  },
+  {
+    id: "satellite",
+    name: "Satellite, equal seats",
+    generator: satelliteSeats,
+    defaultFieldSize: 10,
   },
 ];
 
