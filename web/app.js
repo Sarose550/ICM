@@ -138,7 +138,7 @@ function recomputePrizePercents() {
 }
 
 function updatePrizesMeta() {
-  prizesMeta.textContent = `${prizes.length} places, pool ${formatMoney(poolTotal())}`;
+  prizesMeta.textContent = `${prizes.length} places, pool $${formatMoney(poolTotal())}`;
 }
 
 function buildPrizeRow(i) {
@@ -148,6 +148,10 @@ function buildPrizeRow(i) {
   tdPlace.textContent = String(i + 1);
 
   const tdPrize = document.createElement("td");
+  const wrap = document.createElement("div");
+  wrap.className = "prize-cell";
+  const currency = document.createElement("span");
+  currency.textContent = "$";
   const input = document.createElement("input");
   input.type = "number";
   input.step = "any";
@@ -159,7 +163,8 @@ function buildPrizeRow(i) {
     recomputePrizePercents();
     updatePrizesMeta();
   });
-  tdPrize.appendChild(input);
+  wrap.append(currency, input);
+  tdPrize.appendChild(wrap);
 
   const tdPct = document.createElement("td");
   tdPct.className = "prize-pct";
@@ -543,7 +548,7 @@ worker.onerror = (ev) => {
   showError(ev.message || "Worker failed unexpectedly");
 };
 
-function buildEquityRow(row, i, pool) {
+function buildEquityRow(row, i, pool, totalChips) {
   const tr = document.createElement("tr");
   if (row.stack === 0) tr.className = "muted-row";
 
@@ -553,13 +558,17 @@ function buildEquityRow(row, i, pool) {
   const tdStack = document.createElement("td");
   tdStack.textContent = formatMoney(row.stack);
 
+  const tdChipPct = document.createElement("td");
+  tdChipPct.textContent =
+    totalChips > 0 ? ((row.stack / totalChips) * 100).toFixed(1) : "0.0";
+
   const tdEquity = document.createElement("td");
-  tdEquity.textContent = formatMoney(row.equity);
+  tdEquity.textContent = `$${formatMoney(row.equity)}`;
 
   const tdPct = document.createElement("td");
   tdPct.textContent = pool > 0 ? ((row.equity / pool) * 100).toFixed(1) : "0.0";
 
-  tr.append(tdRank, tdStack, tdEquity, tdPct);
+  tr.append(tdRank, tdStack, tdChipPct, tdEquity, tdPct);
   return tr;
 }
 
@@ -630,7 +639,7 @@ function drawEquityChart(rows, payouts) {
   equityChartPoints = pts.map(([rank, eq]) => ({
     vx: xOf(rank),
     vy: yOf(eq),
-    label: `Player ${rank + 1}: ${formatMoney(eq)}`,
+    label: `Player ${rank + 1}: $${formatMoney(eq)}`,
   }));
   const points = pts
     .map(([rank, eq]) => `${xOf(rank).toFixed(1)},${yOf(eq).toFixed(1)}`)
@@ -717,7 +726,7 @@ function renderResults(result, stacks, payouts) {
   const parts = [
     `<strong>${result.nNonzero}</strong> players`,
     `<strong>${result.kEffective}</strong> paid`,
-    `pool <strong>${formatMoney(pool)}</strong>`,
+    `pool <strong>$${formatMoney(pool)}</strong>`,
     `<strong>${result.elapsedMs.toFixed(0)}</strong> ms`,
     `accuracy <strong>${result.residual.toExponential(1)}</strong>`,
   ];
@@ -727,8 +736,10 @@ function renderResults(result, stacks, payouts) {
   }
   resultsSummary.innerHTML = html;
 
+  let totalChips = 0;
+  for (const row of rows) totalChips += row.stack;
   renderChunked(equityTableBody, rows.length, (i) =>
-    buildEquityRow(rows[i], i, pool),
+    buildEquityRow(rows[i], i, pool, totalChips),
   );
 
   drawEquityChart(rows, payouts);

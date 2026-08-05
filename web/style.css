@@ -350,6 +350,16 @@ input, textarea {
   bottom: 10px;
 }
 
+.prize-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.prize-cell span {
+  color: var(--text-muted);
+}
+
 .chart-tooltip {
   position: absolute;
   top: 6px;
