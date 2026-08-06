@@ -220,12 +220,6 @@ table, .data-table {
   margin-bottom: 10px;
 }
 
-.prefill-label {
-  color: var(--text-faint);
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
 
 .btn-outline {
   background: transparent;
