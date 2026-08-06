@@ -1,0 +1,916 @@
+import {
+  PAYOUT_PRESETS,
+  STACK_PRESETS,
+  AUTOMATIC_PRESETS,
+  percentsToStacks,
+} from "./presets.js";
+
+const DEFAULT_MAX_N = 10000;
+const HARD_MAX_N = 100000;
+const CHUNK_THRESHOLD = 500;
+const CHUNK_SIZE = 300;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+const MAX_N = getMaxN();
+
+function getMaxN() {
+  const params = new URLSearchParams(location.search);
+  let maxN = DEFAULT_MAX_N;
+  if (params.has("maxn")) {
+    const v = parseInt(params.get("maxn"), 10);
+    if (Number.isFinite(v) && v > 0) {
+      maxN = Math.min(v, HARD_MAX_N);
+    }
+  }
+  return maxN;
+}
+
+const errorBanner = document.getElementById("errorBanner");
+const errorBannerText = document.getElementById("errorBannerText");
+const errorBannerDismiss = document.getElementById("errorBannerDismiss");
+
+const browsePresetsBtn = document.getElementById("browsePresetsBtn");
+const togglePasteBtn = document.getElementById("togglePasteBtn");
+const pasteArea = document.getElementById("pasteArea");
+const pasteTextarea = document.getElementById("pasteTextarea");
+const applyPasteBtn = document.getElementById("applyPasteBtn");
+const cancelPasteBtn = document.getElementById("cancelPasteBtn");
+const prizesTableBody = document.getElementById("prizesTableBody");
+const addRowBtn = document.getElementById("addRowBtn");
+const clearPrizesBtn = document.getElementById("clearPrizesBtn");
+const prizesMeta = document.getElementById("prizesMeta");
+
+const stackModeToggle = document.getElementById("stackModeToggle");
+const automaticStacks = document.getElementById("automaticStacks");
+const manualStacks = document.getElementById("manualStacks");
+const automaticPresetsRow = document.getElementById("automaticPresetsRow");
+const manualPresetsRow = document.getElementById("manualPresetsRow");
+const playersRemainingInput = document.getElementById("playersRemaining");
+const averageStackInput = document.getElementById("averageStack");
+const spreadSlider = document.getElementById("spreadSlider");
+const spreadValue = document.getElementById("spreadValue");
+const stackCurveSvg = document.getElementById("stackCurveSvg");
+const curveMaxLabel = document.getElementById("curveMaxLabel");
+const curveMinLabel = document.getElementById("curveMinLabel");
+const manualStacksTextarea = document.getElementById("manualStacksTextarea");
+const manualStacksMeta = document.getElementById("manualStacksMeta");
+
+const calculateBtn = document.getElementById("calculateBtn");
+const liveStatusLine = document.getElementById("liveStatusLine");
+const resultsSection = document.getElementById("resultsSection");
+const resultsSummary = document.getElementById("resultsSummary");
+const equityTableBody = document.getElementById("equityTableBody");
+const equityChartSvg = document.getElementById("equityChartSvg");
+
+const presetsOverlay = document.getElementById("presetsOverlay");
+const presetsList = document.getElementById("presetsList");
+const closePresetsBtn = document.getElementById("closePresetsBtn");
+
+const themeToggle = document.getElementById("themeToggle");
+const THEME_KEY = "icm-theme";
+
+let prizes = [];
+let stackMode = "automatic";
+let computing = false;
+let pendingStacks = null;
+let pendingPayouts = null;
+let pendingIsLive = false;
+let lastComputeWasLive = false;
+let queuedRequest = null;
+let liveDebounceTimer = null;
+let stackCurvePoints = [];
+let equityChartPoints = [];
+
+const LIVE_THRESHOLD = 1000;
+const LIVE_DEBOUNCE_MS = 250;
+
+const worker = new Worker("worker.js", { type: "module" });
+
+function showError(message) {
+  errorBannerText.textContent = message;
+  errorBanner.hidden = false;
+}
+
+function hideError() {
+  errorBanner.hidden = true;
+  errorBannerText.textContent = "";
+}
+
+errorBannerDismiss.addEventListener("click", hideError);
+
+function currentTheme() {
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr === "dark" || attr === "light") return attr;
+  return window.matchMedia("(prefers-color-scheme: light)").matches
+    ? "light"
+    : "dark";
+}
+
+function updateThemeToggleLabel() {
+  themeToggle.textContent = currentTheme() === "dark" ? "DARK" : "LIGHT";
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch (err) {}
+  updateThemeToggleLabel();
+}
+
+themeToggle.addEventListener("click", () => {
+  applyTheme(currentTheme() === "dark" ? "light" : "dark");
+});
+
+function formatMoney(v) {
+  return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function parseNumberTokens(text) {
+  return text
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map(Number);
+}
+
+const renderGenerations = new WeakMap();
+
+function renderChunked(tbody, count, buildRowFn) {
+  const generation = (renderGenerations.get(tbody) || 0) + 1;
+  renderGenerations.set(tbody, generation);
+  tbody.textContent = "";
+  if (count === 0) return;
+  if (count <= CHUNK_THRESHOLD) {
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < count; i++) frag.appendChild(buildRowFn(i));
+    tbody.appendChild(frag);
+    return;
+  }
+  let i = 0;
+  function step() {
+    if (renderGenerations.get(tbody) !== generation) return;
+    const end = Math.min(i + CHUNK_SIZE, count);
+    const frag = document.createDocumentFragment();
+    for (; i < end; i++) frag.appendChild(buildRowFn(i));
+    tbody.appendChild(frag);
+    if (i < count) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function poolTotal() {
+  return prizes.reduce((a, b) => a + b, 0);
+}
+
+function recomputePrizePercents() {
+  const pool = poolTotal();
+  const pctEls = prizesTableBody.querySelectorAll(".prize-pct");
+  pctEls.forEach((el, i) => {
+    const pct = pool > 0 ? (prizes[i] / pool) * 100 : 0;
+    el.textContent = pct.toFixed(1);
+  });
+}
+
+function updatePrizesMeta() {
+  prizesMeta.textContent = `${prizes.length} places, pool $${formatMoney(poolTotal())}`;
+  scheduleLiveRecompute();
+}
+
+function buildPrizeRow(i) {
+  const tr = document.createElement("tr");
+
+  const tdPlace = document.createElement("td");
+  tdPlace.textContent = String(i + 1);
+
+  const tdPrize = document.createElement("td");
+  const wrap = document.createElement("div");
+  wrap.className = "prize-cell";
+  const currency = document.createElement("span");
+  currency.textContent = "$";
+  const input = document.createElement("input");
+  input.type = "number";
+  input.step = "any";
+  input.min = "0";
+  input.value = prizes[i];
+  input.addEventListener("input", () => {
+    const v = parseFloat(input.value);
+    prizes[i] = Number.isFinite(v) ? v : 0;
+    recomputePrizePercents();
+    updatePrizesMeta();
+  });
+  wrap.append(currency, input);
+  tdPrize.appendChild(wrap);
+
+  const tdPct = document.createElement("td");
+  tdPct.className = "prize-pct";
+  const pool = poolTotal();
+  tdPct.textContent = pool > 0 ? ((prizes[i] / pool) * 100).toFixed(1) : "0.0";
+
+  const tdAction = document.createElement("td");
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "row-remove-btn";
+  removeBtn.textContent = "\u00D7";
+  removeBtn.setAttribute("aria-label", "Remove row");
+  removeBtn.addEventListener("click", () => {
+    prizes.splice(i, 1);
+    renderPrizesTable();
+  });
+  tdAction.appendChild(removeBtn);
+
+  tr.append(tdPlace, tdPrize, tdPct, tdAction);
+  return tr;
+}
+
+function renderPrizesTable() {
+  renderChunked(prizesTableBody, prizes.length, buildPrizeRow);
+  updatePrizesMeta();
+}
+
+addRowBtn.addEventListener("click", () => {
+  prizes.push(0);
+  renderPrizesTable();
+});
+
+clearPrizesBtn.addEventListener("click", () => {
+  prizes = [];
+  renderPrizesTable();
+});
+
+togglePasteBtn.addEventListener("click", () => {
+  pasteArea.hidden = !pasteArea.hidden;
+});
+
+cancelPasteBtn.addEventListener("click", () => {
+  pasteArea.hidden = true;
+  pasteTextarea.value = "";
+});
+
+applyPasteBtn.addEventListener("click", () => {
+  const tokens = parseNumberTokens(pasteTextarea.value).filter((v) =>
+    Number.isFinite(v),
+  );
+  prizes = tokens;
+  renderPrizesTable();
+  pasteArea.hidden = true;
+  pasteTextarea.value = "";
+});
+
+function applyPayoutPercents(percents) {
+  const pool = poolTotal() > 0 ? poolTotal() : 1000;
+  prizes = percents.map((p) => Math.round(((pool * p) / 100) * 100) / 100);
+  renderPrizesTable();
+}
+
+function renderPresetsList() {
+  presetsList.textContent = "";
+  for (const preset of PAYOUT_PRESETS) {
+    const item = document.createElement("div");
+    item.className = "preset-item";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "preset-select";
+    btn.textContent = preset.name;
+
+    if (preset.generator) {
+      const fieldInput = document.createElement("input");
+      fieldInput.type = "number";
+      fieldInput.min = "2";
+      fieldInput.step = "1";
+      fieldInput.value = String(preset.defaultFieldSize);
+      btn.addEventListener("click", () => {
+        const fieldSize = parseInt(fieldInput.value, 10);
+        if (!Number.isFinite(fieldSize) || fieldSize < 1) return;
+        applyPayoutPercents(preset.generator(fieldSize));
+        presetsOverlay.hidden = true;
+      });
+      item.append(btn, fieldInput);
+    } else if (preset.amounts) {
+      btn.addEventListener("click", () => {
+        prizes = preset.amounts.slice();
+        renderPrizesTable();
+        presetsOverlay.hidden = true;
+      });
+      item.append(btn);
+    } else {
+      btn.addEventListener("click", () => {
+        applyPayoutPercents(preset.percents);
+        presetsOverlay.hidden = true;
+      });
+      item.append(btn);
+    }
+
+    presetsList.appendChild(item);
+  }
+}
+
+browsePresetsBtn.addEventListener("click", () => {
+  presetsOverlay.hidden = false;
+});
+
+closePresetsBtn.addEventListener("click", () => {
+  presetsOverlay.hidden = true;
+});
+
+presetsOverlay.addEventListener("click", (ev) => {
+  if (ev.target === presetsOverlay) presetsOverlay.hidden = true;
+});
+
+function renderAutomaticPresets() {
+  automaticPresetsRow.textContent = "";
+  for (const preset of AUTOMATIC_PRESETS) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "preset-chip";
+    chip.textContent = preset.name;
+    chip.addEventListener("click", () => {
+      playersRemainingInput.value = String(preset.playersRemaining);
+      averageStackInput.value = String(preset.averageStack);
+      spreadSlider.value = String(preset.spread);
+      spreadValue.textContent = preset.spread.toFixed(2);
+      redrawStackCurve();
+    });
+    automaticPresetsRow.appendChild(chip);
+  }
+}
+
+function renderManualPresets() {
+  manualPresetsRow.textContent = "";
+  for (const preset of STACK_PRESETS) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "preset-chip";
+    chip.textContent = preset.name;
+    chip.addEventListener("click", () => {
+      const avg = parseFloat(averageStackInput.value) || preset.defaultAvgStack;
+      const stacks = percentsToStacks(preset.percents, avg);
+      manualStacksTextarea.value = stacks.join("\n");
+      updateManualMeta();
+    });
+    manualPresetsRow.appendChild(chip);
+  }
+}
+
+stackModeToggle.addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".segmented-option");
+  if (!btn) return;
+  const mode = btn.dataset.mode;
+  if (mode === stackMode) return;
+  stackMode = mode;
+  for (const opt of stackModeToggle.querySelectorAll(".segmented-option")) {
+    opt.classList.toggle("active", opt.dataset.mode === mode);
+  }
+  automaticStacks.hidden = mode !== "automatic";
+  manualStacks.hidden = mode !== "manual";
+  scheduleLiveRecompute();
+});
+
+function probit(p) {
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687,
+    138.357751867269, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866,
+    66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838,
+    -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996,
+    3.754408661907416];
+  const pl = 0.02425;
+  if (p < pl) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+      ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  if (p <= 1 - pl) {
+    const q = p - 0.5;
+    const r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+      (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+  }
+  const q = Math.sqrt(-2 * Math.log(1 - p));
+  return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+    ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+}
+
+/* Log-normal quantile generator: multiplicative chip dynamics make mid-MTT
+ * stack distributions approximately log-normal, so log-stack vs percentile
+ * has an inflection at the median instead of the straight line a log-uniform
+ * (exponential in rank) generator produces. sigma is clamped so the
+ * max/min ratio stays within the 1e9 guard for the requested n. */
+function sigmaFor(n, spread) {
+  const zEdge = -probit(0.5 / Math.max(n, 2));
+  const cap = (Math.log(1e9) * 0.999) / (2 * zEdge);
+  return Math.min(spread * 2.5, cap);
+}
+
+function generateAutomaticStacks(n, avg, spread) {
+  n = Math.max(1, Math.floor(n));
+  const sigma = sigmaFor(n, spread);
+  const raw = new Float64Array(n);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const p = 1 - (i + 0.5) / n;
+    const v = Math.exp(sigma * probit(p));
+    raw[i] = v;
+    sum += v;
+  }
+  const mean = sum / n;
+  const stacks = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let v = mean > 0 ? (avg * raw[i]) / mean : 0;
+    v = Math.round(v * 100) / 100;
+    if (v <= 0) v = 0.01;
+    stacks[i] = v;
+  }
+  return stacks;
+}
+
+function redrawStackCurve() {
+  const n = parseInt(playersRemainingInput.value, 10);
+  const avg = parseFloat(averageStackInput.value);
+  const spread = parseFloat(spreadSlider.value);
+  stackCurveSvg.textContent = "";
+  if (!Number.isFinite(n) || n < 1 || !Number.isFinite(avg) || avg <= 0) {
+    curveMaxLabel.textContent = "";
+    curveMinLabel.textContent = "";
+    scheduleLiveRecompute();
+    return;
+  }
+
+  const sigma = sigmaFor(n, spread);
+  const sampleCount = Math.max(2, Math.min(n, 200));
+  const pLo = 0.5 / n;
+  const pHi = 1 - 0.5 / n;
+  const raw = new Float64Array(sampleCount);
+  let sum = 0;
+  for (let j = 0; j < sampleCount; j++) {
+    const p = pHi - (j / (sampleCount - 1)) * (pHi - pLo);
+    raw[j] = Math.exp(sigma * probit(p));
+    sum += raw[j];
+  }
+  const mean = sum / sampleCount;
+  const stacks = Array.from(raw, (v) => (avg * v) / mean);
+  const maxVal = Math.max(...stacks, 1e-9);
+
+  const w = 400;
+  const h = 160;
+  const pad = 8;
+  const points = [];
+  stackCurvePoints = [];
+  for (let i = 0; i < stacks.length; i++) {
+    const x = pad + (i / (stacks.length - 1 || 1)) * (w - 2 * pad);
+    const y = pad + (1 - stacks[i] / maxVal) * (h - 2 * pad);
+    points.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+    const rank = Math.round((i / (stacks.length - 1 || 1)) * (n - 1)) + 1;
+    stackCurvePoints.push({
+      vx: x,
+      vy: y,
+      label: `Player ${rank}: ${formatMoney(stacks[i])}`,
+    });
+  }
+  const poly = document.createElementNS(SVG_NS, "polyline");
+  poly.setAttribute("points", points.join(" "));
+  poly.setAttribute("style", "fill:none;stroke:var(--accent);stroke-width:2");
+  stackCurveSvg.appendChild(poly);
+
+  curveMaxLabel.textContent = formatMoney(maxVal);
+  curveMinLabel.textContent = "0";
+  scheduleLiveRecompute();
+}
+
+[playersRemainingInput, averageStackInput].forEach((el) =>
+  el.addEventListener("input", redrawStackCurve),
+);
+spreadSlider.addEventListener("input", () => {
+  spreadValue.textContent = parseFloat(spreadSlider.value).toFixed(2);
+  redrawStackCurve();
+});
+
+function updateManualMeta() {
+  const tokens = parseNumberTokens(manualStacksTextarea.value);
+  const nonzero = tokens.filter((v) => Number.isFinite(v) && v !== 0).length;
+  manualStacksMeta.textContent = `${tokens.length} players, ${nonzero} nonzero`;
+  scheduleLiveRecompute();
+}
+
+manualStacksTextarea.addEventListener("input", updateManualMeta);
+
+function getCurrentStacks() {
+  if (stackMode === "automatic") {
+    const n = parseInt(playersRemainingInput.value, 10);
+    const avg = parseFloat(averageStackInput.value);
+    const spread = parseFloat(spreadSlider.value);
+    if (!Number.isFinite(n) || n < 1) {
+      throw new Error("Players remaining must be a positive integer");
+    }
+    if (!Number.isFinite(avg) || avg <= 0) {
+      throw new Error("Average stack must be a positive number");
+    }
+    if (!Number.isFinite(spread) || spread < 0 || spread > 1) {
+      throw new Error("Spread must be between 0 and 1");
+    }
+    return generateAutomaticStacks(n, avg, spread);
+  }
+  const tokens = parseNumberTokens(manualStacksTextarea.value);
+  if (tokens.length === 0) {
+    throw new Error("Enter at least one stack");
+  }
+  return Float64Array.from(tokens);
+}
+
+function getCurrentPayouts() {
+  if (prizes.length === 0) {
+    throw new Error("Add at least one prize");
+  }
+  return Float64Array.from(prizes);
+}
+
+function capErrorMessage(stacks, payouts) {
+  if (stacks.length > MAX_N) {
+    return (
+      `Players (${stacks.length}) exceed the ${MAX_N} cap set for measured browser performance. ` +
+      `Add ?maxn=<value> to the URL to raise it, up to ${HARD_MAX_N}.`
+    );
+  }
+  if (payouts.length > MAX_N) {
+    return (
+      `Payout places (${payouts.length}) exceed the ${MAX_N} cap set for measured browser performance. ` +
+      `Add ?maxn=<value> to the URL to raise it, up to ${HARD_MAX_N}.`
+    );
+  }
+  return null;
+}
+
+function estimateStackCount() {
+  if (stackMode === "automatic") {
+    const n = parseInt(playersRemainingInput.value, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return parseNumberTokens(manualStacksTextarea.value).length;
+}
+
+function isLiveEligible() {
+  const count = estimateStackCount();
+  return count === null || count <= LIVE_THRESHOLD;
+}
+
+function setLiveStatus(message) {
+  if (!message) {
+    liveStatusLine.textContent = "";
+    liveStatusLine.hidden = true;
+    return;
+  }
+  liveStatusLine.textContent = message;
+  liveStatusLine.hidden = false;
+}
+
+function updateComputeButtonIdle() {
+  calculateBtn.disabled = false;
+  if (isLiveEligible() && lastComputeWasLive) {
+    calculateBtn.textContent = "LIVE";
+    calculateBtn.classList.add("is-live");
+  } else {
+    calculateBtn.textContent = "COMPUTE";
+    calculateBtn.classList.remove("is-live");
+  }
+}
+
+function scheduleLiveRecompute() {
+  if (liveDebounceTimer) {
+    clearTimeout(liveDebounceTimer);
+    liveDebounceTimer = null;
+  }
+  if (!isLiveEligible()) {
+    updateComputeButtonIdle();
+    return;
+  }
+  liveDebounceTimer = setTimeout(() => {
+    liveDebounceTimer = null;
+    attemptCompute(true);
+  }, LIVE_DEBOUNCE_MS);
+}
+
+function runCompute(request) {
+  computing = true;
+  pendingStacks = request.stacks;
+  pendingPayouts = request.payouts;
+  pendingIsLive = request.isLive;
+  calculateBtn.disabled = true;
+  calculateBtn.classList.remove("is-live");
+  calculateBtn.textContent = "computing...";
+  worker.postMessage({
+    type: "compute",
+    stacks: request.stacks,
+    payouts: request.payouts,
+  });
+}
+
+function finishCompute() {
+  if (queuedRequest) {
+    const next = queuedRequest;
+    queuedRequest = null;
+    runCompute(next);
+    return;
+  }
+  updateComputeButtonIdle();
+}
+
+function attemptCompute(isLive) {
+  let stacks;
+  let payouts;
+  try {
+    stacks = getCurrentStacks();
+    payouts = getCurrentPayouts();
+  } catch (err) {
+    if (isLive) {
+      setLiveStatus(err.message);
+    } else {
+      showError(err.message);
+    }
+    return;
+  }
+
+  const capMessage = capErrorMessage(stacks, payouts);
+  if (capMessage) {
+    if (isLive) {
+      setLiveStatus(capMessage);
+    } else {
+      showError(capMessage);
+    }
+    return;
+  }
+
+  if (!isLive) hideError();
+  setLiveStatus(null);
+
+  const request = { stacks, payouts, isLive };
+  if (computing) {
+    queuedRequest = request;
+    return;
+  }
+  runCompute(request);
+}
+
+calculateBtn.addEventListener("click", () => {
+  if (liveDebounceTimer) {
+    clearTimeout(liveDebounceTimer);
+    liveDebounceTimer = null;
+  }
+  attemptCompute(false);
+});
+
+worker.onmessage = (ev) => {
+  const msg = ev.data;
+  if (msg.type === "progress") {
+    calculateBtn.textContent =
+      msg.q === 256 ? "computing..." : "refining accuracy...";
+  } else if (msg.type === "result") {
+    computing = false;
+    lastComputeWasLive = pendingIsLive;
+    renderResults(msg, pendingStacks, pendingPayouts);
+    finishCompute();
+  } else if (msg.type === "error") {
+    computing = false;
+    if (pendingIsLive) {
+      setLiveStatus(msg.message);
+    } else {
+      showError(msg.message);
+    }
+    finishCompute();
+  }
+};
+
+worker.onerror = (ev) => {
+  computing = false;
+  if (pendingIsLive) {
+    setLiveStatus(ev.message || "Worker failed unexpectedly");
+  } else {
+    showError(ev.message || "Worker failed unexpectedly");
+  }
+  finishCompute();
+};
+
+function buildEquityRow(row, i, pool, totalChips) {
+  const tr = document.createElement("tr");
+  if (row.stack === 0) tr.className = "muted-row";
+
+  const tdRank = document.createElement("td");
+  tdRank.textContent = String(i + 1);
+
+  const tdStack = document.createElement("td");
+  tdStack.textContent = formatMoney(row.stack);
+
+  const tdChipPct = document.createElement("td");
+  tdChipPct.textContent =
+    totalChips > 0 ? ((row.stack / totalChips) * 100).toFixed(1) : "0.0";
+
+  const tdEquity = document.createElement("td");
+  tdEquity.textContent = `$${formatMoney(row.equity)}`;
+
+  const tdPct = document.createElement("td");
+  tdPct.textContent = pool > 0 ? ((row.equity / pool) * 100).toFixed(1) : "0.0";
+
+  tr.append(tdRank, tdStack, tdChipPct, tdEquity, tdPct);
+  return tr;
+}
+
+function downsample(arr, maxPoints) {
+  if (arr.length <= maxPoints) {
+    return arr.map((v, i) => [i, v]);
+  }
+  const out = [];
+  const step = (arr.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i++) {
+    const idx = Math.round(i * step);
+    out.push([idx, arr[idx]]);
+  }
+  return out;
+}
+
+function drawEquityChart(rows, payouts) {
+  equityChartSvg.textContent = "";
+  if (rows.length === 0) return;
+
+  const w = 800;
+  const h = 300;
+  const padL = 55;
+  const padR = 20;
+  const padT = 16;
+  const padB = 30;
+  const n = rows.length;
+  const equities = rows.map((r) => r.equity);
+  const maxEq = Math.max(...equities, 1e-9);
+
+  function xOf(rank) {
+    return padL + (rank / Math.max(n - 1, 1)) * (w - padL - padR);
+  }
+  function yOf(eq) {
+    return padT + (1 - eq / maxEq) * (h - padT - padB);
+  }
+
+  const axis = document.createElementNS(SVG_NS, "line");
+  axis.setAttribute("x1", String(padL));
+  axis.setAttribute("y1", String(h - padB));
+  axis.setAttribute("x2", String(w - padR));
+  axis.setAttribute("y2", String(h - padB));
+  axis.setAttribute("style", "stroke:var(--border);stroke-width:1");
+  equityChartSvg.appendChild(axis);
+
+  const kEff = Math.min(payouts.length, n);
+  let prevPayout = null;
+  let markerCount = 0;
+  for (let i = 0; i < kEff && markerCount < 200; i++) {
+    if (payouts[i] !== prevPayout) {
+      const x = xOf(i);
+      const line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("x1", x.toFixed(1));
+      line.setAttribute("y1", String(padT));
+      line.setAttribute("x2", x.toFixed(1));
+      line.setAttribute("y2", String(h - padB));
+      line.setAttribute(
+        "style",
+        "stroke:var(--accent-dim);stroke-width:1;opacity:0.5",
+      );
+      equityChartSvg.appendChild(line);
+      markerCount++;
+    }
+    prevPayout = payouts[i];
+  }
+
+  const pts = downsample(equities, 2000);
+  equityChartPoints = pts.map(([rank, eq]) => ({
+    vx: xOf(rank),
+    vy: yOf(eq),
+    label: `Player ${rank + 1}: $${formatMoney(eq)}`,
+  }));
+  const points = pts
+    .map(([rank, eq]) => `${xOf(rank).toFixed(1)},${yOf(eq).toFixed(1)}`)
+    .join(" ");
+  const poly = document.createElementNS(SVG_NS, "polyline");
+  poly.setAttribute("points", points);
+  poly.setAttribute("style", "fill:none;stroke:var(--accent);stroke-width:2");
+  equityChartSvg.appendChild(poly);
+}
+
+function attachChartHover(svg, container, getPoints) {
+  const tooltip = document.createElement("div");
+  tooltip.className = "chart-tooltip";
+  tooltip.hidden = true;
+  container.appendChild(tooltip);
+
+  function crosshair() {
+    let line = svg.querySelector(".hover-line");
+    let dot = svg.querySelector(".hover-dot");
+    if (!line) {
+      line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("class", "hover-line");
+      line.setAttribute("style",
+        "stroke:var(--text-faint);stroke-width:1;stroke-dasharray:3 3");
+      svg.appendChild(line);
+      dot = document.createElementNS(SVG_NS, "circle");
+      dot.setAttribute("class", "hover-dot");
+      dot.setAttribute("r", "3.5");
+      dot.setAttribute("style", "fill:var(--accent)");
+      svg.appendChild(dot);
+    }
+    return { line, dot };
+  }
+
+  svg.addEventListener("mousemove", (ev) => {
+    const points = getPoints();
+    if (points.length === 0) return;
+    const rect = svg.getBoundingClientRect();
+    const vb = svg.getAttribute("viewBox").split(" ").map(Number);
+    const vw = vb[2];
+    const vh = vb[3];
+    const vx = ((ev.clientX - rect.left) / rect.width) * vw;
+    let best = points[0];
+    let bd = Infinity;
+    for (const p of points) {
+      const d = Math.abs(p.vx - vx);
+      if (d < bd) { bd = d; best = p; }
+    }
+    const { line, dot } = crosshair();
+    line.setAttribute("x1", best.vx.toFixed(1));
+    line.setAttribute("x2", best.vx.toFixed(1));
+    line.setAttribute("y1", "0");
+    line.setAttribute("y2", String(vh));
+    dot.setAttribute("cx", best.vx.toFixed(1));
+    dot.setAttribute("cy", best.vy.toFixed(1));
+    const contRect = container.getBoundingClientRect();
+    const px = rect.left - contRect.left + (best.vx / vw) * rect.width;
+    tooltip.textContent = best.label;
+    tooltip.hidden = false;
+    const half = tooltip.offsetWidth / 2;
+    const left = Math.min(Math.max(px, half + 4), contRect.width - half - 4);
+    tooltip.style.left = `${left}px`;
+  });
+
+  svg.addEventListener("mouseleave", () => {
+    tooltip.hidden = true;
+    const line = svg.querySelector(".hover-line");
+    const dot = svg.querySelector(".hover-dot");
+    if (line) line.remove();
+    if (dot) dot.remove();
+  });
+}
+
+function renderResults(result, stacks, payouts) {
+  resultsSection.hidden = false;
+  const pool = payouts.reduce((a, b) => a + b, 0);
+
+  const rows = [];
+  for (let i = 0; i < stacks.length; i++) {
+    rows.push({ stack: stacks[i], equity: result.equity[i] });
+  }
+  rows.sort((a, b) => b.stack - a.stack);
+
+  const parts = [
+    `${result.nNonzero} PLAYERS`,
+    `${result.kEffective} PAID`,
+    `POOL $${formatMoney(pool)}`,
+    `${result.elapsedMs.toFixed(1)} MS`,
+    `RELATIVE ERROR ${result.residual.toExponential(1).toUpperCase()}`,
+  ];
+  resultsSummary.textContent = "";
+  const mainLine = document.createElement("span");
+  mainLine.className = "status-line-main";
+  mainLine.textContent = parts.join(" | ");
+  resultsSummary.appendChild(mainLine);
+  if (result.notice) {
+    const notice = document.createElement("span");
+    notice.className = "notice";
+    notice.textContent = result.notice.toUpperCase();
+    resultsSummary.appendChild(notice);
+  }
+
+  let totalChips = 0;
+  for (const row of rows) totalChips += row.stack;
+  renderChunked(equityTableBody, rows.length, (i) =>
+    buildEquityRow(rows[i], i, pool, totalChips),
+  );
+
+  drawEquityChart(rows, payouts);
+}
+
+function init() {
+  updateThemeToggleLabel();
+  const defaultPayout = PAYOUT_PRESETS.find((p) => p.id === "sng9max");
+  prizes = defaultPayout.percents.map(
+    (p) => Math.round(p * 10 * 100) / 100,
+  );
+  renderPrizesTable();
+  renderAutomaticPresets();
+  renderManualPresets();
+  renderPresetsList();
+  redrawStackCurve();
+  updateManualMeta();
+  updateComputeButtonIdle();
+  attachChartHover(stackCurveSvg, stackCurveSvg.parentElement,
+    () => stackCurvePoints);
+  attachChartHover(equityChartSvg, equityChartSvg.parentElement,
+    () => equityChartPoints);
+}
+
+init();

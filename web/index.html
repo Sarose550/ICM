@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICM Calculator</title>
+<script>
+(function() {
+  var stored = null;
+  try {
+    stored = localStorage.getItem("icm-theme");
+  } catch (err) {
+    stored = null;
+  }
+  if (stored === "dark" || stored === "light") {
+    document.documentElement.setAttribute("data-theme", stored);
+  }
+})();
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="page-header">
+  <div class="header-row">
+    <div class="header-titles">
+      <h1>ICM CALCULATOR</h1>
+      <p class="subtitle">EXACT ICM EQUITIES COMPUTED IN YOUR BROWSER</p>
+    </div>
+    <button id="themeToggle" type="button" class="theme-toggle" aria-label="Toggle color theme">DARK</button>
+  </div>
+</header>
+
+<div id="errorBanner" class="error-banner" hidden>
+  <span id="errorBannerText"></span>
+  <button id="errorBannerDismiss" class="banner-dismiss" type="button" aria-label="Dismiss">&times;</button>
+</div>
+
+<main class="panels">
+
+  <section class="panel" id="prizesPanel">
+    <div class="panel-header">
+      <h2>Prizes</h2>
+    </div>
+
+    <div class="prefill-row">
+      <button id="browsePresetsBtn" type="button" class="btn-outline">Presets</button>
+      <button id="togglePasteBtn" type="button" class="btn-text">Paste list</button>
+    </div>
+
+    <div id="pasteArea" class="paste-area" hidden>
+      <textarea id="pasteTextarea" rows="4" placeholder="Prize amounts, one per line or comma / whitespace separated"></textarea>
+      <div class="paste-actions">
+        <button id="applyPasteBtn" type="button" class="btn-outline">Apply</button>
+        <button id="cancelPasteBtn" type="button" class="btn-text">Cancel</button>
+      </div>
+    </div>
+
+    <div class="table-container" id="prizesTableContainer">
+      <table class="data-table">
+        <thead>
+          <tr><th>Place</th><th>Prize</th><th>%</th><th class="col-action"></th></tr>
+        </thead>
+        <tbody id="prizesTableBody"></tbody>
+      </table>
+    </div>
+
+    <div class="table-footer-actions">
+      <button id="addRowBtn" type="button" class="btn-outline">+ Add row</button>
+      <button id="clearPrizesBtn" type="button" class="btn-text">Clear all</button>
+      <span class="table-meta" id="prizesMeta"></span>
+    </div>
+  </section>
+
+  <section class="panel" id="stacksPanel">
+    <div class="panel-header">
+      <h2>Stacks</h2>
+    </div>
+
+    <div class="segmented" id="stackModeToggle">
+      <button type="button" class="segmented-option active" data-mode="automatic">Automatic</button>
+      <button type="button" class="segmented-option" data-mode="manual">Manual</button>
+    </div>
+
+    <div id="automaticStacks" class="mode-panel">
+      <div class="preset-chip-row" id="automaticPresetsRow"></div>
+
+      <label class="field">
+        <span>Players remaining</span>
+        <input type="number" id="playersRemaining" min="1" step="1" value="9">
+      </label>
+      <label class="field">
+        <span>Average stack</span>
+        <input type="number" id="averageStack" min="0" step="1" value="300000">
+      </label>
+      <label class="field">
+        <span>Spread <span id="spreadValue">0.40</span></span>
+        <input type="range" id="spreadSlider" min="0" max="1" step="0.01" value="0.4">
+      </label>
+
+      <div class="stack-curve-container">
+        <svg id="stackCurveSvg" viewBox="0 0 400 160" preserveAspectRatio="none"></svg>
+        <span id="curveMaxLabel" class="curve-label curve-label-max"></span>
+        <span id="curveMinLabel" class="curve-label curve-label-min"></span>
+      </div>
+    </div>
+
+    <div id="manualStacks" class="mode-panel" hidden>
+      <div class="preset-chip-row" id="manualPresetsRow"></div>
+      <textarea id="manualStacksTextarea" rows="8" placeholder="One stack per line, or comma / whitespace separated"></textarea>
+      <div class="table-meta" id="manualStacksMeta">0 players, 0 nonzero</div>
+    </div>
+  </section>
+
+</main>
+
+<div class="calculate-row">
+  <button id="calculateBtn" class="calculate-btn" type="button">COMPUTE</button>
+  <div id="liveStatusLine" class="live-status-line" hidden></div>
+</div>
+
+<section id="resultsSection" class="results" hidden>
+  <div class="results-summary" id="resultsSummary"></div>
+
+  <div class="table-container results-table-container">
+    <table class="data-table">
+      <thead>
+        <tr><th>Rank</th><th>Stack</th><th>Chip %</th><th>Equity</th><th>% of pool</th></tr>
+      </thead>
+      <tbody id="equityTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="equity-chart-container">
+    <svg id="equityChartSvg" viewBox="0 0 800 300" preserveAspectRatio="none"></svg>
+  </div>
+</section>
+
+<div id="presetsOverlay" class="overlay" hidden>
+  <div class="overlay-panel">
+    <div class="overlay-header">
+      <h3>Payout presets</h3>
+      <button id="closePresetsBtn" type="button" class="banner-dismiss" aria-label="Close">&times;</button>
+    </div>
+    <div id="presetsList" class="preset-list"></div>
+  </div>
+</div>
+
+<footer class="page-footer">
+  <p>This page bundles the ICM library (MIT) compiled together with FFTW (GPL); the combined WebAssembly bundle is distributed under the GPL. See <a href="LICENSE-THIRD-PARTY.md">LICENSE-THIRD-PARTY</a>.</p>
+  <p class="footer-links">
+    <a href="https://github.com/Sarose550/ICM" target="_blank" rel="noopener">GitHub repository</a>
+    <a href="https://github.com/Sarose550/ICM/blob/main/paper/icm_paper.pdf" target="_blank" rel="noopener">Paper (PDF)</a>
+  </p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

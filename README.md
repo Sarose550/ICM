@@ -9,6 +9,8 @@ High-performance C library for computing tournament placement equities using gen
 >
 > **Status:** arXiv submission pending.
 
+**Try it in your browser:** [https://sarose550.github.io/ICM/](https://sarose550.github.io/ICM/), same library, generic calibration profile, computed client-side in WebAssembly.
+
 ## What is ICM?
 
 The Independent Chip Model (ICM) is a tournament equity model that converts
@@ -330,4 +332,4 @@ repository and the in-repo PDF:
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The prebuilt browser widget bundle under `web/dist/` is GPL as a combined work with FFTW, per [web/LICENSE-THIRD-PARTY.md](web/LICENSE-THIRD-PARTY.md).
