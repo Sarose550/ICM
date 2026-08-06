@@ -4,13 +4,31 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ICM Calculator</title>
+<script>
+(function() {
+  var stored = null;
+  try {
+    stored = localStorage.getItem("icm-theme");
+  } catch (err) {
+    stored = null;
+  }
+  if (stored === "dark" || stored === "light") {
+    document.documentElement.setAttribute("data-theme", stored);
+  }
+})();
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <header class="page-header">
-  <h1>ICM Calculator</h1>
-  <p class="subtitle">Exact ICM equities computed in your browser</p>
+  <div class="header-row">
+    <div class="header-titles">
+      <h1>ICM CALCULATOR</h1>
+      <p class="subtitle">EXACT ICM EQUITIES COMPUTED IN YOUR BROWSER</p>
+    </div>
+    <button id="themeToggle" type="button" class="theme-toggle" aria-label="Toggle color theme">DARK</button>
+  </div>
 </header>
 
 <div id="errorBanner" class="error-banner" hidden>
@@ -98,7 +116,8 @@
 </main>
 
 <div class="calculate-row">
-  <button id="calculateBtn" class="calculate-btn" type="button">CALCULATE</button>
+  <button id="calculateBtn" class="calculate-btn" type="button">COMPUTE</button>
+  <div id="liveStatusLine" class="live-status-line" hidden></div>
 </div>
 
 <section id="resultsSection" class="results" hidden>

@@ -56,6 +56,7 @@ const manualStacksTextarea = document.getElementById("manualStacksTextarea");
 const manualStacksMeta = document.getElementById("manualStacksMeta");
 
 const calculateBtn = document.getElementById("calculateBtn");
+const liveStatusLine = document.getElementById("liveStatusLine");
 const resultsSection = document.getElementById("resultsSection");
 const resultsSummary = document.getElementById("resultsSummary");
 const equityTableBody = document.getElementById("equityTableBody");
@@ -65,13 +66,23 @@ const presetsOverlay = document.getElementById("presetsOverlay");
 const presetsList = document.getElementById("presetsList");
 const closePresetsBtn = document.getElementById("closePresetsBtn");
 
+const themeToggle = document.getElementById("themeToggle");
+const THEME_KEY = "icm-theme";
+
 let prizes = [];
 let stackMode = "automatic";
 let computing = false;
 let pendingStacks = null;
 let pendingPayouts = null;
+let pendingIsLive = false;
+let lastComputeWasLive = false;
+let queuedRequest = null;
+let liveDebounceTimer = null;
 let stackCurvePoints = [];
 let equityChartPoints = [];
+
+const LIVE_THRESHOLD = 1000;
+const LIVE_DEBOUNCE_MS = 250;
 
 const worker = new Worker("worker.js", { type: "module" });
 
@@ -86,6 +97,30 @@ function hideError() {
 }
 
 errorBannerDismiss.addEventListener("click", hideError);
+
+function currentTheme() {
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr === "dark" || attr === "light") return attr;
+  return window.matchMedia("(prefers-color-scheme: light)").matches
+    ? "light"
+    : "dark";
+}
+
+function updateThemeToggleLabel() {
+  themeToggle.textContent = currentTheme() === "dark" ? "DARK" : "LIGHT";
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch (err) {}
+  updateThemeToggleLabel();
+}
+
+themeToggle.addEventListener("click", () => {
+  applyTheme(currentTheme() === "dark" ? "light" : "dark");
+});
 
 function formatMoney(v) {
   return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -139,6 +174,7 @@ function recomputePrizePercents() {
 
 function updatePrizesMeta() {
   prizesMeta.textContent = `${prizes.length} places, pool $${formatMoney(poolTotal())}`;
+  scheduleLiveRecompute();
 }
 
 function buildPrizeRow(i) {
@@ -328,6 +364,7 @@ stackModeToggle.addEventListener("click", (ev) => {
   }
   automaticStacks.hidden = mode !== "automatic";
   manualStacks.hidden = mode !== "manual";
+  scheduleLiveRecompute();
 });
 
 function probit(p) {
@@ -397,6 +434,7 @@ function redrawStackCurve() {
   if (!Number.isFinite(n) || n < 1 || !Number.isFinite(avg) || avg <= 0) {
     curveMaxLabel.textContent = "";
     curveMinLabel.textContent = "";
+    scheduleLiveRecompute();
     return;
   }
 
@@ -438,6 +476,7 @@ function redrawStackCurve() {
 
   curveMaxLabel.textContent = formatMoney(maxVal);
   curveMinLabel.textContent = "0";
+  scheduleLiveRecompute();
 }
 
 [playersRemainingInput, averageStackInput].forEach((el) =>
@@ -452,6 +491,7 @@ function updateManualMeta() {
   const tokens = parseNumberTokens(manualStacksTextarea.value);
   const nonzero = tokens.filter((v) => Number.isFinite(v) && v !== 0).length;
   manualStacksMeta.textContent = `${tokens.length} players, ${nonzero} nonzero`;
+  scheduleLiveRecompute();
 }
 
 manualStacksTextarea.addEventListener("input", updateManualMeta);
@@ -486,41 +526,138 @@ function getCurrentPayouts() {
   return Float64Array.from(prizes);
 }
 
-calculateBtn.addEventListener("click", () => {
-  if (computing) return;
-  hideError();
+function capErrorMessage(stacks, payouts) {
+  if (stacks.length > MAX_N) {
+    return (
+      `Players (${stacks.length}) exceed the ${MAX_N} cap set for measured browser performance. ` +
+      `Add ?maxn=<value> to the URL to raise it, up to ${HARD_MAX_N}.`
+    );
+  }
+  if (payouts.length > MAX_N) {
+    return (
+      `Payout places (${payouts.length}) exceed the ${MAX_N} cap set for measured browser performance. ` +
+      `Add ?maxn=<value> to the URL to raise it, up to ${HARD_MAX_N}.`
+    );
+  }
+  return null;
+}
 
+function estimateStackCount() {
+  if (stackMode === "automatic") {
+    const n = parseInt(playersRemainingInput.value, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return parseNumberTokens(manualStacksTextarea.value).length;
+}
+
+function isLiveEligible() {
+  const count = estimateStackCount();
+  return count === null || count <= LIVE_THRESHOLD;
+}
+
+function setLiveStatus(message) {
+  if (!message) {
+    liveStatusLine.textContent = "";
+    liveStatusLine.hidden = true;
+    return;
+  }
+  liveStatusLine.textContent = message;
+  liveStatusLine.hidden = false;
+}
+
+function updateComputeButtonIdle() {
+  calculateBtn.disabled = false;
+  if (isLiveEligible() && lastComputeWasLive) {
+    calculateBtn.textContent = "LIVE";
+    calculateBtn.classList.add("is-live");
+  } else {
+    calculateBtn.textContent = "COMPUTE";
+    calculateBtn.classList.remove("is-live");
+  }
+}
+
+function scheduleLiveRecompute() {
+  if (liveDebounceTimer) {
+    clearTimeout(liveDebounceTimer);
+    liveDebounceTimer = null;
+  }
+  if (!isLiveEligible()) {
+    updateComputeButtonIdle();
+    return;
+  }
+  liveDebounceTimer = setTimeout(() => {
+    liveDebounceTimer = null;
+    attemptCompute(true);
+  }, LIVE_DEBOUNCE_MS);
+}
+
+function runCompute(request) {
+  computing = true;
+  pendingStacks = request.stacks;
+  pendingPayouts = request.payouts;
+  pendingIsLive = request.isLive;
+  calculateBtn.disabled = true;
+  calculateBtn.classList.remove("is-live");
+  calculateBtn.textContent = "computing...";
+  worker.postMessage({
+    type: "compute",
+    stacks: request.stacks,
+    payouts: request.payouts,
+  });
+}
+
+function finishCompute() {
+  if (queuedRequest) {
+    const next = queuedRequest;
+    queuedRequest = null;
+    runCompute(next);
+    return;
+  }
+  updateComputeButtonIdle();
+}
+
+function attemptCompute(isLive) {
   let stacks;
   let payouts;
   try {
     stacks = getCurrentStacks();
     payouts = getCurrentPayouts();
   } catch (err) {
-    showError(err.message);
+    if (isLive) {
+      setLiveStatus(err.message);
+    } else {
+      showError(err.message);
+    }
     return;
   }
 
-  if (stacks.length > MAX_N) {
-    showError(
-      `Players (${stacks.length}) exceed the ${MAX_N} cap set for measured browser performance. ` +
-        `Add ?maxn=<value> to the URL to raise it, up to ${HARD_MAX_N}.`,
-    );
-    return;
-  }
-  if (payouts.length > MAX_N) {
-    showError(
-      `Payout places (${payouts.length}) exceed the ${MAX_N} cap set for measured browser performance. ` +
-        `Add ?maxn=<value> to the URL to raise it, up to ${HARD_MAX_N}.`,
-    );
+  const capMessage = capErrorMessage(stacks, payouts);
+  if (capMessage) {
+    if (isLive) {
+      setLiveStatus(capMessage);
+    } else {
+      showError(capMessage);
+    }
     return;
   }
 
-  computing = true;
-  calculateBtn.disabled = true;
-  calculateBtn.textContent = "computing...";
-  pendingStacks = stacks;
-  pendingPayouts = payouts;
-  worker.postMessage({ type: "compute", stacks, payouts });
+  if (!isLive) hideError();
+  setLiveStatus(null);
+
+  const request = { stacks, payouts, isLive };
+  if (computing) {
+    queuedRequest = request;
+    return;
+  }
+  runCompute(request);
+}
+
+calculateBtn.addEventListener("click", () => {
+  if (liveDebounceTimer) {
+    clearTimeout(liveDebounceTimer);
+    liveDebounceTimer = null;
+  }
+  attemptCompute(false);
 });
 
 worker.onmessage = (ev) => {
@@ -530,22 +667,28 @@ worker.onmessage = (ev) => {
       msg.q === 256 ? "computing..." : "refining accuracy...";
   } else if (msg.type === "result") {
     computing = false;
-    calculateBtn.disabled = false;
-    calculateBtn.textContent = "CALCULATE";
+    lastComputeWasLive = pendingIsLive;
     renderResults(msg, pendingStacks, pendingPayouts);
+    finishCompute();
   } else if (msg.type === "error") {
     computing = false;
-    calculateBtn.disabled = false;
-    calculateBtn.textContent = "CALCULATE";
-    showError(msg.message);
+    if (pendingIsLive) {
+      setLiveStatus(msg.message);
+    } else {
+      showError(msg.message);
+    }
+    finishCompute();
   }
 };
 
 worker.onerror = (ev) => {
   computing = false;
-  calculateBtn.disabled = false;
-  calculateBtn.textContent = "CALCULATE";
-  showError(ev.message || "Worker failed unexpectedly");
+  if (pendingIsLive) {
+    setLiveStatus(ev.message || "Worker failed unexpectedly");
+  } else {
+    showError(ev.message || "Worker failed unexpectedly");
+  }
+  finishCompute();
 };
 
 function buildEquityRow(row, i, pool, totalChips) {
@@ -724,17 +867,23 @@ function renderResults(result, stacks, payouts) {
   rows.sort((a, b) => b.stack - a.stack);
 
   const parts = [
-    `<strong>${result.nNonzero}</strong> players`,
-    `<strong>${result.kEffective}</strong> paid`,
-    `pool <strong>$${formatMoney(pool)}</strong>`,
-    `<strong>${result.elapsedMs.toFixed(0)}</strong> ms`,
-    `accuracy <strong>${result.residual.toExponential(1)}</strong>`,
+    `${result.nNonzero} PLAYERS`,
+    `${result.kEffective} PAID`,
+    `POOL $${formatMoney(pool)}`,
+    `${result.elapsedMs.toFixed(1)} MS`,
+    `RESIDUAL ${result.residual.toExponential(1).toUpperCase()}`,
   ];
-  let html = parts.join(", ") + ".";
+  resultsSummary.textContent = "";
+  const mainLine = document.createElement("span");
+  mainLine.className = "status-line-main";
+  mainLine.textContent = parts.join(" | ");
+  resultsSummary.appendChild(mainLine);
   if (result.notice) {
-    html += `<span class="notice">${result.notice}.</span>`;
+    const notice = document.createElement("span");
+    notice.className = "notice";
+    notice.textContent = result.notice.toUpperCase();
+    resultsSummary.appendChild(notice);
   }
-  resultsSummary.innerHTML = html;
 
   let totalChips = 0;
   for (const row of rows) totalChips += row.stack;
@@ -746,6 +895,7 @@ function renderResults(result, stacks, payouts) {
 }
 
 function init() {
+  updateThemeToggleLabel();
   const defaultPayout = PAYOUT_PRESETS.find((p) => p.id === "sng9max");
   prizes = defaultPayout.percents.map(
     (p) => Math.round(p * 10 * 100) / 100,
@@ -756,6 +906,7 @@ function init() {
   renderPresetsList();
   redrawStackCurve();
   updateManualMeta();
+  updateComputeButtonIdle();
   attachChartHover(stackCurveSvg, stackCurveSvg.parentElement,
     () => stackCurvePoints);
   attachChartHover(equityChartSvg, equityChartSvg.parentElement,

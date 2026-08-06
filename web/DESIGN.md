@@ -91,6 +91,26 @@ evidence.
   players than paid places, the trailing payouts are unreachable; the UI
   surfaces a notice when this happens rather than erroring.
 
+## Visual identity (second pass, owner-directed)
+
+The first release intentionally mirrored a reference screenshot the owner
+supplied (GTO Wizard's discontinued browser widget) to get a working
+comparable. With that shipped, the owner chose a distinct identity
+(2026-08-05 interview):
+
+- **Scientific instrument aesthetic**: monospace with tabular numerals,
+  dense layout, thin rules, uppercase section labels, a status-line results
+  summary. Deliberately not retro-CRT: no scanlines, no glow.
+- **Amber terminal palette**: warm amber accent on near-black in dark mode;
+  a warm-paper light mode with burnt-amber accent.
+- **Dark + light themes** following the system preference, with a manual
+  toggle persisted in localStorage.
+- **Live recompute**: for fields up to 1000 players, results update
+  automatically (debounced 250 ms, latest-wins queueing on the single
+  worker); the explicit COMPUTE action remains for larger fields and as a
+  forced recompute. Validation banners fire only on explicit compute so
+  typing through invalid intermediate states is not punished.
+
 ## Verification
 
 - `web/verify/gen_reference.c` produces `reference.json`: deterministic
