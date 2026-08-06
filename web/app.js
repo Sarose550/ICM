@@ -871,7 +871,7 @@ function renderResults(result, stacks, payouts) {
     `${result.kEffective} PAID`,
     `POOL $${formatMoney(pool)}`,
     `${result.elapsedMs.toFixed(1)} MS`,
-    `RESIDUAL ${result.residual.toExponential(1).toUpperCase()}`,
+    `RELATIVE ERROR ${result.residual.toExponential(1).toUpperCase()}`,
   ];
   resultsSummary.textContent = "";
   const mainLine = document.createElement("span");
